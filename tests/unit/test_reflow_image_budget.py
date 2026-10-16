@@ -286,3 +286,30 @@ def test_bilevel_original_and_enlarged_detail_preserve_every_source_pixel(tmp_pa
         assert total < 20*1024
     finally:
         package.abandon();doc.close()
+
+
+def test_native_evidence_retains_at_most_one_frame_across_retained_page_displays(tmp_path):
+    import gc
+    import weakref
+    from cps.services.reflow import unit_recovery,unit_source
+    from cps.services.reflow.source_display import SourceDisplay
+    source,_=_procedural_bilevel_page();doc=pymupdf.open()
+    for _ in range(8):doc.insert_pdf(source)
+    # Conversion keeps every page display alive until cross-page assembly.
+    # Image evidence must still release the preceding page's native samples.
+    scans={n:dict(display=SourceDisplay(doc,n)) for n in range(len(doc))}
+    package=unit_recovery.package(tmp_path/'retained-pages.epub')
+    references=[];records={}
+    try:
+        for n,scan in scans.items():
+            display=scan['display']
+            package.disclosure_image('images/context-%d.jpg'%n,display,display.rect)
+            unit_source.source_unit(display,n,'body','body',package,records,
+                'Synthetic source context')
+            native=display.__dict__.get('_bitonal')
+            if native is not None:references.append(weakref.ref(native))
+            del native
+            gc.collect()
+            assert sum(reference() is not None for reference in references) <= 1
+    finally:
+        package.abandon();source.close();doc.close()

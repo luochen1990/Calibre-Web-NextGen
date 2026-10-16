@@ -103,8 +103,10 @@ def source_unit(display, pno, bid, role, package, image_records, reason, bbox=No
         # Preserve the original renderer and its one-repair ownership above.
         # A proved complete native bitmap can then replace its lossy encoding
         # without changing the original page, crop, or recognition inputs.
-        from .image_budget import native_evidence
-        lossless = native_evidence(display, display.rect)
+        from .image_budget import EvidenceRaster, native_evidence
+        if not hasattr(package, '_evidence_raster'):
+            package._evidence_raster = EvidenceRaster()
+        lossless = native_evidence(display, display.rect, owner=package._evidence_raster)
         if lossless is not None:
             data = lossless
         writer = getattr(package, "source_image", None)
