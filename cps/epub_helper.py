@@ -85,7 +85,7 @@ def _raw_copy_info(info):
 def _raw_member_length(source, info, limit):
     """Return a validated local-record length, or None for the legacy path.
 
-    APPNOTE 6.3.10 §§4.3.7–4.3.9, 4.5.3:
+    APPNOTE 6.3.10 §§4.3.7–4.3.9, 4.4.4, 4.5.3:
     https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
     Local extras are independent of central extras. Descriptors immediately
     follow compressed data and have 32/64-bit sizes, with/without signature.
@@ -94,7 +94,13 @@ def _raw_member_length(source, info, limit):
     if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED,
                                   zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
         return None
-    if info.flag_bits & ~(0x800 | 8 | 6):  # encryption and other unsupported features
+    # Refuse encryption (0), patched data (5), strong encryption (6) and
+    # masked local headers (13). Compression options/EOS (1/2/4) and encoding
+    # (11) do not obstruct verbatim copying; retain opaque/reserved bits too.
+    # In particular, source EPUB writers commonly leave enhanced-deflate bit 4
+    # set (0x816). An allow-list based on zipfile's writer needlessly decodes it.
+    # Bit 3 still requires the descriptor validation below, regardless of hints.
+    if info.flag_bits & ((1 << 0) | (1 << 5) | (1 << 6) | (1 << 13)):
         return None
     handle = source.fp
     handle.seek(info.header_offset)

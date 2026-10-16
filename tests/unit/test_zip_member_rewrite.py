@@ -305,3 +305,87 @@ def test_zip64_central_sizes_are_rebuilt_for_raw_and_replacement(tmp_path, monke
         assert struct.unpack_from('<HHQQQ', new.extra) == (
             1, 24, len(replacement), new.compress_size, new.header_offset)
         assert target.read_bytes()[:len(local)] == local
+
+
+@pytest.mark.parametrize('flags', [
+    0, 1 << 1, 1 << 2, 1 << 4, 1 << 7, 1 << 8, 1 << 9,
+    1 << 10, 1 << 11, 1 << 12, 1 << 14, 1 << 15, 0x816, 0xDF96,
+])
+def test_compression_encoding_and_opaque_flags_do_not_trigger_recompression(tmp_path, monkeypatch, flags):
+    """APPNOTE 4.4.4: only flags altering safe interpretation block raw copy."""
+    source, target = tmp_path / 'src', tmp_path / 'out'
+    payload, local = _fixture(source, flags=flags)
+    original = zipfile.ZipFile.read
+
+    def read(self, name, *args, **kwargs):
+        assert self.filename != str(source), 'flag alone sent unchanged data to the decoder'
+        return original(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, 'read', read)
+    updateEpub(source, target, 'new.opf', b'new')
+    with zipfile.ZipFile(target) as out:
+        assert out.read('chapter.xhtml') == payload
+        assert out.getinfo('chapter.xhtml').flag_bits == flags
+        assert target.read_bytes()[:len(local)] == local
+
+
+@pytest.mark.parametrize('bit', [0, 5, 6, 13])
+@pytest.mark.parametrize('other_flags', [0, 0x816])
+def test_encryption_patch_and_masking_flags_still_use_legacy_path(tmp_path, monkeypatch, bit, other_flags):
+    """Never certify ciphertext, patched data or masked headers as ordinary records."""
+    source, target = tmp_path / 'src', tmp_path / 'out'
+    _fixture(source, flags=other_flags | (1 << bit))
+    reads = []
+
+    class LegacyRead(Exception):
+        pass
+
+    def read(self, name, *args, **kwargs):
+        assert self.filename == str(source)
+        reads.append(name.filename if isinstance(name, zipfile.ZipInfo) else name)
+        raise LegacyRead()
+
+    monkeypatch.setattr(zipfile.ZipFile, 'read', read)
+    with pytest.raises(LegacyRead):
+        updateEpub(source, target, 'new.opf', b'new')
+    assert reads == ['chapter.xhtml']
+
+
+@pytest.mark.parametrize('signature,zip64', [(False, False), (True, False), (False, True), (True, True)])
+def test_flagged_members_keep_their_validated_descriptors(tmp_path, monkeypatch, signature, zip64):
+    source, target = tmp_path / 'src', tmp_path / 'out'
+    payload, local = _fixture(source, flags=0x816, descriptor=True, signature=signature, zip64=zip64)
+    original = zipfile.ZipFile.read
+
+    def read(self, name, *args, **kwargs):
+        assert self.filename != str(source), 'flagged descriptor member was decompressed'
+        return original(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, 'read', read)
+    updateEpub(source, target, 'new.opf', b'new')
+    with zipfile.ZipFile(target) as out:
+        assert out.getinfo('chapter.xhtml').flag_bits == 0x81E
+        assert out.read('chapter.xhtml') == payload
+        assert target.read_bytes()[:len(local)] == local
+
+
+def test_lzma_eos_flag_does_not_require_decoding(tmp_path, monkeypatch):
+    source, target = tmp_path / 'src', tmp_path / 'out'
+    payload = b'chapter words ' * 3000
+    with zipfile.ZipFile(source, 'w', compression=zipfile.ZIP_LZMA) as archive:
+        archive.writestr('chapter', payload)
+    with zipfile.ZipFile(source) as archive:
+        info = archive.getinfo('chapter')
+        assert info.flag_bits & 2  # LZMA's EOS marker, not a deflate option
+        local = _local_record(source, info)
+    original = zipfile.ZipFile.read
+
+    def read(self, name, *args, **kwargs):
+        assert self.filename != str(source), 'LZMA EOS member was decompressed'
+        return original(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, 'read', read)
+    updateEpub(source, target, 'new.opf', b'new')
+    with zipfile.ZipFile(target) as out:
+        assert out.read('chapter') == payload
+        assert _local_record(target, out.getinfo('chapter')) == local
