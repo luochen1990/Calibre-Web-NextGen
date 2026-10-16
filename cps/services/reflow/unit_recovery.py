@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import threading
 import re
+import pickle
 from xml.etree import ElementTree as ET
 
 
@@ -90,6 +91,8 @@ class Controller:
         self._active_page = None
         self.recovery_closed = set()
         self.records = {}
+        self.prepared_pages = {}
+        self.native_classification = {}
         self.fragment_units, self.id_units = {}, {}
         self.ledger = getattr(reader, 'ledger', None)
         self.start_spend = self.ledger.spent() if self.ledger else None
@@ -164,6 +167,33 @@ class Controller:
         self.images[page] = dict(path=str(path), sha256=identity)
         self._page_by_image[identity] = page
         return identity
+
+    def _preparation_key(self, page):
+        record = self.readings.get(page)
+        if record is None:
+            return None
+        # Scoped to this controller's admitted source and reading image. Block
+        # removal changes geometry, so it invalidates preparation as a reread does.
+        value = [record, sorted(self.blocked(page)), self.images.get(page, {}).get('sha256')]
+        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+    def load_prepared(self, page):
+        saved = self.prepared_pages.get(page)
+        if saved is None or saved[0] != self._preparation_key(page):
+            return None
+        # Only our own ephemeral checkpoint is read. No external pickle/cache
+        # input is accepted. Every attempt receives independent mutable objects.
+        with saved[1].open('rb') as handle:
+            return pickle.load(handle)
+
+    def store_prepared(self, page, prepared):
+        key = self._preparation_key(page)
+        if key is None:
+            return
+        path = self.staging / ('prepared-' + str(page) + '.pickle')
+        with path.open('wb') as handle:
+            pickle.dump(prepared, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        self.prepared_pages[page] = (key, path)
 
     def read(self, page, image, source_repair=None):
         identity = self.register_image(page, image)

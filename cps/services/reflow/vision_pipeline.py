@@ -4477,6 +4477,61 @@ def _compiled_text_quality(pages,records,numbers):
     return sweep
 
 
+def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
+    """Checkpoint source geometry before any mutable book-level assembly."""
+    boundary_receipts={}
+    saved=controller.load_prepared(n) if controller else None
+    if saved is not None:
+        prov=(provenance or {}).get(n,{})
+        display=SourceDisplay(doc,n,dict(prov,layer='ocr' if prov.get('space')=='reading' else 'native',
+            original_frame=(original_frames or {}).get(n)))
+        optical=saved['optical']
+        controller.source_repairs[n]=lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache')
+        controller.register_regions(n,saved['regions'])
+        receipts=saved.pop('boundary_receipts')
+        return dict(display=display,**saved),receipts
+    with unit_recovery.guard(n,'primary_source_render'):
+        prov=(provenance or {}).get(n,{})
+        display=SourceDisplay(doc,n,dict(prov,layer='ocr' if prov.get('space')=='reading' else 'native',
+            original_frame=(original_frames or {}).get(n)))
+        if controller and n in controller.images:
+            image=Path(controller.images[n]['path']).read_bytes()
+        else:
+            pix=display.pixmap(scale=2,max_pixels=2_500_000)
+            image=pix.tobytes('jpg',jpg_quality=90)
+        if controller:controller.register_image(n,image)
+    from . import vision_pixels
+    with unit_recovery.guard(n,'optical_evidence'):
+        optical=vision_pixels.words(display,reader.cache.parent/'pixel-guard-cache')
+    with unit_recovery.guard(n,'reading'):
+        reading=(controller.read(n,image,lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache'))
+                 if controller else reader.read(image))
+    regions={};body_owners={}
+    selected=controller.filter_answer(n,reading['answer']) if controller else reading['answer']
+    with unit_recovery.guard(n,'reading_text_quality'):
+        read_text='\n'.join(b['text'] for b in selected['blocks'] if b['role'] not in ('figure','table'))
+        quality=text_quality.inspect(read_text)
+        missing_scripts=text_quality.script_mismatches(doc[n].get_text('text'),read_text)
+        if quality['needs_read'] or missing_scripts:
+            raise ValueError('Pixel reading has unresolved text quality: '+', '.join(quality['reasons']+['missing_source_script_'+v for v in missing_scripts]))
+    with unit_recovery.guard(n,'geometry'):
+        answer,repairs=bind_geometry(selected,optical,display,regions,body_owners)
+    with unit_recovery.guard(n,'note_boundaries'):
+        answer,boundary_repairs=_source_note_boundaries(answer,optical,display,regions,body_owners,
+            getattr(reader,'read_marker',None),boundary_receipts,n)
+        repairs.extend(boundary_repairs)
+    if controller:controller.register_regions(n,regions)
+    prepared=dict(reading=reading,optical=optical,regions=regions,
+        body_owners=body_owners,answer=answer,geometry_repairs=repairs,
+        source_words=[])
+    with unit_recovery.guard(n,'source_words'):
+        prepared['source_words']=layer_words(doc,n,display)
+    prepared['boundary_receipts']=boundary_receipts
+    if controller:controller.store_prepared(n,prepared)
+    prepared.pop('boundary_receipts')
+    return dict(display=display,**prepared),boundary_receipts
+
+
 def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,progress=None,native_prepared=None,original_frames=None,metadata=None):
     """Build an EPUB with explicit source-word disclosures and source-linked notes."""
     numbers=sorted(page_numbers if page_numbers is not None else range(len(doc)))
@@ -4490,10 +4545,22 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
     for n in numbers:
         if n in source_pages:continue
         with unit_recovery.guard(n,'page_classification'):
-            if clean_native(doc[n]):native.append(n)
+            if controller and n in controller.native_classification:
+                is_native=controller.native_classification[n]
+            else:
+                is_native=clean_native(doc[n])
+                if controller:controller.native_classification[n]=is_native
+            if is_native:native.append(n)
     scanned=[n for n in numbers if n not in native and n not in source_pages]
-    prepared=(copy.deepcopy(native_prepared) if native_prepared is not None else
-              pipeline.run(doc,page_numbers=native,recovery_opts={'mode':'off'}) if native else None)
+    prepared=None
+    if native:
+        source_prepared=native_prepared
+        if source_prepared is None:
+            source_prepared=getattr(controller,'native_prepared',None)
+            if source_prepared is None:
+                source_prepared=pipeline.run(doc,page_numbers=native,recovery_opts={'mode':'off'})
+                if controller:controller.native_prepared=source_prepared
+        prepared=copy.deepcopy(source_prepared)
     book=prepared.book if prepared else assemble.Book()
     # Filter cached native preparation to the actual selected native pages.
     book.pages={n:els for n,els in book.pages.items() if n in native}
@@ -4570,39 +4637,8 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                 case.update(unit,unit_kind='figure');native_cases.append(case)
         scans={};boundary_receipts={}
         for n in scanned:
-            with unit_recovery.guard(n,'primary_source_render'):
-                prov=(provenance or {}).get(n,{})
-                display=SourceDisplay(doc,n,dict(prov,layer='ocr' if prov.get('space')=='reading' else 'native',
-                    original_frame=(original_frames or {}).get(n)))
-                pix=display.pixmap(scale=2,max_pixels=2_500_000)
-                image=pix.tobytes('jpg',jpg_quality=90)
-                if controller:controller.register_image(n,image)
-            from . import vision_pixels
-            with unit_recovery.guard(n,'optical_evidence'):
-                optical=vision_pixels.words(display,reader.cache.parent/'pixel-guard-cache')
-            with unit_recovery.guard(n,'reading'):
-                reading=(controller.read(n,image,lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache'))
-                         if controller else reader.read(image))
-            regions={};body_owners={}
-            selected=controller.filter_answer(n,reading['answer']) if controller else reading['answer']
-            with unit_recovery.guard(n,'reading_text_quality'):
-                read_text='\n'.join(b['text'] for b in selected['blocks'] if b['role'] not in ('figure','table'))
-                quality=text_quality.inspect(read_text)
-                missing_scripts=text_quality.script_mismatches(doc[n].get_text('text'),read_text)
-                if quality['needs_read'] or missing_scripts:
-                    raise ValueError('Pixel reading has unresolved text quality: '+', '.join(quality['reasons']+['missing_source_script_'+v for v in missing_scripts]))
-            with unit_recovery.guard(n,'geometry'):
-                answer,repairs=bind_geometry(selected,optical,display,regions,body_owners)
-            with unit_recovery.guard(n,'note_boundaries'):
-                answer,boundary_repairs=_source_note_boundaries(answer,optical,display,regions,body_owners,
-                    getattr(reader,'read_marker',None),boundary_receipts,n)
-                repairs.extend(boundary_repairs)
-            if controller:controller.register_regions(n,regions)
-            scans[n]=dict(display=display,reading=reading,optical=optical,regions=regions,
-                body_owners=body_owners,answer=answer,geometry_repairs=repairs,
-                source_words=[])
-            with unit_recovery.guard(n,'source_words'):
-                scans[n]['source_words']=layer_words(doc,n,display)
+            scans[n],receipts=_prepare_scanned_page(doc,n,reader,controller,provenance,original_frames)
+            boundary_receipts.update(receipts)
         # Resolve book-level roles before omitted-line recovery so an oversized
         # model illustration cannot swallow either live prose or a note tail.
         _note_ownership(scans)
