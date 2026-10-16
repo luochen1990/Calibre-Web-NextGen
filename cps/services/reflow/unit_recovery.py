@@ -671,20 +671,21 @@ def verify_degradation(parts,assets):
                         raise ValueError('Referenced degraded SOURCE note has no working Return')
 
 
-def package(out_path):
+def package(out_path, *, source_bytes=0):
     """Keep strict asset admission, plus an independent original-source writer."""
     from . import build_epub
     import posixpath
     import zipfile
     class RecoverablePackage(build_epub._Package):
         def __init__(self,path):
-            try:super().__init__(path)
+            try:super().__init__(path, source_bytes=source_bytes)
             except Exception as error:
                 if fatal(error) or current() is None:raise
                 if getattr(self,'_zf',None) is not None:self._zf.close()
                 self.path=str(path);self.tmp=self.path+'.tmp'
                 Path(self.tmp).parent.mkdir(parents=True,exist_ok=True)
                 self.images={};self.aliases={};self.media_types={}
+                self.source_bytes=source_bytes;self._image_digests={};self._resource_hashes={}
                 self._zf=zipfile.ZipFile(self.tmp,'w',zipfile.ZIP_DEFLATED)
                 info=zipfile.ZipInfo('mimetype');info.compress_type=zipfile.ZIP_STORED
                 self._zf.writestr(info,b'application/epub+zip')
@@ -700,6 +701,9 @@ def package(out_path):
                     transition='DETERMINISTIC_SOURCE_REPAIR',image=actual,
                     evidence='Repeated asset bytes have identical SHA256',sha256=digest))
                 return
+            # Distinct ordinary disclosure regions retain their own ownership
+            # records, even when their pixels happen to be identical. Repeated
+            # original-page resources share bytes through source_image().
             super().image(href,data,store=store)
             self._hashes[self.aliases.get(href,href)]=digest
 
@@ -707,12 +711,18 @@ def package(out_path):
             # Semantic crop/image helpers cannot prevent the trusted original
             # unit from being retained. Actual archive I/O failures still fail.
             digest=hashlib.sha256(data).hexdigest()
-            if href in self.images:
-                if self._hashes.get(href)==digest:return
+            actual=self.aliases.get(href,href)
+            if actual in self.images:
+                if self._hashes.get(actual)==digest:return
                 raise SourceIntegrityError('Original source asset changed during an assembly attempt')
             if not (data.startswith(b'\xff\xd8') or data.startswith(b'\x89PNG\r\n\x1a\n')):
                 raise SourceIntegrityError('Original source renderer did not produce an image')
+            existing=self._image_digests.get(digest)
+            if existing is not None:
+                self.aliases[href]=existing
+                return
             self._zf.writestr(posixpath.join(build_epub.OEBPS,href),data)
+            self._image_digests[digest]=href
             self.images[href]=len(data)
             self.media_types[href]='image/png' if data.startswith(b'\x89PNG') else 'image/jpeg'
             self._hashes[href]=digest
@@ -743,12 +753,17 @@ def package(out_path):
                     for href in self.images:
                         if hashlib.sha256(published.read('OEBPS/'+href)).hexdigest()!=self._hashes[href]:
                             raise ValueError('Package changed admitted image '+href)
-                    if json.loads(published.read(build_epub.SIDECAR_PATH))!=parts['sidecar']:
+                    if json.loads(published.read(build_epub.SIDECAR_PATH))!=json.loads(json.dumps(parts['sidecar'],ensure_ascii=False)):
                         raise ValueError('Package changed admitted disclosure report')
                 os.unlink(backup)
                 return result
             except Exception as error:
-                if fatal(error):raise
+                if fatal(error):
+                    self.abandon()
+                    for candidate in (backup,self.tmp+'.repaired'):
+                        try:os.unlink(candidate)
+                        except FileNotFoundError:pass
+                    raise
                 controller=current()
                 if controller is None:raise
                 controller.events.append(dict(stage='packaging',transition='DETERMINISTIC_SOURCE_REPAIR',
@@ -772,6 +787,14 @@ def package(out_path):
                         fresh.writestr('OEBPS/'+name,parts[key])
                     fresh.writestr('OEBPS/style.css',_proved_styles(parts['sidecar']))
                     for href,text in parts['documents'].items():fresh.writestr('OEBPS/'+href,text)
+                from .image_budget import check
+                try:check(self.source_bytes,os.path.getsize(replacement))
+                except BaseException:
+                    self.abandon()
+                    for candidate in (backup,replacement):
+                        try:os.unlink(candidate)
+                        except FileNotFoundError:pass
+                    raise
                 os.replace(replacement,self.path)
                 if os.path.exists(self.tmp):os.unlink(self.tmp)
                 os.unlink(backup)

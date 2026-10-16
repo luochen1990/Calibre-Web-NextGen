@@ -14,7 +14,7 @@ from html import escape, unescape
 from pathlib import Path
 from . import assemble, build_epub, extract, pipeline, reading_flow, vision_reading
 from .source_display import SourceDisplay
-from . import unit_recovery
+from . import unit_recovery, text_quality
 
 
 def clean_native(page, raw=None):
@@ -30,6 +30,8 @@ def clean_native(page, raw=None):
         return False
     text=page.get_text('text')
     if '\ufffd' in text or any(ord(c)<32 and c not in '\n\r\t' for c in text):
+        return False
+    if text_quality.inspect(text)['needs_read']:
         return False
     raw=raw or extract.read_page(page.parent,page.number)
     return not any(getattr(s,k,False) for b in raw.text_blocks for l in b.lines for s in l.spans
@@ -824,7 +826,8 @@ def _figure_source_context(display,pno,bid,package,image_records,source=None):
     src=source or f'images/{ident}.jpg'
     if source is None:
         writer=getattr(package,'source_image',package.image)
-        writer(src,display.roi_jpeg(display.rect,scale=2,quality=90))
+        writer(src,package.evidence_jpeg(display,display.rect) if hasattr(package,'evidence_jpeg')
+            else display.roi_jpeg(display.rect,scale=2,quality=90))
     image_records[src]=dict(page=pno,bbox=list(display.rect),kind='figure_source_reference')
     figure=(f'<figure><a id="{escape(ref,quote=True)}" class="source-disclosure-ref" '
         f'epub:type="noteref" href="#{escape(ident,quote=True)}">View figure in original page</a></figure>')
@@ -892,7 +895,8 @@ def _recover_native_figures(unavailable,html_native,book,doc,package,images,evid
                 if len(matches)==1:
                     box=list(display.reading_rect(objects[index]['bbox']))
                     retained=f'images/v4-native-source-atom-{pno}-{index}.jpg'
-                    package.image(retained,display.roi_jpeg(box,scale=2,quality=90))
+                    package.image(retained,package.evidence_jpeg(display,box) if hasattr(package,'evidence_jpeg')
+                        else display.roi_jpeg(box,scale=2,quality=90))
                     images[retained]=dict(page=pno,bbox=box,kind='native_source_raster_reference')
                     updated,count=re.subn(carrier,lambda m:m.group(0).replace(src,retained)+figure,
                         html_native[pno])
@@ -1768,7 +1772,7 @@ def _placeholder_display_evidence(tokens,optical,display,box,context,pno,literal
 
 def compile_page(answer,words,display,pno,package,image_records,pixel_words=None,forced_uncertain=(),regions=None,body_owners=None,note_context=None,figure_cases=None):
     vision_reading.validate(answer)
-    body=[];asides=[];alignment=[];marked=0;tokens_count=0
+    body=[];asides=[];alignment=[];marked=0;tokens_count=0;source_quote_suppressions={}
     footnotes={b['id']:b for b in answer['blocks'] if b['role']=='footnote'}
     refs={};extras=[];live_table_cells=[];marker_disclosures=[];marker_repairs=[];pixel_rows=_pixel_row_ids(pixel_words or [])
     for block in answer['blocks']:
@@ -1808,6 +1812,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
         # A footnote label is preserved as a label, outside its lexical reading.
         if role=='footnote' and local and vision_reading.normalized(local[0]['text']).strip('.')==vision_reading.normalized(block['marker']).strip('.'):
             local=local[1:]
+        original=' '.join(w['text'] for w in local)
+        original_quality=text_quality.inspect(original)
         optical_evidence=owned(pixel_words) if pixel_words is not None else None
         punctuation_proof=(_caption_punctuation_anchors(optical_evidence,
             list(range(len(optical_evidence))),block['text'])
@@ -1865,6 +1871,12 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             result['marked']=set(range(len(result['tokens'])))
             result['fallback']=True
             result['guard'].append({'kind':'omitted_pixel_line_recovery'})
+        lost_scripts=text_quality.script_mismatches(block['text'],' '.join(result['tokens']))
+        if lost_scripts:
+            # An English optical fallback cannot replace a reader's non-Latin
+            # passage with Latin lookalikes. Retain original pixels when this
+            # compiler cannot safely bind the reading in its printed script.
+            raise ValueError('Source-script reading lost during alignment: '+', '.join(lost_scripts))
         groups=[]
         for index in sorted(i for i in result['marked'] if not result['tokens'][i].startswith('<n:')):
             if groups and index==groups[-1][-1]+1:groups[-1].append(index)
@@ -1963,11 +1975,16 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                       vision_reading.union(boxes) if len(boxes)==len(endings[index]) else box)
                 # Tight evidence remains in final notes, never an inline word crop.
                 clip=extract.pymupdf.Rect(crop);clip.x0-=2;clip.y0-=2;clip.x1+=2;clip.y1+=2;clip &= display.rect
-                package.image(src,display.jpeg(clip,scale=3,quality=90))
+                package.image(src,package.evidence_jpeg(display,clip) if hasattr(package,'evidence_jpeg') else display.jpeg(clip,scale=3,quality=90))
                 image_records[src]=dict(page=pno,bbox=list(clip),kind='vision_disclosure')
                 label='Uncertain source reading fallback' if result['fallback'] else 'Model reading differs from source layer' if words else 'Low-confidence model reading'
-                original=' '.join(w['text'] for w in local)
-                extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" epub:type="footnote"><p>{label}: {escape(' '.join(result['tokens'][i] for i in endings[index]))}. Source layer: {escape(original)}.</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
+                if original_quality['needs_read']:
+                    source_quote='The text layer is unreliable; consult the original printed reading in the image.'
+                    suppression=source_quote_suppressions.setdefault(bid,dict(block=bid,quality=original_quality,disclosure_count=0))
+                    suppression['disclosure_count']+=1
+                else:
+                    source_quote='Source layer: '+escape(original)+'.'
+                extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" epub:type="footnote"><p>{label}: {escape(' '.join(result['tokens'][i] for i in endings[index]))}. {source_quote}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
                 piece+=f'<a id="{ref}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'
             pieces.append(piece)
         text=''.join(('' if i==0 or i in wraps else ' ')+piece for i,piece in enumerate(pieces) if piece)
@@ -2059,7 +2076,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
     return {'pno':pno,'anchor':f'<span id="pg_{pno:04d}"></span>',
             'body':body,'asides':note_html+extras},dict(blocks=alignment,marks=marked,words=tokens_count,
             unlinked_notes=sorted(set(footnotes)-set(refs)),source_figure_contexts=list((figure_cases or {}).values()),
-            live_table_cells=live_table_cells,note_marker_disclosures=marker_disclosures,note_marker_repairs=marker_repairs)
+            live_table_cells=live_table_cells,note_marker_disclosures=marker_disclosures,note_marker_repairs=marker_repairs,
+            source_quote_suppressions=list(source_quote_suppressions.values()))
 
 
 def bind_geometry(answer,optical,display,regions=None,body_owners=None):
@@ -4462,7 +4480,8 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         doc,book,native,raw_pages=getattr(prepared,'raw_pages',None))
     native_margin_repairs=_native_margin_runs(doc,book,native)
     native_caption_repairs=_native_caption_ownership(doc,book,native)
-    package=unit_recovery.package(out_path);pages=[];records={};images={};html_native={};native_unit_reports={}
+    from . import image_budget
+    package=unit_recovery.package(out_path,source_bytes=image_budget.source_size(doc));pages=[];records={};images={};html_native={};native_unit_reports={}
     try:
         for n in native:
             with unit_recovery.guard(n,'native_page_markup'):
@@ -4542,6 +4561,12 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                          if controller else reader.read(image))
             regions={};body_owners={}
             selected=controller.filter_answer(n,reading['answer']) if controller else reading['answer']
+            with unit_recovery.guard(n,'reading_text_quality'):
+                read_text='\n'.join(b['text'] for b in selected['blocks'] if b['role'] not in ('figure','table'))
+                quality=text_quality.inspect(read_text)
+                missing_scripts=text_quality.script_mismatches(doc[n].get_text('text'),read_text)
+                if quality['needs_read'] or missing_scripts:
+                    raise ValueError('Pixel reading has unresolved text quality: '+', '.join(quality['reasons']+['missing_source_script_'+v for v in missing_scripts]))
             with unit_recovery.guard(n,'geometry'):
                 answer,repairs=bind_geometry(selected,optical,display,regions,body_owners)
             with unit_recovery.guard(n,'note_boundaries'):
@@ -4648,6 +4673,15 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                 r['cached'] for r in records[n]['marker_readings']
                 if r.get('request_dispatched') is not False)
             if progress:progress(n,records[n])
+        # All physical pages, including short notes and headings, are checked.
+        # Failure uses the same source-owned reread/disclosure recovery as any
+        # other rejected reading; no lexical correction is ever performed.
+        quality_sweep=text_quality.sweep_pages(pages,records,numbers)
+        for n,quality in quality_sweep['pages'].items():
+            records[n]['text_quality']=quality
+            if not quality['passed']:
+                with unit_recovery.guard(n,'publication_text_quality'):
+                    raise ValueError('Published page has unresolved text quality: '+', '.join(quality['reasons']))
         # Shared publication handles scoped native IDs, chapter splits and page turns.
         # Vision IDs already include physical page identity, so do not scope twice.
         if controller:
@@ -4758,7 +4792,7 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         for index,src in enumerate(package.images):
             manifest.append({'id':f'im{index}','href':src,'type':package.media_types[src]})
         result={'converter':'vision-page-pilot','version':vision_reading.VERSION,'model':vision_reading.MODEL,
-                'pages':records,'page_homes':homes,'page_joins':joins,'native_pages':native,'vision_pages':scanned,
+                'pages':records,'text_quality':quality_sweep,'page_homes':homes,'page_joins':joins,'native_pages':native,'vision_pages':scanned,
                 'page_seam_decisions':seam_decisions,'page_seam_role_repairs':seam_role_repairs,
                 'source_document_sha256':extract.document_fingerprint(doc),'images':images,
                 'native_margin_repairs':native_margin_repairs,
@@ -4777,6 +4811,9 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         if controller:
             result['degraded_units']=[unit for record in records.values() for unit in record.get('degraded_units',[])]
             controller.decorate_report(result)
+        # Shared image resources retain each disclosure's own identity.
+        result=build_epub._resource_aliases(result,package.aliases)
+        text_quality.validate_sweep(quality_sweep,numbers)
         package.finish({'sidecar':result,'documents':documents,
             'opf':unit_recovery.generated_xml('opf',build_epub._opf,dict(meta,**(metadata or {})),manifest,spine,identifier,datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
                 nonlinear={item for item in spine if item=='about' or item.startswith('native-support-')}),
@@ -4819,11 +4856,13 @@ def _convert_with_recovery(doc,out_path,reader,*,page_numbers=None,provenance=No
     parent=Path(out_path).parent;parent.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.unit-recovery-',dir=parent) as staging:
         controller=unit_recovery.Controller(reader,numbers,staging)
+        from .image_budget import EvidenceRaster
+        source_raster=EvidenceRaster()
         def original_image(n):
             prov=(provenance or {}).get(n,{})
             display=SourceDisplay(doc,n,dict(prov,layer='ocr' if prov.get('space')=='reading' else 'native',
                 original_frame=(original_frames or {}).get(n)))
-            return display.roi_jpeg(display.rect,scale=2,quality=90)
+            return source_raster.jpeg(display,display.rect)
         controller.source_image_provider=original_image
         with unit_recovery.activated(controller):
             while True:

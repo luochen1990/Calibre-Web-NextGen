@@ -277,7 +277,8 @@ def serve(parent, cache_root, control):
                         stage=exc.stage,cause_type=type(exc.cause).__name__)
                 elif context is not None and isinstance(exc, (unit_recovery.SourceIntegrityError,MemoryError,OSError)):
                     failure = dict(kind='native_fatal_error',source_sha256=fingerprint,
-                        cause_type=('OSError' if isinstance(exc,OSError) else type(exc).__name__),
+                        cause_type=('SourceIntegrityError' if isinstance(exc,unit_recovery.SourceIntegrityError)
+                            else 'OSError' if isinstance(exc,OSError) else type(exc).__name__),
                         errno=getattr(exc,'errno',None))
                 reply = {'seq': sequence, 'ok': False, 'value': failure}
             ipc.write_owned(root, 'response.json', reply)
