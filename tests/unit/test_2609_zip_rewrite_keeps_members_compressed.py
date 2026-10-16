@@ -114,6 +114,32 @@ def _streamed_book(path):
         handle.write(stream.buffer.getvalue())
 
 
+def _set_member_flags(path, flags):
+    """Rewrite each deflated member's flag word in both its local and central header.
+
+    Real-world KEPUBs carry deflated members flagged 0x816: UTF-8 names (0x800),
+    the deflate speed option bits (0x6) and bit 4 (0x10). Those bits describe how
+    the data was deflated and do not change its bytes, so a verbatim copy is safe.
+    """
+    with zipfile.ZipFile(path) as archive:
+        infos = [i for i in archive.infolist() if i.compress_type == zipfile.ZIP_DEFLATED]
+        start_dir = archive.start_dir
+    with open(path, "r+b") as handle:
+        data = bytearray(handle.read())
+        for info in infos:
+            struct.pack_into("<H", data, info.header_offset + 6, flags)
+        position = start_dir
+        wanted = {info.header_offset for info in infos}
+        while data[position:position + 4] == b"PK\x01\x02":
+            name_len, extra_len, comment_len = struct.unpack_from("<3H", data, position + 28)
+            offset = struct.unpack_from("<L", data, position + 42)[0]
+            if offset in wanted:
+                struct.pack_into("<H", data, position + 8, flags)
+            position += 46 + name_len + extra_len + comment_len
+        handle.seek(0)
+        handle.write(data)
+
+
 def _raw_member(path, info):
     """The member's compressed bytes, read from its local file header."""
     with open(path, "rb") as handle:
@@ -197,3 +223,17 @@ def test_personal_cover_copy_copies_every_other_member_compressed_bytes_verbatim
         new_cover = out.read("OEBPS/images/cover.jpg")
     assert new_cover != _jpeg("blue")
     _assert_only_member_replaced(source, dest, "OEBPS/images/cover.jpg", new_cover)
+
+
+def test_metadata_embed_copies_real_world_flagged_members_verbatim(tmp_path):
+    source = tmp_path / "flagged.kepub"
+    dest = tmp_path / "out.kepub"
+    _seekable_book(source)
+    _set_member_flags(source, 0x816)
+    with zipfile.ZipFile(source) as src:
+        assert src.testzip() is None
+        assert {i.flag_bits for i in src.infolist() if i.compress_type == zipfile.ZIP_DEFLATED} == {0x816}
+
+    updateEpub(str(source), str(dest), "OEBPS/content.opf", NEW_PACKAGE)
+
+    _assert_only_member_replaced(source, dest, "OEBPS/content.opf", NEW_PACKAGE)
