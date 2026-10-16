@@ -1023,3 +1023,41 @@ def test_literal_replacement_boolean_keeps_the_existing_file_guard(
         assert added.call_args[0][1].options.replace_existing_epub is True
     else:
         added.assert_not_called()
+
+
+@pytest.mark.unit
+def test_same_size_timestamp_replacement_invalidates_the_estimate(
+        mod, monkeypatch, pdf_on_disk):
+    wired = _wire(mod, monkeypatch, pdf_on_disk)
+    path = mod._format_path(wired, "PDF")
+    with open(path, "wb") as handle:
+        handle.write(b"AAAA")
+    stamp = os.stat(path)
+    first = mod._survey_cached(path)
+    first_key = mod._cache_key(path)
+    monkeypatch.setattr(mod, "_survey_uncached", lambda _path: _quote(pages=17, verdict="TEXT_SCAN"))
+    with open(path, "wb") as handle:
+        handle.write(b"BBBB")
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    second = mod._survey_cached(path)
+    assert mod._cache_key(path) != first_key
+    assert first["pages"] == 400
+    assert second["pages"] == 17 and second["cached"] is False
+    assert second["source_sha256"] == mod.extract.document_fingerprint(path)
+    assert mod._survey_cached(path)["cached"] is True
+
+
+@pytest.mark.unit
+def test_estimate_is_not_cached_if_the_source_changes_during_survey(
+        mod, monkeypatch, pdf_on_disk):
+    wired = _wire(mod, monkeypatch, pdf_on_disk)
+    path = mod._format_path(wired, "PDF")
+    def changing_survey(_path):
+        with open(path, "ab") as handle:
+            handle.write(b"changed")
+        return _quote()
+    monkeypatch.setattr(mod, "_survey_uncached", changing_survey)
+    with pytest.raises(ValueError, match="changed"):
+        mod._survey_cached(path)
+    directory = os.path.join(mod.REFLOW_DIR, "estimates")
+    assert not os.path.isdir(directory) or os.listdir(directory) == []

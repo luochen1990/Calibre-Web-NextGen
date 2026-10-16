@@ -149,7 +149,7 @@ def _survey_uncached(path):
         return document.call('survey', {})
 
 
-def _cache_key(path):
+def _cache_key(path, source_sha256=None):
     """The file as it is now, priced by the converter as it is now.
 
     A rebuilt PDF is a different book to price -- and an upgraded converter, or a
@@ -163,27 +163,34 @@ def _cache_key(path):
     restart would miss its own cache.
     """
     stat = os.stat(path)
+    source_sha256 = source_sha256 or extract.document_fingerprint(path)
     priced_by = "\0".join((os.path.abspath(path), build_epub.CONVERTER_VERSION,
-                           model.PRICE_TABLE_MEASURED, source_assessment.VERSION))
+                           model.PRICE_TABLE_MEASURED, source_assessment.VERSION, source_sha256))
     digest = hashlib.sha1(priced_by.encode("utf-8")).hexdigest()[:16]
     return "%s-%d-%d" % (digest, stat.st_size, int(stat.st_mtime))
 
 
-def _cache_file(path):
-    return os.path.join(REFLOW_DIR, "estimates", "%s.json" % _cache_key(path))
+def _cache_file(path, source_sha256=None):
+    return os.path.join(REFLOW_DIR, "estimates", "%s.json" % _cache_key(path, source_sha256))
 
 
 def _survey_cached(path):
-    cached = _cache_file(path)
+    source_sha256 = extract.document_fingerprint(path)
+    cached = _cache_file(path, source_sha256)
     try:
         with open(cached, "r", encoding="utf-8") as handle:
             quote = json.load(handle)
+        if quote.get("source_sha256") != source_sha256:
+            raise ValueError("Cached assessment belongs to another source")
         quote["cached"] = True
         return quote
     except (IOError, OSError, ValueError):
         pass
 
     quote = _offload(path)
+    if extract.document_fingerprint(path) != source_sha256:
+        raise ValueError("Source changed during assessment; refresh the PDF assessment.")
+    quote["source_sha256"] = source_sha256
     quote["cached"] = False
     try:
         os.makedirs(os.path.dirname(cached), exist_ok=True)
