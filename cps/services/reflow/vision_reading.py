@@ -643,6 +643,8 @@ class Reader:
                 if record['image_sha256']!=identity or record['config_sha256']!=config:
                     raise ValueError('Marker cache identity mismatch')
                 return dict(record,cached=True,new_cost_usd=0.)
+            if pending.with_suffix('.rejected').exists():
+                raise model.ModelError('Printed marker request was rejected unbilled; not retried')
             if pending.exists():raise model.UncertainBilling('Unreconciled marker reading; not retried')
             if not self.key:raise model.ModelError('Printed marker absent from offline cache')
             from PIL import Image
@@ -666,8 +668,8 @@ class Reader:
                             'max_price':{'prompt':.1,'completion':.5,'image':0}},'usage':{'include':True}}
             import requests,time
             start=time.monotonic()
-            response=requests.post(model.OPENROUTER_URL,headers={'Authorization':'Bearer '+self.key,
-                'HTTP-Referer':model.REFERER,'X-Title':'CWNG printed note marker'},json=payload,timeout=(30,120))
+            response=self._direct_post(payload,pending,reservation,bound,
+                title='CWNG printed note marker',timeout=(30,120))
             response.raise_for_status();data=response.json();cost=float(data['usage']['cost'])
             if not math.isfinite(cost) or cost<0:raise model.UncertainBilling('Invalid marker bill')
             with self._budget():self.ledger.reconcile_attempt(reservation,cost)
@@ -682,6 +684,51 @@ class Reader:
             record=dict(receipt,**checked(json.loads(choice['message']['content'])))
             temp=path.with_suffix('.tmp');temp.write_text(json.dumps(record));os.replace(temp,path);pending.unlink()
             return dict(record,cached=False,new_cost_usd=cost)
+
+    def _direct_post(self, payload, pending, reservation, bound, *, title, timeout):
+        """Share the common transport's proof rules without retrying a request.
+
+        Only pre-dispatch failures and documented pre-generation refusals can
+        release liability. A terminal receipt prevents rebuilding the same
+        refused request as though it were an unresolved bill or a fresh read.
+        """
+        import requests
+
+        def rejected(reason, status=None):
+            receipt = {'status': 'REJECTED_UNBILLED', 'reservation': reservation,
+                       'bound_usd': bound, 'reason': reason}
+            if status is not None:
+                receipt['http_status'] = status
+            temporary = pending.with_suffix('.rejected.tmp')
+            temporary.write_text(json.dumps(receipt))
+            # Keep the hold if durable terminal bookkeeping itself fails.
+            with self._budget():
+                os.replace(temporary, pending.with_suffix('.rejected'))
+                self.ledger.release_attempt(reservation, reason)
+            pending.unlink()
+
+        try:
+            response = requests.post(model.OPENROUTER_URL,
+                headers={'Authorization': 'Bearer ' + self.key,
+                         'HTTP-Referer': model.REFERER, 'X-Title': title},
+                json=payload, timeout=timeout)
+        except requests.RequestException as error:
+            if model._transport_was_pre_dispatch(error):
+                rejected('pre_dispatch')
+                raise model.ModelError('Reading request failed before dispatch') from error
+            # Preserve callers' transport diagnostics; pending bytes and the
+            # durable bound remain untouched for every ambiguous outcome.
+            raise
+        # Lightweight fake success responses may omit status_code; real requests
+        # responses always carry it. Their existing success parser remains owner.
+        status = getattr(response, 'status_code', 200)
+        if status != 200:
+            if model._rejection_was_pre_generation(response):
+                rejected('rejected_before_generation', status)
+                raise model.ModelError('Reading request rejected before generation: HTTP %s' % status)
+            raise model.UncertainBilling('Reading request may have been accepted: HTTP %s' % status,
+                                         held_usd=bound, attempt=reservation)
+        return response
 
     @contextmanager
     def _budget(self):
@@ -732,6 +779,8 @@ class Reader:
         output_bound=20000 if self.confidence_protocol else 10000
         bound=(prompt_bound*.1+output_bound*.5)/1e6
         pending=path.with_suffix('.pending')
+        if pending.with_suffix('.rejected').exists():
+            raise model.ModelError('Page request was rejected unbilled; not retried')
         if pending.exists():
             # A saved, charged, complete response may have unusable geometry.
             # Recover its transcription WITHOUT another request; coordinates are
@@ -783,8 +832,8 @@ class Reader:
                 'max_price':{'prompt':.1,'completion':.5,'image':0}},'usage':{'include':True}}
         import requests,time
         start=time.monotonic()
-        response=requests.post(model.OPENROUTER_URL,headers={'Authorization':'Bearer '+self.key,
-            'HTTP-Referer':model.REFERER,'X-Title':'CWNG vision page pilot'},json=payload,timeout=(30,240))
+        response=self._direct_post(payload,pending,reservation,bound,
+            title='CWNG vision page reading',timeout=(30,240))
         response.raise_for_status();data=response.json()
         # Save the bill before interpreting the reading, even when it is unusable.
         cost=float(data['usage']['cost'])
