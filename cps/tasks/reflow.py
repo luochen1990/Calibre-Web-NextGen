@@ -82,7 +82,10 @@ class ReflowOptions(object):
         self.cost_cap_usd = _clamp_cap(options.get("cost_cap_usd")) if self.review_mode=="source_verified" else 0.0
         self.include_report_page = options.get("include_report_page", True) is not False
         self.show_cost_in_report = bool(options.get("show_cost_in_report"))
-        self.replace_existing_epub = bool(options.get("replace_existing_epub"))
+        replace = options.get("replace_existing_epub", False)
+        if not isinstance(replace, bool):
+            raise ValueError("replace_existing_epub must be a JSON boolean")
+        self.replace_existing_epub = replace
         # Source recovery: local OCR of picture-only pages and demonstrably
         # damaged scan layers. "auto" recovers both; "textless" only the pages
         # with no text at all (a damaged layer is kept as printed); "off" keeps

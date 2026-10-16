@@ -996,3 +996,30 @@ def test_a_preparation_that_cannot_join_the_line_says_why_in_the_readers_languag
     assert error["code"] == code
     english = {"owner_busy": "You already", "queue_full": "Local source"}[reason]
     assert error["message"] and not error["message"].startswith(english), error["message"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+def test_replacement_consent_requires_a_json_boolean(mod, monkeypatch, pdf_on_disk, value):
+    _wire(mod, monkeypatch, pdf_on_disk, epub=True)
+    resp, added = _start(mod, {"mode": "full", "consent": True,
+                               "replace_existing_epub": value})
+    assert _status(resp) == 400
+    assert _json(resp)["error"]["code"] == "invalid_options"
+    added.assert_not_called()
+    with pytest.raises(ValueError, match="boolean"):
+        mod.tasks_reflow.ReflowOptions({"replace_existing_epub": value})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value,expected", [(False, 409), (True, 202)])
+def test_literal_replacement_boolean_keeps_the_existing_file_guard(
+        mod, monkeypatch, pdf_on_disk, value, expected):
+    _wire(mod, monkeypatch, pdf_on_disk, epub=True)
+    resp, added = _start(mod, {"mode": "full", "consent": True,
+                               "replace_existing_epub": value})
+    assert _status(resp) == expected
+    if value:
+        assert added.call_args[0][1].options.replace_existing_epub is True
+    else:
+        added.assert_not_called()
