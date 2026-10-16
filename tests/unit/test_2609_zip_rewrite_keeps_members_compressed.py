@@ -20,6 +20,7 @@ import os
 import random
 import struct
 import zipfile
+import zlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -237,3 +238,50 @@ def test_metadata_embed_copies_real_world_flagged_members_verbatim(tmp_path):
     updateEpub(str(source), str(dest), "OEBPS/content.opf", NEW_PACKAGE)
 
     _assert_only_member_replaced(source, dest, "OEBPS/content.opf", NEW_PACKAGE)
+
+
+def _overlapping_archive(path, members=20, blob_size=256 * 1024):
+    """Every member's claimed data runs to the end of one shared blob.
+
+    The central directory is valid, so a copier that trusts each member's
+    compressed size would copy the blob once per member: a small upload would
+    become a delivery many times its size.
+    """
+    names = [b"m%03d" % i for i in range(members)]
+    blob = random.Random(5).randbytes(blob_size)
+    end = sum(30 + len(n) for n in names) + len(blob)
+
+    def build(crcs):
+        body, central, offset = b"", b"", 0
+        for i, name in enumerate(names):
+            size = end - (offset + 30 + len(name))
+            crc = crcs[i] if crcs else 0
+            body += struct.pack("<4s5H3L2H", b"PK\x03\x04", 20, 0, 0, 0, 0x21, crc, size, size, len(name), 0) + name
+            central += struct.pack("<4s6H3L5H2L", b"PK\x01\x02", 20, 20, 0, 0, 0, 0x21, crc, size, size,
+                                   len(name), 0, 0, 0, 0, 0, offset) + name
+            offset += 30 + len(name)
+        return body + blob, central
+
+    body, _ = build(None)
+    crcs, start = [], 0
+    for name in names:
+        start += 30 + len(name)
+        crcs.append(zlib.crc32(body[start:]))
+    body, central = build(crcs)
+    eocd = struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, members, members, len(central), len(body), 0)
+    path.write_bytes(body + central + eocd)
+
+
+def test_overlapping_member_ranges_are_not_copied_once_per_member(tmp_path):
+    source = tmp_path / "overlap.kepub"
+    dest = tmp_path / "out.kepub"
+    _overlapping_archive(source)
+
+    try:
+        updateEpub(str(source), str(dest), "OEBPS/content.opf", NEW_PACKAGE)
+    except zipfile.BadZipFile:
+        pass  # refusing the archive is fine; amplifying it is not
+
+    written = dest.stat().st_size if dest.exists() else 0
+    assert written <= source.stat().st_size + 64 * 1024, (
+        "a %d-byte archive produced %d bytes" % (source.stat().st_size, written))
