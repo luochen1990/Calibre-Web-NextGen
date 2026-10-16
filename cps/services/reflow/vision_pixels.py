@@ -396,6 +396,8 @@ def parenthetical_ink(display,box,neighbours=()):
     if not baselines or box[1]+bottom*sy>=min(baselines)-max(.7,height*sy*.1):return None
     return {'bbox':[box[0]+left[0]*sx,box[1]+min(top,left[1])*sy,
                     box[0]+right[2]*sx,box[1]+max(left[3],right[3])*sy],
+            'inner_bbox':[box[0]+min(b[0] for b in inner)*sx,box[1]+top*sy,
+                          box[0]+max(b[2] for b in inner)*sx,box[1]+bottom*sy],
             'method':'raised_inner_connected_source_ink'}
 
 
@@ -503,7 +505,7 @@ def raised_markers(display, box, cache):
     pix=display.pixmap(box,scale=6,max_pixels=3_000_000)
     data=pix.tobytes('png');identity=hashlib.sha256(data+json.dumps(list(box)).encode()).hexdigest()
     root=Path(cache);root.mkdir(parents=True,exist_ok=True)
-    target=root/('raised-character-v6-'+identity+'.json')
+    target=root/('raised-character-v7-'+identity+'.json')
     if target.exists():return json.loads(target.read_text())
     engine=shutil.which('tesseract')
     if not engine:raise RuntimeError('Printed note references require local pixel recognition')
@@ -528,6 +530,30 @@ def raised_markers(display, box, cache):
         neighbours=[b for c,b in chars if c.isalpha() and abs(b[3]-left[3])<paren_height*.4
                     and abs(b[0]-left[0])<paren_height*12]
         baseline=statistics.median(b[3] for b in neighbours) if neighbours else min(left[3],right[3])
+        if not (height<paren_height*.75 and bottom<baseline-max(.7,paren_height*.18)):
+            # Character segmentation may merge a raised digit with a full-height
+            # parenthesis. Those boxes cannot establish its role. Measure the
+            # original connected ink and adjacent prose baselines instead, then
+            # recognize only the independently bounded inner glyphs.
+            territory=[left[0],min(left[1],right[1],top),
+                       right[2],max(left[3],right[3],bottom)]
+            evidence=parenthetical_ink(display,territory,neighbours)
+            if evidence:
+                from PIL import Image,ImageOps
+                inner=evidence['inner_bbox']
+                crop=display.roi_pixmap([inner[0]-.5,inner[1]-.5,
+                                       inner[2]+.5,inner[3]+.5],
+                                      scale=12,max_pixels=200_000)
+                picture=Image.open(io.BytesIO(crop.tobytes('png'))).convert('L')
+                stream=io.BytesIO();ImageOps.expand(picture,border=24,fill=255).save(stream,'PNG')
+                reply=subprocess.run([engine,'stdin','stdout','-l','eng','--psm','7',
+                                      '-c','tessedit_char_whitelist=0123456789'],
+                    input=stream.getvalue(),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+                label=reply.stdout.decode().strip()
+                if reply.returncode==0 and re.fullmatch(r'\d{1,4}',label):
+                    result.append({'label':label,'bbox':inner,
+                                   'method':'raised_inner_connected_source_ink'})
+            continue
         if height<paren_height*.75 and bottom<baseline-max(.7,paren_height*.18):
             label=match[1]
             if not label.isdigit():
