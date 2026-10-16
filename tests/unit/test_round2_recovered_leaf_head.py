@@ -1,5 +1,10 @@
 """Independent residual recovered-head controls; all source prose is invented."""
 import pytest
+import shutil
+
+# Needs the local OCR engine the image ships; without it pages degrade to
+# their retained source image.
+real_ocr = pytest.mark.skipif(not shutil.which('tesseract'), reason='needs installed OCR engine')
 if __package__:
     from .test_round2_assembly import answer, block, optical, convert
 else:
@@ -43,6 +48,7 @@ def test_no_neighbor_recovery_follows_last_body_in_ragged_source_column(tmp_path
     assert body==[earlier,left+' '+missing,later],'A wider earlier paragraph cannot own the next-leaf source head'
 
 
+@real_ocr
 @pytest.mark.parametrize('position',['footer','in_flow'])
 def test_recovered_head_respects_printed_note_geometry(tmp_path,monkeypatch,position):
     left='Quiet travelers carry useful baskets along northern roads while patient workers prepare ordinary tools beside the'

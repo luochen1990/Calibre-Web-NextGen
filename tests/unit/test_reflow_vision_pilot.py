@@ -6,6 +6,7 @@ inspect the final EPUB, rather than trusting internal counters or HTML snippets.
 import io
 import json
 import posixpath
+import shutil
 import zipfile
 from xml.etree import ElementTree as ET
 
@@ -20,6 +21,10 @@ from cps.services.reflow.source_display import SourceDisplay
 
 pytestmark = pytest.mark.unit
 NS = {'x': 'http://www.w3.org/1999/xhtml'}
+# The converter's pixel guard runs the local OCR engine the image ships. Without
+# it each page degrades to its retained source image, so these assertions about
+# live text cannot hold.
+real_ocr = pytest.mark.skipif(not shutil.which('tesseract'), reason='needs installed OCR engine')
 
 
 def block(text, *, ident='b1', role='body', marker='', bbox=(50, 50, 950, 600),
@@ -228,6 +233,7 @@ def assert_links_resolve(docs):
             assert any(n.get('id') == target_id for n in docs[target].iter()), href
 
 
+@real_ocr
 def test_final_epub_note_and_disclosure_links_resolve_without_body_crops(tmp_path):
     doc = scanned_doc()
     reader = SyntheticReader(answer(
@@ -256,6 +262,7 @@ def test_final_epub_note_and_disclosure_links_resolve_without_body_crops(tmp_pat
     assert set(i['kind'] for i in result['images'].values()) == {'figure', 'vision_disclosure'}
 
 
+@real_ocr
 @pytest.mark.parametrize('continuation', [True, False])
 def test_explicit_page_turn_flags_control_paragraph_joining(tmp_path, continuation):
     # Capitals may begin a true continuation; lowercase can begin a separate paragraph.
@@ -335,6 +342,7 @@ def test_sparse_layer_outside_body_cannot_erase_unmapped_model_paragraph(tmp_pat
         doc.close()
 
 
+@real_ocr
 def test_converter_uses_reader_only_for_scanned_page_and_keeps_native_live(tmp_path):
     doc = pymupdf.open()
     page = doc.new_page(width=300, height=400)
@@ -944,6 +952,7 @@ def test_landscape_optical_tiles_keep_right_leaf_coordinates_and_avoid_old_cache
     assert json.loads(old_cache.read_text())[0]['text'] == 'old-incomplete-leaf'
 
 
+@real_ocr
 @pytest.mark.parametrize('role', ['figure', 'table', 'heading', 'caption'])
 @pytest.mark.parametrize('at_left_end', [True, False])
 def test_page_turn_continuation_flags_cannot_move_intervening_source_structure(tmp_path, role, at_left_end):
@@ -1140,6 +1149,7 @@ def test_saved_complete_literal_confidence_decodes_without_rebill_after_interrup
     assert len(calls) == 1 and Ledger(path, .05).spent() == pytest.approx(.0004)
 
 
+@real_ocr
 @pytest.mark.parametrize('disclosure_affix', [False, True])
 def test_model_continued_hyphen_keeps_literal_hyphen_without_space_or_broken_disclosure(tmp_path, disclosure_affix):
     from cps.services.reflow import reading_flow
@@ -1206,6 +1216,7 @@ def test_descriptive_image_confidence_still_requires_a_string_array(tmp_path, ro
         reader._answer(raw)
 
 
+@real_ocr
 def test_printed_note_reference_is_transparent_to_literal_hyphen_continuation(tmp_path):
     from cps.services.reflow import reading_flow
     doc = scanned_doc(2)

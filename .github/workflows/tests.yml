@@ -132,7 +132,9 @@ jobs:
           # lua5.4 runs the cwngsync KOReader plugin's own test suites. They are
           # pure logic with no KOReader imports and had no CI runner until now,
           # so the plugin's sync-safety logic was gated by nothing (#920).
-          sudo apt-get install -y libldap2-dev libsasl2-dev libssl-dev gettext lua5.4
+          # tesseract-ocr is the OCR engine the image ships (Dockerfile). Without
+          # it the converter's real-OCR tests skip, so CI never ran them.
+          sudo apt-get install -y libldap2-dev libsasl2-dev libssl-dev gettext lua5.4 tesseract-ocr
 
       - name: Install dependencies
         run: |

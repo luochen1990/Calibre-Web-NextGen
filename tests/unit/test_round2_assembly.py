@@ -13,8 +13,13 @@ from xml.etree import ElementTree as ET
 
 import pymupdf
 import pytest
+import shutil
 from PIL import Image, ImageDraw
 from cps.services.reflow import build_epub, vision_pipeline, vision_pixels
+
+# Needs the local OCR engine the image ships; without it pages degrade to
+# their retained source image.
+real_ocr = pytest.mark.skipif(not shutil.which('tesseract'), reason='needs installed OCR engine')
 
 NS = {'x': 'http://www.w3.org/1999/xhtml'}
 LEFT = 'Quiet travelers approach the old bridge-'
@@ -152,6 +157,7 @@ def test_valid_overbroad_bbox_cannot_replace_corroborated_model_with_neighbor_wo
     assert body==[text,OTHER],f'Ownership contamination duplicated or replaced prose: {body!r}'
 
 
+@real_ocr
 def test_explicit_reference_binds_misclassified_separate_printed_note_outside_body(tmp_path,monkeypatch):
     """Explicit source note identity plus margin territory outranks mistaken body role."""
     text='Quiet travelers<n:n1> reach the northern village.';note='A short printed explanation.'
@@ -179,6 +185,7 @@ def test_bottom_body_paragraph_without_reference_is_not_guessed_into_notes(tmp_p
     assert not any(a.get('class')=='noteref' for root in documents.values() for a in root.findall('.//x:a',NS))
 
 
+@real_ocr
 def test_correctly_labeled_printed_note_resolves_and_returns_without_body_note_prose(tmp_path,monkeypatch):
     text='Quiet travelers<n:n1> reach the northern village.';note='A short printed explanation.'
     pixels=optical('Quiet travelers reach the northern village.',20,80)+optical('1 '+note,20,340)
@@ -240,6 +247,7 @@ def test_leaf_continuation_ignores_only_recognized_page_furniture(tmp_path,monke
     assert body==[LEFT+RIGHT],'Recognized running heads/folios cannot break a source body continuation'
 
 
+@real_ocr
 def test_actual_margin_note_below_left_tail_does_not_break_leaf_sentence_or_leak_note_prose(tmp_path,monkeypatch):
     note='A short printed explanation.'
     pixels=optical(LEFT,20,280)+optical('1 '+note,20,340)+optical(RIGHT,320,30)
@@ -253,6 +261,7 @@ def test_actual_margin_note_below_left_tail_does_not_break_leaf_sentence_or_leak
     assert any(note in ''.join(a.itertext()) and a.findall('.//x:a',NS) for root in documents.values() for a in root.findall('.//x:aside',NS))
 
 
+@real_ocr
 def test_whole_block_source_fallback_cannot_absorb_an_already_owned_printed_note(tmp_path,monkeypatch):
     """A hallucinated broad body block falls back within body source ownership only."""
     body_source='The genuine printed paragraph follows quiet rivers past ordinary villages before sunset.'
