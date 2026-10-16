@@ -47,6 +47,21 @@ def check(source_bytes, output_bytes):
     return report
 
 
+def native_evidence(display, rect):
+    """Use exact native bits only after complete visible-page proof.
+
+    Prepared pages with an original-frame mapping must use the original ROI
+    renderer instead. Keeping that boundary prevents a prepared bitmap from
+    replacing the original source selected by its provenance record.
+    """
+    if getattr(display, 'provenance', {}).get('original_frame') is not None:
+        return None
+    prove = getattr(display, '_native_bitonal', None)
+    if prove is None or prove() is None:
+        return None
+    return display.source_image(rect)
+
+
 class EvidenceRaster:
     """Reuse a bounded original page, never a recognition or reconstructed page."""
     def __init__(self):
@@ -71,6 +86,9 @@ class EvidenceRaster:
                     raise SourceIntegrityError('Original source frame identity changed')
             except (OSError, KeyError, TypeError) as error:
                 raise SourceIntegrityError('Invalid original source frame provenance') from error
+        native = native_evidence(display, reading)
+        if native is not None:
+            return native
         identity = (id(display.doc), display.pno, display.angle,
                     tuple(display.rect), repr(display.provenance.get('original_frame')))
         if self.identity != identity:

@@ -201,3 +201,88 @@ def test_deduplicated_image_alias_cannot_be_rendered_again(tmp_path):
         assert 'images/b.jpg' not in package.images
     finally:
         package.abandon()
+
+
+def _procedural_bilevel_page():
+    """Draw every source bit locally; no captured page, font or OCR input."""
+    from PIL import ImageDraw
+    pixels=Image.new('1',(1200,1500),1)
+    draw=ImageDraw.Draw(pixels)
+    # Small repeated glyph-like marks include one-pixel strokes. Exact sample
+    # comparison below proves these stay legible without asking a recognizer.
+    for y in range(30,1450,26):
+        for x in range(25,1150,17):
+            draw.rectangle((x,y,x+2,y+12),fill=0)
+            draw.line((x,y,x+9,y),fill=0,width=2)
+            draw.line((x,y+6,x+7,y+6),fill=0,width=1)
+            if (x//17+y//26)%3==0:
+                draw.rectangle((x+7,y+1,x+9,y+12),fill=0)
+    # Distinct outer-corner marks prove the whole page was retained.
+    draw.rectangle((0,0,8,8),fill=0)
+    draw.line((1190,1499,1199,1490),fill=0,width=1)
+    stream=io.BytesIO();pixels.save(stream,format='PNG',optimize=True)
+    doc=pymupdf.open();page=doc.new_page(width=400,height=500)
+    page.insert_image(page.rect,stream=stream.getvalue())
+    return doc,pixels
+
+
+def test_bilevel_source_contexts_share_one_exact_small_original(tmp_path):
+    import zlib
+    from cps.services.reflow import unit_source,unit_recovery
+    from cps.services.reflow.source_display import SourceDisplay
+    doc,pixels=_procedural_bilevel_page()
+    package=unit_recovery.package(tmp_path/'bitonal-context.epub')
+    try:
+        display=SourceDisplay(doc,0)
+        original_jpeg=display.roi_jpeg(display.rect,scale=2,quality=90)
+        images={}
+        first=unit_source.source_unit(display,0,'first','body',package,images,
+            'Synthetic unresolved region')[2]
+        second=unit_source.source_unit(display,0,'second','footnote',package,images,
+            'Another synthetic unresolved region')[2]
+        assert first['source_image']==second['source_image']
+        assert len(package.images)==1
+        href=first['source_image']
+        encoded=package._zf.read('OEBPS/'+href)
+        with Image.open(io.BytesIO(encoded)) as actual:
+            assert actual.format=='PNG'
+            assert actual.size==pixels.size
+            assert actual.convert('L').tobytes()==pixels.convert('L').tobytes()
+        # Compare packaged bytes, not only the encoders' uncompressed lengths.
+        actual_bytes=package._zf.getinfo('OEBPS/'+href).compress_size
+        legacy_bytes=len(zlib.compress(original_jpeg,6))
+        assert actual_bytes*8 < legacy_bytes
+        assert actual_bytes < 16*1024
+    finally:
+        package.abandon();doc.close()
+
+
+def test_bilevel_original_and_enlarged_detail_preserve_every_source_pixel(tmp_path):
+    import zlib
+    from cps.services.reflow.image_budget import EVIDENCE_PIXELS
+    from cps.services.reflow.source_display import SourceDisplay
+    doc,pixels=_procedural_bilevel_page()
+    package=build_epub._Package(tmp_path/'bitonal-details.epub')
+    try:
+        display=SourceDisplay(doc,0);detail=pymupdf.Rect(20,20,180,80)
+        old_whole=display.roi_jpeg(display.rect,scale=2,quality=90)
+        old_detail=display.roi_jpeg(detail,scale=3,quality=90)
+        package.disclosure_image('images/full.jpg',display,display.rect)
+        package.disclosure_image('images/detail.jpg',display,detail)
+        assert len(package.images)==2
+        expected={'images/full.jpg':pixels,'images/detail.jpg':pixels.crop((60,60,540,240))}
+        total=0
+        for requested,source in expected.items():
+            href=package.aliases.get(requested,requested)
+            encoded=package._zf.read('OEBPS/'+href)
+            with Image.open(io.BytesIO(encoded)) as actual:
+                assert actual.format=='PNG'
+                assert actual.size==source.size
+                assert actual.width*actual.height <= EVIDENCE_PIXELS
+                assert actual.convert('L').tobytes()==source.convert('L').tobytes()
+            total+=package._zf.getinfo('OEBPS/'+href).compress_size
+        legacy_total=sum(len(zlib.compress(data,6)) for data in (old_whole,old_detail))
+        assert total*8 < legacy_total
+        assert total < 20*1024
+    finally:
+        package.abandon();doc.close()
