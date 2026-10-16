@@ -172,6 +172,23 @@ def inspect(text, *, lexicon=None):
         reasons=reasons, needs_read=bool(reasons))
 
 
+def inspect_disclosure(text, *, lexicon=None):
+    """Check short purported readings excluded from the page's word inventory.
+
+    An uncertainty note or image description cannot use the forty-word page
+    minimum to publish a dense fragment of unrecognized text. Three eligible
+    Latin words suffice here; non-Latin scripts remain outside English misses.
+    Rejection retains original pixels rather than guessing replacement words.
+    """
+    metric = inspect(text, lexicon=lexicon)
+    if (metric['latin_words'] >= MIN_CASE_WORDS
+            and metric['dictionary_miss_rate'] >= MISS_RATE):
+        if 'short_disclosure_dictionary_misses' not in metric['reasons']:
+            metric['reasons'].append('short_disclosure_dictionary_misses')
+        metric['needs_read'] = True
+    return metric
+
+
 def script_mismatches(source, reading):
     """Reject a reading that loses a source-proven non-Latin passage's script.
 

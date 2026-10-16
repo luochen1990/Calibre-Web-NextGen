@@ -1795,6 +1795,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     source_bound_art=role=='figure' or vision_pixels.table_rules(display,box),
                     degraded_source_context=True,continues_previous=False,continues_next=False))
                 continue
+            if text_quality.inspect_disclosure(block['text'])['needs_read']:
+                raise ValueError('Unreliable image description requires original source disclosure')
             src=f'images/vision_p{pno:04d}_{bid}.jpg'
             package.image(src,display.jpeg(box,scale=2,quality=88))
             image_records[src]=dict(page=pno,bbox=box,kind='figure' if role=='figure' else 'table')
@@ -1813,7 +1815,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
         if role=='footnote' and local and vision_reading.normalized(local[0]['text']).strip('.')==vision_reading.normalized(block['marker']).strip('.'):
             local=local[1:]
         original=' '.join(w['text'] for w in local)
-        original_quality=text_quality.inspect('\n'.join(
+        original_quality=text_quality.inspect_disclosure('\n'.join(
             ' '.join(w['text'] for w in row) for row in _pixel_lines(local)))
         optical_evidence=owned(pixel_words) if pixel_words is not None else None
         punctuation_proof=(_caption_punctuation_anchors(optical_evidence,
@@ -1880,6 +1882,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             # passage with Latin lookalikes. Retain original pixels when this
             # compiler cannot safely bind the reading in its printed script.
             raise ValueError('Source-script reading lost during alignment: '+', '.join(lost_scripts))
+        if ((result['fallback'] or result['marked'])
+                and text_quality.inspect_disclosure(compiled_reading)['needs_read']):
+            raise ValueError('Unreliable chosen reading requires original source disclosure')
         groups=[]
         for index in sorted(i for i in result['marked'] if not result['tokens'][i].startswith('<n:')):
             if groups and index==groups[-1][-1]+1:groups[-1].append(index)
@@ -1971,6 +1976,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     note_context['refs'].setdefault(owner,[]).append(ref);start=b
                 piece=''.join(parts)+escape(token[start:])
             if index in endings:
+                chosen_reading=' '.join(result['tokens'][i] for i in endings[index])
+                if text_quality.inspect_disclosure(chosen_reading)['needs_read']:
+                    raise ValueError('Unreliable chosen reading requires original source disclosure')
                 marked+=1;ident=f'v4-d-{pno}-{bid}-{index}';ref='r-'+ident
                 src=f'images/{ident}.jpg'
                 boxes=[evidence_boxes[i] for i in endings[index] if i in evidence_boxes]
