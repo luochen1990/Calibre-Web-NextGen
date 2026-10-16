@@ -2632,8 +2632,14 @@ def _original_evidence(book, page_html, doc, package, figure_transform=None,
                 finally:
                     package._deduplicate_evidence = False
             def display_evidence(rect):
-                return (package.evidence_jpeg(display,rect)
-                        if hasattr(package,'evidence_jpeg') else display.source_image(rect))
+                # Lossless native pixels and their source predicates are an
+                # existing evidence contract. Preserve them exactly; only lossy
+                # display copies use the bounded shared inspection encoder.
+                data=display.source_image(rect,scale=2 if pno in native_figures else 3,
+                    lossless_candidate=pno not in native_figures)
+                if data.startswith(b'\x89PNG\r\n\x1a\n') or not hasattr(package,'evidence_jpeg'):
+                    return data
+                return package.evidence_jpeg(display,rect,detail=True)
             source_edges = None
             def reading_crop(rect, data):
                 # Primary artwork and its enlarged inspection must agree. The full
@@ -2663,7 +2669,8 @@ def _original_evidence(book, page_html, doc, package, figure_transform=None,
                     rect.y0+rect.height*y1/height)
                 return retained, data, edge_audit + trims
             full = "images/original_p%04d.jpg" % pno
-            package_source_image(full, display_evidence(display.rect))
+            package_source_image(full, display.source_image(scale=1.5, quality=85,
+                                                            lossless_candidate=pno not in native_figures))
             details = []
             for entry in readings.get(pno,{}).get('entries',[]):
                 src='images/original_p%04d_%s.jpg' % (pno,entry['id'])
@@ -3366,11 +3373,11 @@ class _Package(object):
             self.abandon()
             raise
 
-    def evidence_jpeg(self, display, rect):
+    def evidence_jpeg(self, display, rect, *, detail=False):
         from .image_budget import EvidenceRaster
         if not hasattr(self, '_evidence_raster'):
             self._evidence_raster = EvidenceRaster()
-        return self._evidence_raster.jpeg(display, rect)
+        return self._evidence_raster.jpeg(display, rect, detail=detail)
 
     def image(self, href, data, *, store=False, deduplicate=False):
         requested=href

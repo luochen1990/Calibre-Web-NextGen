@@ -54,7 +54,7 @@ class EvidenceRaster:
         self.image = None
         self.preview = None
 
-    def jpeg(self, display, rect):
+    def jpeg(self, display, rect, *, detail=False):
         from PIL import Image
         from . import extract
         reading = extract.pymupdf.Rect(rect) & display.rect
@@ -81,7 +81,7 @@ class EvidenceRaster:
             pix = display.roi_pixmap(scale=scale, max_pixels=EVIDENCE_PIXELS)
             self.image = Image.frombytes('RGB', (pix.width, pix.height), pix.samples)
             self.identity = identity
-        whole = tuple(reading) == tuple(display.rect)
+        whole = not detail and tuple(reading) == tuple(display.rect)
         if whole and self.preview is not None:
             return self.preview
         image = self.image
@@ -101,7 +101,7 @@ class EvidenceRaster:
             crop = Image.frombytes('RGB', (pix.width,pix.height), pix.samples)
         # Broad context is a page preview. Tight details retain the full frame's
         # resolution; a reader can inspect small printed marks without upscaling.
-        if reading.get_area() >= display.rect.get_area() / 4:
+        if not detail and reading.get_area() >= display.rect.get_area() / 4:
             crop.thumbnail((max(1, math.ceil(reading.width*2)),
                             max(1, math.ceil(reading.height*2))), Image.Resampling.LANCZOS)
         r, g, b = crop.split()
