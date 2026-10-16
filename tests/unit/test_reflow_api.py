@@ -1061,3 +1061,18 @@ def test_estimate_is_not_cached_if_the_source_changes_during_survey(
         mod._survey_cached(path)
     directory = os.path.join(mod.REFLOW_DIR, "estimates")
     assert not os.path.isdir(directory) or os.listdir(directory) == []
+
+
+@pytest.mark.unit
+def test_assessment_never_pairs_old_findings_with_a_new_content_fingerprint(
+        mod, monkeypatch, pdf_on_disk):
+    book = _wire(mod, monkeypatch, pdf_on_disk)
+    source = mod._format_path(book, "PDF")
+    previous = mod.extract.document_fingerprint(source)
+    def stale_survey(_path):
+        with open(source, "ab") as handle:
+            handle.write(b"new source")
+        return dict(_quote(), source_sha256=previous)
+    monkeypatch.setattr(mod, "_survey", stale_survey)
+    with pytest.raises(ValueError, match="changed"):
+        mod._estimate_payload(book, source)

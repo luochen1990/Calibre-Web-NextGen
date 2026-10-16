@@ -163,7 +163,7 @@ def _cache_key(path, source_sha256=None):
     restart would miss its own cache.
     """
     stat = os.stat(path)
-    source_sha256 = source_sha256 or extract.document_fingerprint(path)
+    source_sha256 = source_sha256 or _fingerprint(path)
     priced_by = "\0".join((os.path.abspath(path), build_epub.CONVERTER_VERSION,
                            model.PRICE_TABLE_MEASURED, source_assessment.VERSION, source_sha256))
     digest = hashlib.sha1(priced_by.encode("utf-8")).hexdigest()[:16]
@@ -175,7 +175,7 @@ def _cache_file(path, source_sha256=None):
 
 
 def _survey_cached(path):
-    source_sha256 = extract.document_fingerprint(path)
+    source_sha256 = _fingerprint(path)
     cached = _cache_file(path, source_sha256)
     try:
         with open(cached, "r", encoding="utf-8") as handle:
@@ -188,7 +188,7 @@ def _survey_cached(path):
         pass
 
     quote = _offload(path)
-    if extract.document_fingerprint(path) != source_sha256:
+    if _fingerprint(path) != source_sha256:
         raise ValueError("Source changed during assessment; refresh the PDF assessment.")
     quote["source_sha256"] = source_sha256
     quote["cached"] = False
@@ -426,6 +426,8 @@ def _estimate_payload(book, source):
     # complete source preparation and the actual two-stage request serializers.
     quote=_survey(source);engine=_ocr_engine_state('eng')
     pages=int(quote.get('pages') or 0);fingerprint=_fingerprint(source)
+    if quote.get('source_sha256') not in (None, fingerprint):
+        raise ValueError('Source changed after assessment; refresh the PDF assessment.')
     return {
         'book_id':book.id,'title':book.title,'verdict':quote.get('verdict',''),
         'pages':pages,'text_layer':bool(quote.get('text_layer')),
