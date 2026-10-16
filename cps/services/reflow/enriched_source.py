@@ -123,6 +123,47 @@ def _image_owned_records(book,pno,provenance,records):
     return art,qualified
 
 
+def _uncertainty_ranges(book, pno, provenance, records, html, mapping):
+    """Bind original-coordinate confidence to one surviving source block.
+
+    Equal words within that block still lack occurrence evidence and remain
+    unplaced. Reading-order guesses and page-global token ordinals are unsafe
+    after furniture, captions and note markers have been separated.
+    """
+    from . import build_epub, extract
+    from .heading_evidence import _valid, _inside
+
+    angle = provenance.get('orientation', 0)
+    frame = provenance.get('page_rect')
+    if angle not in (0, 90, 180, 270) or (angle and not _valid(frame)):
+        return {}
+    matrix = extract.pymupdf.Matrix(1, 1).prerotate(angle)
+    origin = extract.pymupdf.Rect(frame) * matrix if _valid(frame) else extract.pymupdf.Rect()
+    blocks, offsets, cursor = build_epub.split_blocks(html), {}, 0
+    for index, block in enumerate(blocks):
+        start = html.find(block, cursor)
+        if start < 0:
+            return {}
+        offsets[index] = (start, start + len(block))
+        cursor = start + len(block)
+    result = {}
+    for index, record in enumerate(records):
+        box = record.get('source_bbox')
+        if not _valid(box):
+            continue
+        mapped = extract.pymupdf.Rect(box) * matrix
+        mapped = (mapped.x0 - origin.x0, mapped.y0 - origin.y0,
+                  mapped.x1 - origin.x0, mapped.y1 - origin.y0)
+        owners = [i for i, element in enumerate(book.pages[pno])
+                  if element.kind in ('p', 'h', 'caption') and _valid(element.bbox)
+                  and _inside(mapped, element.bbox)
+                  and (not element.line_boxes or any(_valid(line) and _inside(mapped, line)
+                                                    for line in element.line_boxes))]
+        if len(owners) == 1 and owners[0] in mapping:
+            result[index] = offsets[mapping[owners[0]]]
+    return result
+
+
 def prepare_source_page(book, pno, provenance, records=()):
     """Capture actual Recovery provenance/records; callers regenerate on replay.
 
@@ -146,7 +187,10 @@ def prepare_source_page(book, pno, provenance, records=()):
     artwork,qualified=_image_owned_records(book,pno,provenance,normalized)
     excluded=set(artwork+qualified)
     active=[i for i in range(len(normalized)) if i not in excluded]
-    html, _, marked, placements = annotate.annotate_page(html,[normalized[i] for i in active],with_placements=True)
+    active_records = [normalized[i] for i in active]
+    source_ranges = _uncertainty_ranges(book, pno, provenance, active_records, html, mapping)
+    html, _, marked, placements = annotate.annotate_page(
+        html, active_records, with_placements=True, source_ranges=source_ranges)
     placed=[active[i] for i in placements]
     report = {'version': VERSION, 'records_sha256': _digest(raw), 'raw_records': len(raw),
               'normalized_raw_indices': [i for i, r in enumerate(raw) if annotate.uncertain_record(r) is not None],
