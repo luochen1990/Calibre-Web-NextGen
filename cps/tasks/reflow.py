@@ -231,13 +231,38 @@ class TaskReflowPdf(CalibreTask):
 
     def run(self, worker_thread):
         try:
+            # Establish owner-scoped durable state before database lookup, file
+            # checks, or native work. A queued source may disappear or change.
+            self._job_ledger = ledger_mod.Ledger(
+                os.path.join(reflow_dir("jobs", str(self.book_id)),
+                             "%s.jsonl" % self.job_id),
+                cap_usd=self.options.cost_cap_usd, job_id=self.job_id)
+            self._job_ledger.record({"kind": "job", "event": "start",
+                                     "user_id": self.user_id, "mode": self.options.mode,
+                                     "cap_usd": self.options.cost_cap_usd}, durable=True)
             self._run(worker_thread)
+        except Exception as exc:
+            log.error_or_exception(exc)
+            self._handleError(str(exc))
         finally:
             # The book's admission reservation ends with the task, however it ends
             # -- success, failure, or cancel. A task cancelled while still queued
             # never reaches this method; its entry is evicted by the next admission
             # attempt, which reads the task's terminal state (admission.reserve).
             admission.release(self.book_id, self)
+
+    def _handleError(self, error_message):
+        # Persist before setting the terminal state: queue cleanup and process
+        # restarts must not erase the reason or leave an older success newest.
+        try:
+            ledger = getattr(self, "_job_ledger", None)
+            if ledger is not None:
+                ledger.record({"kind": "job", "event": "finish", "status": "failed",
+                               "error": str(error_message)[:500]}, durable=True)
+        except Exception as exc:                                   # pragma: no cover
+            log.error_or_exception(exc)
+        finally:
+            super(TaskReflowPdf, self)._handleError(error_message)
 
     def _run(self, worker_thread):
         from ..services.reflow.native_ipc import NativeDocument
@@ -275,6 +300,7 @@ class TaskReflowPdf(CalibreTask):
                 os.path.join(reflow_dir("jobs", str(self.book_id)),
                              "%s.jsonl" % self.job_id),
                 cap_usd=self.options.cost_cap_usd, job_id=self.job_id, **shared)
+            self._job_ledger = ledger
             cache = pipeline.PageCache(reflow_dir("cache"))
             client = make_client(self.options.review_mode)
 
@@ -355,12 +381,6 @@ class TaskReflowPdf(CalibreTask):
             return self._finish_cancelled()
         except Exception as exc:                                  # noqa: BLE001
             log.error_or_exception(exc)
-            if ledger is not None:
-                try:
-                    ledger.record({"kind": "job", "event": "finish", "status": "failed",
-                                   "error": str(exc)[:500]})
-                except Exception:                                 # pragma: no cover
-                    pass
             self._handleError(str(exc))
         finally:
             try:
