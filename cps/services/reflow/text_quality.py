@@ -184,6 +184,20 @@ def script_mismatches(source, reading):
             and after.get(script, 0) < max(2, count * .25)]
 
 
+def reading_script_mismatches(reading, compiled):
+    """An optical fallback cannot replace part of a non-Latin transcription.
+
+    Unlike potentially damaged source-layer evidence, the accepted reader text
+    is already the compiler's input. Preserve its complete non-Latin letter
+    sequence, allowing Unicode compatibility and case equivalence only.
+    """
+    def letters(text,script):
+        return ''.join(char for char in unicodedata.normalize('NFKC',text).casefold()
+            if char.isalpha() and unicodedata.name(char,'').split(' ',1)[0]==script)
+    return [script for script,count in script_counts(reading).items()
+        if script!='LATIN' and count>=4 and letters(reading,script)!=letters(compiled,script)]
+
+
 class _ReadingText(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -192,11 +206,11 @@ class _ReadingText(HTMLParser):
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
         classes = values.get('class', '').split()
-        excluded = any(c in {'vision-disclosure', 'source-original', 'source-disclosure',
+        excluded = any(c in {'vision-disclosure', 'source-original', 'source-disclosure', 'source-reading-annotation',
                             'source-evidence-notice', 'source-disclosure-ref', 'note-return'} for c in classes)
         if tag not in {'br', 'img', 'hr', 'meta', 'link', 'input'}:
             self.stack.append((tag, excluded or any(v for _, v in self.stack)))
-        if tag in {'p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'aside', 'br', 'li', 'tr'}:
+        if tag in {'p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'aside', 'br', 'li', 'tr', 'td', 'th'}:
             self.parts.append('\n')
 
     def handle_endtag(self, tag):
@@ -204,7 +218,7 @@ class _ReadingText(HTMLParser):
             if self.stack[n][0] == tag:
                 del self.stack[n:]
                 break
-        if tag in {'p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'aside', 'li', 'tr'}:
+        if tag in {'p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'aside', 'li', 'tr', 'td', 'th'}:
             self.parts.append('\n')
 
     def handle_data(self, value):

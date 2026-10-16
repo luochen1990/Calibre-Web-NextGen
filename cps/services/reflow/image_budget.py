@@ -55,7 +55,7 @@ class EvidenceRaster:
         self.preview = None
 
     def jpeg(self, display, rect, *, detail=False):
-        from PIL import Image
+        from PIL import Image, ImageChops
         from . import extract
         reading = extract.pymupdf.Rect(rect) & display.rect
         if reading.is_empty or reading.is_infinite:
@@ -105,7 +105,7 @@ class EvidenceRaster:
             crop.thumbnail((max(1, math.ceil(reading.width*2)),
                             max(1, math.ceil(reading.height*2))), Image.Resampling.LANCZOS)
         r, g, b = crop.split()
-        if r.tobytes() == g.tobytes() == b.tobytes():
+        if ImageChops.difference(r,g).getbbox() is None and ImageChops.difference(r,b).getbbox() is None:
             crop = r
         stream = io.BytesIO()
         crop.save(stream, format='JPEG', quality=EVIDENCE_QUALITY, optimize=True,

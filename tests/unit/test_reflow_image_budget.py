@@ -149,3 +149,55 @@ def test_repaired_archive_budget_rejection_removes_all_candidates(tmp_path, monk
         assert not list(tmp_path.glob('repair.epub*'))
     finally:
         package.abandon()
+
+
+def test_whole_page_disclosures_share_bytes_without_merging_distinct_crop_owners(tmp_path):
+    from cps.services.reflow.source_display import SourceDisplay
+    doc=pymupdf.open();page=doc.new_page(width=240,height=320)
+    page.insert_text((20,40),'Synthetic whole page context.')
+    package=build_epub._Package(tmp_path/'context.epub')
+    try:
+        display=SourceDisplay(doc,0)
+        package.disclosure_image('images/page-a.jpg',display,display.rect)
+        package.disclosure_image('images/page-b.jpg',display,display.rect)
+        assert package.aliases['images/page-b.jpg']=='images/page-a.jpg'
+        crop=pymupdf.Rect(20,20,220,60)
+        package.disclosure_image('images/region-a.jpg',display,crop)
+        package.disclosure_image('images/region-b.jpg',display,crop)
+        assert len(package.images)==3
+        assert 'images/region-a.jpg' not in package.aliases
+        assert 'images/region-b.jpg' not in package.aliases
+    finally:
+        package.abandon();doc.close()
+
+
+def test_gray_figure_frame_uses_lossless_single_channel_storage():
+    source=Image.new('L',(160,120),'white')
+    for y in range(10,110):
+        for x in range(0,80):
+            source.putpixel((x,y),(x*17+y*13)%256)
+    stream=io.BytesIO();source.convert('RGB').save(stream,format='JPEG',quality=85)
+    encoded=stream.getvalue()
+    with Image.open(io.BytesIO(encoded)) as decoded:
+        original=decoded.convert('RGB').copy()
+    framed=build_epub._figure_crop_margin(encoded)
+    with Image.open(io.BytesIO(framed)) as result:
+        assert result.mode=='L'
+        assert result.convert('RGB').crop((8,8,168,128)).tobytes()==original.tobytes()
+        assert result.size==(176,136)
+
+
+def test_deduplicated_image_alias_cannot_be_rendered_again(tmp_path):
+    package = build_epub._Package(tmp_path/'aliases.epub')
+    stream = io.BytesIO()
+    Image.new('RGB', (20, 20), 'white').save(stream, format='JPEG')
+    data = stream.getvalue()
+    try:
+        package.image('images/a.jpg', data, deduplicate=True)
+        package.image('images/b.jpg', data, deduplicate=True)
+        assert package.aliases['images/b.jpg'] == 'images/a.jpg'
+        with pytest.raises(ValueError, match='rendered twice'):
+            package.image('images/b.jpg', data+b'changed')
+        assert 'images/b.jpg' not in package.images
+    finally:
+        package.abandon()

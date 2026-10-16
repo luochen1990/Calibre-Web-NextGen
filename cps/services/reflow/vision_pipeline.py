@@ -1813,7 +1813,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
         if role=='footnote' and local and vision_reading.normalized(local[0]['text']).strip('.')==vision_reading.normalized(block['marker']).strip('.'):
             local=local[1:]
         original=' '.join(w['text'] for w in local)
-        original_quality=text_quality.inspect(original)
+        original_quality=text_quality.inspect('\n'.join(
+            ' '.join(w['text'] for w in row) for row in _pixel_lines(local)))
         optical_evidence=owned(pixel_words) if pixel_words is not None else None
         punctuation_proof=(_caption_punctuation_anchors(optical_evidence,
             list(range(len(optical_evidence))),block['text'])
@@ -1871,7 +1872,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             result['marked']=set(range(len(result['tokens'])))
             result['fallback']=True
             result['guard'].append({'kind':'omitted_pixel_line_recovery'})
-        lost_scripts=text_quality.script_mismatches(block['text'],' '.join(result['tokens']))
+        compiled_reading=' '.join(result['tokens'])
+        lost_scripts=(text_quality.reading_script_mismatches(block['text'],compiled_reading)
+                      if result['fallback'] else text_quality.script_mismatches(block['text'],compiled_reading))
         if lost_scripts:
             # An English optical fallback cannot replace a reader's non-Latin
             # passage with Latin lookalikes. Retain original pixels when this
@@ -1975,7 +1978,10 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                       vision_reading.union(boxes) if len(boxes)==len(endings[index]) else box)
                 # Tight evidence remains in final notes, never an inline word crop.
                 clip=extract.pymupdf.Rect(crop);clip.x0-=2;clip.y0-=2;clip.x1+=2;clip.y1+=2;clip &= display.rect
-                package.image(src,package.evidence_jpeg(display,clip) if hasattr(package,'evidence_jpeg') else display.jpeg(clip,scale=3,quality=90))
+                if hasattr(package,'disclosure_image'):
+                    package.disclosure_image(src,display,clip)
+                else:
+                    package.image(src,display.jpeg(clip,scale=3,quality=90))
                 image_records[src]=dict(page=pno,bbox=list(clip),kind='vision_disclosure')
                 label='Uncertain source reading fallback' if result['fallback'] else 'Model reading differs from source layer' if words else 'Low-confidence model reading'
                 if original_quality['needs_read']:
@@ -4453,6 +4459,24 @@ def _source_note_id_repair(answer,display,optical,cache):
     return vision_reading.repair_note_ids(answer,evidence)
 
 
+def _compiled_text_quality(pages,records,numbers):
+    """Recheck actual joined words and retain every involved source owner."""
+    sweep=text_quality.sweep_pages(pages,records,numbers)
+    controller=unit_recovery.current()
+    for page in pages:
+        n=page['pno'];quality=sweep['pages'][n]
+        records[n]['compiled_text_quality']=quality
+        if quality['passed']:continue
+        owners={n}
+        if controller:
+            for fragment in page['body']+page['asides']:
+                if text_quality.reading_text(dict(body=[fragment],asides=[])).strip():
+                    owners.update(unit['page'] for unit in controller.fragment_owners(fragment))
+        with unit_recovery.guard(sorted(owners),'compiled_publication_text_quality'):
+            raise ValueError('Joined reading has unresolved text quality: '+', '.join(quality['reasons']))
+    return sweep
+
+
 def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,progress=None,native_prepared=None,original_frames=None,metadata=None):
     """Build an EPUB with explicit source-word disclosures and source-linked notes."""
     numbers=sorted(page_numbers if page_numbers is not None else range(len(doc)))
@@ -4760,6 +4784,9 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         for page in pages:
             for carrier,anchor in carriers.items():
                 page['body']=[fragment.replace(carrier,anchor) for fragment in page['body']]
+        # Removing a printed line-end hyphen can form a newly damaged word.
+        # Validate the actual joined text, not only its earlier page fragments.
+        quality_sweep=_compiled_text_quality(pages,records,numbers)
         chapters=unit_recovery.chapters(pages)
         reading_flow.finish(chapters,book)
         unit_recovery.bind_links(chapters)

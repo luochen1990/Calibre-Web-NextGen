@@ -73,6 +73,28 @@ def test_missing_dictionary_cannot_certify_a_text_layer(monkeypatch):
     assert metric['reasons']==['dictionary_unavailable']
 
 
+def test_joined_word_is_rechecked_and_recovers_both_source_pages(tmp_path,monkeypatch):
+    from cps.services.reflow import build_epub,unit_recovery
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset({'container'}))
+    pages=[dict(pno=0,body=['<p id="left">coNt-</p>'],asides=[],anchor='<span id="pg_0000"></span>'),
+           dict(pno=1,body=['<p>AiNeR</p>'],asides=[],anchor='<span id="pg_0001"></span>')]
+    records={n:dict(source='vision',blocks=[dict(id='b1',role='body')]) for n in (0,1)}
+    initial=text_quality.sweep_pages(pages,records,[0,1])
+    assert initial['passed']
+    controller=unit_recovery.Controller(SyntheticReader(),[0,1],tmp_path/'recovery')
+    controller.records=records
+    for page in pages:controller.register_page(page,records[page['pno']])
+    with unit_recovery.activated(controller):
+        assert build_epub._join_page_turns(pages,layout_pages={0,1},
+            layout_boundaries={1:dict(role='paragraph',hyphen='drop')}) == 1
+        assert 'coNtAiNeR' in text_quality.reading_text(pages[0])
+        with pytest.raises(unit_recovery.UnitFailure,match='Joined reading') as failure:
+            vision_pipeline._compiled_text_quality(pages,records,[0,1])
+    assert failure.value.pages == [0,1]
+    assert failure.value.stage == 'compiled_publication_text_quality'
+    assert not records[0]['compiled_text_quality']['passed']
+
+
 def test_bad_native_text_is_not_classified_as_clean(monkeypatch):
     monkeypatch.setattr(text_quality,'english_lexicon',lambda:LEXICON)
     with pymupdf.open() as doc:
@@ -82,6 +104,34 @@ def test_bad_native_text_is_not_classified_as_clean(monkeypatch):
         raw = (GOOD+' ')*4 + BAD
         assert not assess.looks_like_prose((BAD+' ')*10)
         assert text_quality.inspect(raw)['case_flip_words'] == 4
+
+
+def test_final_package_rejects_damage_exposed_by_an_admitted_page_seam(tmp_path,monkeypatch):
+    from cps.services.reflow import vision_pixels
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset({'container'}))
+    monkeypatch.setattr(vision_pipeline,'clean_native',lambda *a,**k:False)
+    monkeypatch.setattr(vision_pixels,'words',lambda display,*a,**k:[
+        dict(text=w[4],bbox=list(w[:4])) for w in display.page.get_text('words')])
+    # The seam-admission rules have their own geometry controls. Here a proved
+    # division joins two independently harmless fragments of a damaged word.
+    monkeypatch.setattr(vision_pipeline,'_continuation_decision',
+        lambda *a:dict(status='joined',reason='synthetic_admitted_seam'))
+    with pymupdf.open() as doc:
+        for text in ('container coNt-','AiNeR'):
+            page=doc.new_page(width=400,height=300);page.insert_text((30,70),text)
+        reader=SyntheticReader(
+            answer(block('container coNt-',bbox=(0,0,1000,1000),next=True)),
+            answer(block('AiNeR',bbox=(0,0,1000,1000),previous=True)))
+        destination=tmp_path/'joined-quality.epub'
+        report=vision_pipeline.convert(doc,destination,reader)
+        assert report['text_quality']['passed']
+        assert all(record['source']=='original_source' for record in report['pages'].values())
+        failures=[event for event in report['unit_recovery_events']
+                  if event['stage']=='compiled_publication_text_quality']
+        assert failures and sorted(u['page'] for u in failures[0]['units'])==[0,1]
+        with zipfile.ZipFile(destination) as archive:
+            assert all('coNtAiNeR' not in archive.read(name).decode()
+                for name in archive.namelist() if name.endswith('.xhtml'))
 
 
 def test_bad_cached_reading_retains_original_image_without_publishing_junk(tmp_path,monkeypatch):
@@ -186,3 +236,77 @@ def test_english_optical_fallback_cannot_erase_a_reader_non_latin_passage(tmp_pa
                 vision_pipeline.compile_page(answer(block(original)),optical,SourceDisplay(doc,0),0,package,{})
         finally:
             package.abandon()
+
+
+def test_short_damaged_source_line_is_not_hidden_by_clean_quote_context(tmp_path,monkeypatch):
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:LEXICON)
+    from cps.services.reflow import build_epub
+    from cps.services.reflow.source_display import SourceDisplay
+    source=(GOOD+' ')*20+'baSKeTs zzqxv green'
+    reading=(GOOD+' ')*20+'baskets green green'
+    # One short damaged line follows twenty clean lines in the same region.
+    # Its two case transitions avoid the unconditional severe-case rule.
+    assert not text_quality.inspect(source)['needs_read']
+    words=[dict(text=w,bbox=[10+(n%11)*34,15+(n//11)*14,42+(n%11)*34,27+(n//11)*14])
+           for n,w in enumerate(source.split())]
+    package=build_epub._Package(str(tmp_path/'source-lines.epub'))
+    with pymupdf.open() as doc:
+        doc.new_page(width=400,height=400)
+        try:
+            page,report=vision_pipeline.compile_page(answer(block(reading,bbox=(0,0,1000,1000))),
+                words,SourceDisplay(doc,0),0,package,{})
+            assert report['source_quote_suppressions']
+            assert 'internal_case_and_dictionary_misses' in report['source_quote_suppressions'][0]['quality']['reasons']
+            assert not any('baSKeTs' in aside or 'zzqxv' in aside for aside in page['asides'])
+            assert not text_quality.inspect(text_quality.reading_text(page))['needs_read']
+        finally:
+            package.abandon()
+
+
+def test_partial_non_latin_optical_fallback_cannot_hide_behind_a_retained_prefix(tmp_path,monkeypatch):
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:LEXICON)
+    from cps.services.reflow import build_epub
+    from cps.services.reflow.source_display import SourceDisplay
+    original=' '.join(['αλφαβήτα','γαμμαδέλτα']*12)
+    partial=' '.join(['αλφαβήτα','γαμμαδέλτα']*4)+' '+GOOD*5
+    # The tolerant damaged-source comparison accepts one-third retained script.
+    # The compiler must instead preserve the entire accepted reading's letters.
+    assert not text_quality.script_mismatches(original,partial)
+    assert text_quality.reading_script_mismatches(original,partial)==['GREEK']
+    assert not text_quality.reading_script_mismatches(original,original.upper())
+    assert not text_quality.inspect(partial)['needs_read']
+    words=[dict(text=w,bbox=[10+(n%10)*37,15+(n//10)*14,44+(n%10)*37,27+(n//10)*14])
+           for n,w in enumerate(partial.split())]
+    package=build_epub._Package(str(tmp_path/'partial-script.epub'))
+    with pymupdf.open() as doc:
+        doc.new_page(width=400,height=400)
+        try:
+            with pytest.raises(ValueError,match='lost during alignment: GREEK'):
+                vision_pipeline.compile_page(answer(block(original,bbox=(0,0,1000,1000))),
+                    words,SourceDisplay(doc,0),0,package,{})
+        finally:
+            package.abandon()
+
+
+def test_generated_annotation_exclusion_matches_final_reading_flow():
+    from types import SimpleNamespace
+    from cps.services.reflow import build_epub,reading_flow
+    fragment='<p>coNt<span class="source-reading-annotation">'+(GOOD+' ')*6+'</span>AiNeR</p>'
+    before=text_quality.reading_text(dict(body=[fragment],asides=[]))
+    assert before.strip()=='coNtAiNeR'
+    assert text_quality.inspect(before,lexicon=LEXICON)['needs_read']
+    chapters=[build_epub.Chapter(index=1,title='Synthetic',blocks=[fragment],pages=[0])]
+    reading_flow.finish(chapters,SimpleNamespace(pages={},figures=[]))
+    after=text_quality.reading_text(dict(body=chapters[0].blocks,asides=[]))
+    assert before.strip()==after.strip()
+
+
+def test_table_cell_boundaries_do_not_fuse_separate_words_or_split_inline_letters():
+    table='<table><tr><th>GreenBaskets</th><th>PurpleCarts</th><td>FreshBread</td></tr></table>'
+    reading=text_quality.reading_text(dict(body=[table],asides=[]))
+    assert reading.split()==['GreenBaskets','PurpleCarts','FreshBread']
+    assert not text_quality.inspect(reading,lexicon={'greenbaskets','purplecarts','freshbread'})['needs_read']
+    inline='<p>co<span>Nt</span>AiNeR</p>'
+    reading=text_quality.reading_text(dict(body=[inline],asides=[]))
+    assert reading.strip()=='coNtAiNeR'
+    assert text_quality.inspect(reading,lexicon={'container'})['needs_read']
