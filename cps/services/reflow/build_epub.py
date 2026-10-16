@@ -3336,6 +3336,13 @@ def _resource_aliases(value,aliases):
     return value
 
 
+def _encoded_image_href(href, data):
+    """Name image resources for their encoded bytes, preserving caller aliases."""
+    extension = ('.png' if data.startswith(b'\x89PNG\r\n\x1a\n') else
+                 '.jpg' if data.startswith(b'\xff\xd8') else None)
+    return posixpath.splitext(href)[0] + extension if extension else href
+
+
 class _Package(object):
     """The EPUB archive, written while the book is built rather than after it.
 
@@ -3402,8 +3409,7 @@ class _Package(object):
     def image(self, href, data, *, store=False, deduplicate=False):
         requested=href
         png=data.startswith(b'\x89PNG\r\n\x1a\n')
-        if png and href.endswith('.jpg'):
-            href=href[:-4]+'.png'
+        href=_encoded_image_href(href,data)
         if requested in self.aliases or href in self.images:
             # A dictionary kept the last of two renders under one name; an archive
             # would keep both, and a reader could open either.

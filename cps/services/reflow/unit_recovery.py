@@ -710,8 +710,10 @@ def package(out_path, *, source_bytes=0):
         def source_image(self,href,data):
             # Semantic crop/image helpers cannot prevent the trusted original
             # unit from being retained. Actual archive I/O failures still fail.
+            requested=href
+            href=build_epub._encoded_image_href(href,data)
             digest=hashlib.sha256(data).hexdigest()
-            actual=self.aliases.get(href,href)
+            actual=self.aliases.get(requested,href)
             if actual in self.images:
                 if self._hashes.get(actual)==digest:return
                 raise SourceIntegrityError('Original source asset changed during an assembly attempt')
@@ -719,13 +721,14 @@ def package(out_path, *, source_bytes=0):
                 raise SourceIntegrityError('Original source renderer did not produce an image')
             existing=self._image_digests.get(digest)
             if existing is not None:
-                self.aliases[href]=existing
+                self.aliases[requested]=existing
                 return
             self._zf.writestr(posixpath.join(build_epub.OEBPS,href),data)
             self._image_digests[digest]=href
             self.images[href]=len(data)
             self.media_types[href]='image/png' if data.startswith(b'\x89PNG') else 'image/jpeg'
             self._hashes[href]=digest
+            if requested!=href:self.aliases[requested]=href
 
         def finish(self,parts):
             # Prove the exact inputs before trying a fallible packaging helper.
