@@ -146,7 +146,10 @@ def serve(parent, cache_root, control):
                         if doc is not None or set(args) != {'fingerprint'}: raise ValueError('native open')
                         fingerprint = extract.document_fingerprint(root / 'source.pdf')
                         if fingerprint != args['fingerprint']: raise ValueError('source fingerprint')
-                        doc = pymupdf.open(root / 'source.pdf'); value = len(doc)
+                        from . import native_limits
+                        doc = extract.open_document(root / 'source.pdf')
+                        native_limits.check_document(doc)
+                        value = len(doc)
                     else:
                         if doc is None or extract.document_fingerprint(root / 'source.pdf') != fingerprint:
                             error = unit_recovery.SourceIntegrityError if context is not None else ValueError
