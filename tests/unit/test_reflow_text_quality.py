@@ -101,7 +101,9 @@ def test_bad_cached_reading_retains_original_image_without_publishing_junk(tmp_p
         with zipfile.ZipFile(destination) as z:
             body='\n'.join(z.read(n).decode() for n in z.namelist() if n.endswith('.xhtml'))
             assert BAD not in body
-            assert 'View retained original source page' in body
+            # Authored source control in unit_source.py:125, checked byte-for-byte.
+            from tests.fixtures.reflow_output_contracts import assert_authored_substring
+            assert_authored_substring(body, '19e518ad9b0a040df5ec9eb3afa961333146f00263fa8d31454ae6e69e1ab2b6', 34)
             assert any(n.endswith('.jpg') for n in z.namelist())
 
 
