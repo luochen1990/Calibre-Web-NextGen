@@ -1800,12 +1800,13 @@ class _CompilationQualityFailure(unit_recovery.UnitFailure):
 
 
 def _unproved_optical_letter_clusters(text,optical,display):
-    """Reject substituted letters whose local ink only supports punctuation dots.
+    """Decline an optical substitution supported by repeated solid dot-like ink.
 
     A dictionary can contain OCR noise as legitimate abbreviations. Require two
-    nearby same-baseline lettering anchors and multiple independent thin, wide
-    dot clusters before declining this fallback. No source word is corrected or
-    removed; the caller retains the original unit as an image instead.
+    nearby same-baseline lettering anchors and multiple thin, wide clusters of
+    compact solid components. Real miniature letters with open interiors remain
+    eligible. This conservative pattern check does not identify characters; the
+    caller retains the affected original unit as an image instead.
     """
     from . import vision_pixels
     import statistics
@@ -1828,9 +1829,28 @@ def _unproved_optical_letter_clusters(text,optical,display):
         picture,components=vision_pixels._word_ink_components(pix)
         if len(components)<3:continue
         sx=(box[2]-box[0])/picture.width;sy=height/picture.height
+        pixels=picture.load()
+        def solid_component(component):
+            left,top,right,bottom=component
+            area=(right-left)*(bottom-top)
+            background={(x,y) for x in range(left,right) for y in range(top,bottom)
+                        if pixels[x,y]>=180}
+            if len(background)>area*.2:return False
+            # A real small rounded letter can have the same outside dimensions
+            # as a dot. Its enclosed white interior is independent pixel evidence
+            # against this pattern, even when most of the component is dark.
+            edge={point for point in background if point[0] in (left,right-1)
+                  or point[1] in (top,bottom-1)}
+            reached=set(edge);pending=list(edge)
+            while pending:
+                x,y=pending.pop()
+                for neighbour in ((x-1,y),(x+1,y),(x,y-1),(x,y+1)):
+                    if neighbour in background and neighbour not in reached:
+                        reached.add(neighbour);pending.append(neighbour)
+            return len(reached)==len(background)
         if all((component[3]-component[1])*sy<normal*.35 and
                .4<=(component[2]-component[0])*sx/max(.01,(component[3]-component[1])*sy)<=2.5
-               for component in components):
+               and solid_component(component) for component in components):
             suspect+=1
             if suspect>=2:return True
     return False

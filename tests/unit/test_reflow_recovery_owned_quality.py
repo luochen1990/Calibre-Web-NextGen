@@ -513,12 +513,13 @@ def test_dot_leader_ink_cannot_be_substituted_as_dictionary_words(tmp_path, monk
 
 
 @pytest.mark.parametrize('size,y,anchor_size', [(9, 130, 9), (1, 130, 9),
-                                                (3, 120, 9), (3, 140, 9), (1, 130, 1)])
+                                                (3, 120, 9), (3, 130, 9),
+                                                (3, 140, 9), (1, 130, 1)])
 def test_real_repeated_letters_and_small_text_are_not_dot_leaders(size, y, anchor_size):
     from cps.services.reflow import source_display
     page = ink.InkPage()
     page.text('Abacus sample', 'anchor', y=130, size=anchor_size)
-    page.page.insert_text((120, y), 'eeeeeee iiiiiii', fontsize=size)
+    page.page.insert_text((120, y), 'eeeeeeeeeeeeeeeeeeee oooooooooooooooooooo', fontsize=size)
     words = [dict(text=word[4], bbox=list(word[:4])) for word in page.page.get_text('words')]
     try:
         assert not vp._unproved_optical_letter_clusters('Abacus sample', words,
