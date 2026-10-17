@@ -363,7 +363,7 @@ class Controller:
         self.omission_coverage.pop(page, None)
         self.prepared_pages.pop(page, None)
 
-    def read(self, page, image, source_repair=None):
+    def read(self, page, image, source_repair=None, local_read=None):
         identity = self.register_image(page, image)
         if source_repair is not None:self.source_repairs[page]=source_repair
         if page in self.readings:
@@ -376,7 +376,11 @@ class Controller:
         if record.get('degraded_source'):
             self.events.extend(record.get('recovery_events', []))
             self.recovery_closed.add(page)
-            raise UnitFailure([dict(page=page)], 'reading', ValueError(record['failure']))
+            if local_read is None:
+                raise UnitFailure([dict(page=page)], 'reading', ValueError(record['failure']))
+            # Local recognition cannot settle or release any paid attempt. Its
+            # separate source receipt replaces only the unavailable transcript.
+            record = local_read(record['failure'])
         self._replace_reading(page, record)
         self.events.extend(record.get('recovery_events', []))
         return copy.deepcopy(record)

@@ -1856,12 +1856,23 @@ def _unproved_optical_letter_clusters(text,optical,display):
     return False
 
 
-def compile_page(answer,words,display,pno,package,image_records,pixel_words=None,forced_uncertain=(),regions=None,body_owners=None,note_context=None,figure_cases=None):
+def compile_page(answer,words,display,pno,package,image_records,pixel_words=None,forced_uncertain=(),regions=None,body_owners=None,note_context=None,figure_cases=None,local_ocr=False):
     vision_reading.validate(answer)
+    if local_ocr:words=[]
     body=[];asides=[];alignment=[];marked=0;tokens_count=0;source_quote_suppressions={}
     footnotes={b['id']:b for b in answer['blocks'] if b['role']=='footnote'}
     refs={};extras=[];live_table_cells=[];marker_disclosures=[];marker_repairs=[];pixel_rows=_pixel_row_ids(pixel_words or [])
     quality_failures=[];pixel_claims={};optical_fallbacks=set()
+    if local_ocr:
+        source=f'images/v4-local-ocr-source-{pno}.jpg'
+        if hasattr(package,'disclosure_image'):
+            package.disclosure_image(source,display,display.rect)
+        else:
+            package.image(source,display.jpeg(display.rect,scale=2,quality=88))
+        image_records[source]=dict(page=pno,bbox=list(display.rect),kind='vision_disclosure')
+        extras.append(f'<aside id="v4-local-ocr-source-{pno}" class="footnote vision-disclosure" epub:type="footnote">'
+            '<p>Complete original page for the unverified local OCR transcription.</p>'
+            f'<img src="{source}" alt="Complete original source page"/></aside>')
     for block in answer['blocks']:
         try:
             bid=block['id'];role=block['role'];box=block_rect(block,display)
@@ -1963,6 +1974,10 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             if words and not local and block['text'].strip():
                 result['marked']=set(range(len(result['tokens'])))
                 result['unmapped_block']=True
+            if local_ocr:
+                # OCR and a PDF OCR layer are not independent witnesses. Their
+                # agreement never certifies a local-only transcription.
+                result['marked']=set(range(len(result['tokens'])))
             # One discreet reference covers each contiguous disagreement span.
             # Every covered word remains recorded in the machine-readable alignment.
             if bid in forced_uncertain:
@@ -2103,8 +2118,14 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     else:
                         package.image(src,display.jpeg(clip,scale=3,quality=90))
                     image_records[src]=dict(page=pno,bbox=list(clip),kind='vision_disclosure')
-                    label='Uncertain source reading fallback' if result['fallback'] else 'Model reading differs from source layer' if words else 'Low-confidence model reading'
-                    if original_quality['needs_read']:
+                    label=('Unverified local OCR reading' if local_ocr else
+                        'Uncertain source reading fallback' if result['fallback'] else
+                        'Model reading differs from source layer' if words else 'Low-confidence model reading')
+                    if local_ocr:
+                        source_quote=('This local OCR transcription has not been independently verified. '
+                            'Consult the original printed reading in the image. '
+                            f'<a href="#v4-local-ocr-source-{pno}">View complete original page</a>.')
+                    elif original_quality['needs_read']:
                         source_quote='The text layer is unreliable; consult the original printed reading in the image.'
                         suppression=source_quote_suppressions.setdefault(bid,dict(block=bid,quality=original_quality,disclosure_count=0))
                         suppression['disclosure_count']+=1
@@ -2112,6 +2133,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         source_quote='Source layer: '+escape(original)+'.'
                     extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" epub:type="footnote"><p>{label}: {escape(' '.join(result['tokens'][i] for i in endings[index]))}. {source_quote}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
                     piece+=f'<a id="{ref}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'
+                if local_ocr and index in result['marked']:
+                    piece='<span class="uncertain" title="Unverified local OCR reading">'+piece+'</span>'
                 pieces.append(piece)
             text=''.join(('' if i==0 or i in wraps else ' ')+piece for i,piece in enumerate(pieces) if piece)
             # The marker is typographic punctuation, not a standalone sentence block.
@@ -4742,7 +4765,9 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
     with unit_recovery.guard(n,'optical_evidence'):
         optical=vision_pixels.words(display,reader.cache.parent/'pixel-guard-cache')
     with unit_recovery.guard(n,'reading'):
-        reading=(controller.read(n,image,lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache'))
+        from . import local_reading
+        reading=(controller.read(n,image,lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache'),
+                    local_read=lambda reason:local_reading.read(display,controller.staging/'local-ocr-cache',reason))
                  if controller else reader.read(image))
     regions={};body_owners={}
     selected=controller.filter_answer(n,reading['answer']) if controller else reading['answer']
@@ -4758,7 +4783,14 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
     with unit_recovery.guard(n,'reading_text_quality'):
         units=[(b['id'],b['text']) for b in answer['blocks'] if b['role'] not in ('figure','table')]
         quality=text_quality.inspect_partitioned(units)
-        failed=list(quality['rejected_units']);missing_scripts=set()
+        failed=list(quality['rejected_units']);missing_scripts=set();weak_local=[]
+        for unit in reading.get('local_ocr_units',[]):
+            # Very weak recognition is retained as source context for just its
+            # paragraph. A high engine score never removes uncertainty marks.
+            if (unit['id'] in {b['id'] for b in answer['blocks']}
+                    and unit['mean_confidence'] < 75 and unit['id'] not in failed):
+                failed.append(unit['id'])
+                weak_local.append(unit['id'])
         for block in answer['blocks']:
             if block['role'] in ('figure','table') or not visible_scripts.source_text(display):continue
             boxes=regions.get(block['id'])
@@ -4767,7 +4799,9 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
             missing_scripts.update(missing)
             if missing and block['id'] not in failed:failed.append(block['id'])
         if failed:
-            reason='Pixel reading has unresolved text quality: '+', '.join(quality['reasons']+['missing_source_script_'+v for v in sorted(missing_scripts)])
+            reason='Pixel reading has unresolved text quality: '+', '.join(quality['reasons']+
+                ['local_ocr_mean_confidence_below_75' for _ in weak_local[:1]]+
+                ['missing_source_script_'+v for v in sorted(missing_scripts)])
             if controller:
                 owned=([dict(page=n,block=None)] if set(failed)=={b['id'] for b in answer['blocks']}
                        else [dict(page=n,block=bid) for bid in failed])
@@ -4975,7 +5009,8 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                 with unit_recovery.guard(n,'page_compilation'):
                     page,report=compile_page(s['answer'],s['source_words'],s['display'],n,package,images,
                         s['optical'],recovered,s['regions'],s['body_owners'],note_context,
-                        {case['block']:case for case in s['figure_repairs'] if case.get('degraded')})
+                        {case['block']:case for case in s['figure_repairs'] if case.get('degraded')},
+                        local_ocr=reading.get('local_ocr',False))
             except _CompilationQualityFailure as failure:
                 compilation_failures.extend(failure.units)
                 continue
