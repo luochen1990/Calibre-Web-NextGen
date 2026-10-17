@@ -84,3 +84,26 @@ def test_clean_surrounding_prose_cannot_dilute_a_garbled_chosen_fragment(compila
         vision_pipeline.compile_page(
             answer(block(reading, bbox=(0, 0, 1000, 1000))), words(source),
             display, 0, package, {})
+
+
+@pytest.mark.parametrize('source', ['green baskets blorple', '. -'])
+def test_catastrophic_fallback_contraction_requires_pixels_even_without_many_dictionary_misses(
+        compilation, source):
+    display, package = compilation
+    reading = (CLEAN + ' ') * 5
+    assert not text_quality.inspect_disclosure(source)['needs_read']
+    with pytest.raises(ValueError, match='Unreliable contracted fallback'):
+        vision_pipeline.compile_page(
+            answer(block(reading, bbox=(0, 0, 1000, 1000))), words(source),
+            display, 0, package, {})
+
+
+def test_one_quarter_source_token_coverage_is_not_catastrophic_contraction(compilation, monkeypatch):
+    display, package = compilation
+    monkeypatch.setattr(text_quality, 'english_lexicon', lambda: LEXICON | {'silver', 'copper'})
+    published, report = vision_pipeline.compile_page(
+        answer(block('green baskets contain ripe apples while purple carts', bbox=(0, 0, 1000, 1000))),
+        words('silver copper'), display, 0, package, {})
+    assert report['blocks'][0]['fallback']
+    assert report['blocks'][0]['published_tokens'] == ['silver', 'copper']
+    assert 'silver copper' in ''.join(published['body'])
