@@ -133,3 +133,21 @@ def test_rejected_graphic_wording_cannot_demand_a_removed_note_owner(tmp_path):
     assert next(block['text'] for block in selected['blocks'] if block['id'] == 'healthy') == raw['blocks'][2]['text']
     assert next(block['text'] for block in selected['blocks'] if block['id'] == 'graphic') == 'Original source image'
     assert controller.answers[0] == raw
+
+
+def test_bad_joined_paragraph_tail_does_not_discard_its_clean_source_page(tmp_path):
+    controller = ur.Controller(SimpleNamespace(key=None), [0, 1], tmp_path)
+    clean = 'The clear sample remains readable. ' * 5
+    damaged = 'qVrTx mNpRs wXyZq aBcDe fGhIj kLmNo pQrSt uVwXy zAbCd eFgHi jKlMn oPqRs'
+    fragment = ('<p><span data-source-page="0" data-source-block="good">'+clean+'</span>'
+                '<span id="pg_0001"></span><span data-source-page="1" data-source-block="bad">'+damaged+'</span></p>')
+    pages = [dict(pno=0, anchor='<span id="pg_0000"></span>', body=[fragment], asides=[]),
+             dict(pno=1, anchor='', body=[], asides=[])]
+    records = {0: dict(source='vision', blocks=[dict(id='good', role='body')]),
+               1: dict(source='vision', blocks=[dict(id='bad', role='body')])}
+    controller.records = records
+    for page in pages:
+        controller.register_page(page, records[page['pno']])
+    with ur.activated(controller), pytest.raises(ur.UnitFailure) as failure:
+        vp._compiled_text_quality(pages, records, [0, 1])
+    assert failure.value.units == [dict(page=1, block=None)]

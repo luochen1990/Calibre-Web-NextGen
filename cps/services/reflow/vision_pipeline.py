@@ -4541,18 +4541,33 @@ def _compiled_text_quality(pages,records,numbers,stage='compiled_publication_tex
         parts=[];owners={}
         for fragment in fragments:
             for part in text_quality.publication_parts(dict(body=[fragment],asides=[])):
-                index=len(parts)
-                parts.append((index,part['text'],part['kind']))
-                explicit=part.get('owners',[])
-                if controller and explicit:
-                    controller.check_units(explicit)
-                    for unit in explicit:
-                        if unit.get('block') is not None and unit['block'] not in {
-                                b['id'] for b in records[unit['page']].get('blocks',[])}:
-                            raise unit_recovery.SourceIntegrityError('Publication text has an unregistered source unit')
-                    owners[index]=explicit
-                else:
-                    owners[index]=(controller.fragment_owners(fragment) if controller else [dict(page=n,block=None)])
+                # Preserve every whitespace word, including one joined across
+                # source spans. Distinct neighbouring words keep their own
+                # contributing owners rather than inheriting the paragraph's
+                # union and sacrificing a clean source page beside bad text.
+                groups=[]
+                for token in re.finditer(r'\S+',part['text']):
+                    explicit=[unit for span in part.get('spans',[])
+                              if span['start']<token.end() and token.start()<span['end']
+                              for unit in span['owners']]
+                    owned=list({(u['page'],u.get('block')):u for u in explicit}.values())
+                    if not owned:
+                        owned=(controller.fragment_owners(fragment) if controller else [dict(page=n,block=None)])
+                    if controller:
+                        controller.check_units(owned)
+                        for unit in owned:
+                            if unit.get('block') is not None and unit['block'] not in {
+                                    b['id'] for b in records[unit['page']].get('blocks',[])}:
+                                raise unit_recovery.SourceIntegrityError('Publication text has an unregistered source unit')
+                    key=tuple(sorted((u['page'],u.get('block') or '') for u in owned))
+                    if groups and groups[-1][0]==key:
+                        groups[-1][2]=token.end()
+                    else:
+                        groups.append([key,token.start(),token.end(),owned])
+                for _,start,end,owned in groups:
+                    index=len(parts)
+                    parts.append((index,part['text'][start:end],part['kind']))
+                    owners[index]=owned
         local=text_quality.inspect_partitioned(parts)
         for index in local['rejected_units']:
             failures.extend(owners[index])
