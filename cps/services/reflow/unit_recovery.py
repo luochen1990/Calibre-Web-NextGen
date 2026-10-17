@@ -509,6 +509,10 @@ class Controller:
         """
         previous = self.admitted_answers.get(page, self.answers.get(page, {'blocks': []}))
         blocks = copy.deepcopy(answer['blocks'])
+        blocked = self.blocked(page)
+        retained = {b['id']: b for b in previous['blocks'] if b['id'] in blocked}
+        # Neutral validation stubs cannot replace the admitted source unit.
+        blocks = [copy.deepcopy(retained.get(b['id'], b)) for b in blocks]
         ids = {b['id'] for b in blocks}
         old = previous['blocks']
         for index, block in enumerate(old):
@@ -574,19 +578,21 @@ class Controller:
             return answer
         removed_notes = {b['id'] for b in answer['blocks']
                          if b['id'] in blocked and b['role'] == 'footnote'}
-        # A response reference to an unproved note owner is a dependent unit,
-        # never permission to attach it to another note or erase its glyph.
-        import re
-        for b in answer['blocks']:
-            if any(ref in removed_notes for ref in re.findall(r'<n:([^>]+)>', b['text'])):
-                key = (page, b['id'])
-                self.degraded.setdefault(key, dict(page=page, block=b['id'],
-                    stage='note_dependency', reason='Note owner requires original source inspection',
-                    status='DEGRADED_SOURCE_CONTEXT'))
-        blocked = self.blocked(page)
-        answer['blocks'] = [b for b in answer['blocks'] if b['id'] not in blocked or b['role'] in ('figure','table')]
+        # Keep a schema-valid, nonpublishing note identity for references in
+        # otherwise supported prose. Compilation discloses their association;
+        # rejecting a note owner does not reject its neighbouring body words.
+        referenced = {ref for b in answer['blocks'] if b['id'] not in blocked
+                      for ref in re.findall(r'<n:([^>]+)>', b['text'])}
+        stubs = removed_notes & referenced
+        answer['blocks'] = [b for b in answer['blocks'] if b['id'] not in blocked
+                            or b['role'] in ('figure','table') or b['id'] in stubs]
         admitted = {b['id']: b for b in self.admitted_answers.get(page, {}).get('blocks', [])}
         for block in answer['blocks']:
+            if block['id'] in stubs:
+                if block['id'] in admitted:
+                    block['bbox'] = copy.deepcopy(admitted[block['id']]['bbox'])
+                block.update(text='', marker='', low_confidence=[],
+                             continues_previous=False, continues_next=False)
             if block['id'] in blocked and block['role'] in ('figure','table'):
                 # Geometry was already bound before this unit was rejected.
                 # Its neutral label cannot establish a new pixel match.

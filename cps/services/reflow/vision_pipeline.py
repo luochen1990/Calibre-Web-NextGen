@@ -979,20 +979,25 @@ def _note_ownership(scans):
     import statistics
     _source_header_ownership(scans)
     repeated={};owners={};last=None;last_note=None;previous_pno=None;section=False;note_size=None;previous_body_size=None
+    controller=unit_recovery.current()
+    def selected_blocks(n,s):
+        blocked=controller.blocked(n) if controller else {}
+        return [b for b in s['answer']['blocks']
+                if not (b['role']=='footnote' and b['id'] in blocked)]
     def ink_size(s,roles):
-        heights=[w['bbox'][3]-w['bbox'][1] for b in s['answer']['blocks'] if b['role'] in roles
+        heights=[w['bbox'][3]-w['bbox'][1] for b in selected_blocks(n,s) if b['role'] in roles
                  for w in _owned_block_words(b,s['answer'],s['optical'],s['display'],s['regions'],ordered=True)
                  if re.search(r'[A-Za-z]',w['text'])]
         return statistics.median(heights) if heights else None
     for n,s in scans.items():
         with unit_recovery.guard(n,'note_ownership'):
-            for b in s['answer']['blocks']:
+            for b in selected_blocks(n,s):
                 box=block_rect(b,s['display']);text=re.sub(r'\W+',' ',b['text']).strip().casefold()
                 if text and len(text.split())<=12 and (box[1]<s['display'].rect.height*.13 or box[1]>s['display'].rect.height*.88):
                     repeated.setdefault(text,set()).add(n)
     for n,s in scans.items():
         with unit_recovery.guard(n,'note_ownership'):
-            blocks=s['answer']['blocks'];r=s['display'].rect
+            blocks=selected_blocks(n,s);r=s['display'].rect
             if previous_pno is None or n!=previous_pno+1:
                 last=None;last_note=None;section=False;note_size=None;previous_body_size=None
             footer=last_note if last_note and last_note[0]==n-1 else None
@@ -1094,7 +1099,7 @@ def _note_ownership(scans):
     catalogue={};labels={}
     for n,s in scans.items():
         with unit_recovery.guard(n,'note_ownership'):
-            for b in s['answer']['blocks']:
+            for b in selected_blocks(n,s):
                 if b['role']!='footnote':continue
                 key=(n,b['id']);owner=owners.get(key,key)
                 label=re.sub(r'^[\s(.]+|[\s).]+$','',b['marker'])
@@ -1861,6 +1866,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
     if local_ocr:words=[]
     body=[];asides=[];alignment=[];marked=0;tokens_count=0;source_quote_suppressions={}
     footnotes={b['id']:b for b in answer['blocks'] if b['role']=='footnote'}
+    controller=unit_recovery.current()
+    unresolved_notes=set(footnotes)&set(controller.blocked(pno) if controller else {})
     refs={};extras=[];live_table_cells=[];marker_disclosures=[];marker_repairs=[];pixel_rows=_pixel_row_ids(pixel_words or [])
     quality_failures=[];pixel_claims={};optical_fallbacks=set()
     if local_ocr:
@@ -1876,6 +1883,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
     for block in answer['blocks']:
         try:
             bid=block['id'];role=block['role'];box=block_rect(block,display)
+            # A rejected note's validation stub owns no live words or note link.
+            # Its admitted original unit is inserted as source context below.
+            if role=='footnote' and bid in unresolved_notes:continue
             territories=(regions or {}).get(bid,[box])
             def owned(items):
                 return _owned_block_words(block,answer,items,display,regions,body_owners)
@@ -2035,6 +2045,23 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 if marker:
                     nid=marker[1];ref=f'v4-ref-{pno}-{bid}-{index}'
                     owner=note_context['owners'].get((pno,nid),(pno,nid)) if note_context else (pno,nid)
+                    if nid in unresolved_notes:
+                        from .unit_source import source_unit
+                        proof=placeholder_display.get(index,dict(status='UNPROVED',
+                            source_bbox=list(box),reason='original_marker_slot_not_uniquely_bound'))
+                        reason='Printed note association requires original source inspection'
+                        _,contexts,unit=source_unit(display,pno,f'marker-{bid}-{index}','other',
+                            package,image_records,reason,bbox=proof['source_bbox'])
+                        extras.extend(contexts)
+                        label=proof['label'] if proof['status']=='PROVED' else '†'
+                        pieces.append(f'<a id="{unit["source_reference_origin"]}" class="source-disclosure-ref" epub:type="noteref" href="#{unit["source_reference"]}"><sup>{escape(label)}</sup></a>')
+                        marker_record=dict(proof,**unit)
+                        marker_record.update(page=pno,block=bid,token=index,note_owner=list(owner),
+                            display_label=label,association_status='UNPROVED',
+                            unit_kind='note_marker',status='DEGRADED_SOURCE_CONTEXT')
+                        marker_disclosures.append(marker_record)
+                        marked+=1
+                        continue
                     # A literal and an adjacent placeholder can describe the same
                     # original reference. Reconcile only one proven source glyph;
                     # two distinct original glyphs keep their separate actions.
