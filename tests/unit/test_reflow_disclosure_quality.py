@@ -118,3 +118,24 @@ def test_source_bound_alphanumeric_labels_are_not_english_dictionary_misses(comp
     assert report['blocks'][0]['fallback']
     assert report['blocks'][0]['published_tokens'] == labels.split()
     assert all(label in ''.join(published['body']) for label in labels.split())
+
+
+def test_complete_source_paragraph_keeps_its_guarded_tail_when_model_borrows_long_prose(compilation):
+    display, package = compilation
+    # The source has a complete, healthy paragraph. The model appended a long
+    # unrelated passage; its correction is severe locally, but the complete
+    # chosen reading still retains the printed paragraph's substantial coverage.
+    reading = (CLEAN.rsplit(' ', 1)[0] + ' loaf while careful workers place sturdy wooden crates '
+               'near a clean doorway before carrying useful tools into storage')
+    published, report = vision_pipeline.compile_page(
+        answer(block(reading, bbox=(0, 0, 1000, 1000))), words(CLEAN),
+        display, 0, package, {})
+    record = report['blocks'][0]
+    assert record['fallback']
+    assert any(item.get('kind') == 'replace'
+               and item['model_end'] - item['model_start'] >= 8
+               and item['layer_end'] - item['layer_start'] == 1
+               for item in record['guard']), record['guard']
+    assert record['published_tokens'] == CLEAN.split()
+    assert CLEAN in ''.join(published['body'])
+    assert ''.join(published['body']).count('Green baskets') == 1

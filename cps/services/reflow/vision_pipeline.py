@@ -1882,15 +1882,15 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             # passage with Latin lookalikes. Retain original pixels when this
             # compiler cannot safely bind the reading in its printed script.
             raise ValueError('Source-script reading lost during alignment: '+', '.join(lost_scripts))
-        # A line-sized model passage replaced by a few optical fragments is
-        # not a usable transcript, even when those fragments are dictionary
-        # words or punctuation. Keep source pixels instead of publishing a
-        # drastically contracted chosen reading in an excluded annotation.
-        contracted=any(item.get('kind')=='replace'
-            and item.get('model_end',0)-item.get('model_start',0)>=vision_reading.UNALIGNED_RUN
-            and item.get('layer_end',0)-item.get('layer_start',0)<
-                .25*(item.get('model_end',0)-item.get('model_start',0))
-            for item in result['guard'])
+        # A whole chosen reading reduced to a few optical fragments is not a
+        # usable transcript, even when those fragments are dictionary words or
+        # punctuation. Measure the complete block: a local replacement may
+        # correctly remove a long borrowed model tail from healthy source prose.
+        # Short chosen fragments still receive the separate lexical check below.
+        model_count=len(re.sub(r'<n:[^>]+>', ' ', block['text']).split())
+        chosen_count=sum(not token.startswith('<n:') for token in result['tokens'])
+        contracted=(model_count>=vision_reading.UNALIGNED_RUN
+                    and chosen_count<.25*model_count)
         if result['fallback'] and contracted:
             raise ValueError('Unreliable contracted fallback requires original source disclosure')
         if ((result['fallback'] or result['marked'])
