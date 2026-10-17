@@ -1799,6 +1799,43 @@ class _CompilationQualityFailure(unit_recovery.UnitFailure):
         super().__init__(owned,'page_compilation',ValueError(reason))
 
 
+def _unproved_optical_letter_clusters(text,optical,display):
+    """Reject substituted letters whose local ink only supports punctuation dots.
+
+    A dictionary can contain OCR noise as legitimate abbreviations. Require two
+    nearby same-baseline lettering anchors and multiple independent thin, wide
+    dot clusters before declining this fallback. No source word is corrected or
+    removed; the caller retains the original unit as an image instead.
+    """
+    from . import vision_pixels
+    import statistics
+    vocabulary={word.casefold() for word in re.findall(r'[^\W\d_]+',text)}
+    lexical=[word for word in optical if re.fullmatch(r'[^\W\d_]{3,}',word['text'])]
+    anchors=[word for word in lexical if word['text'].casefold() in vocabulary]
+    if len(anchors)<2:return False
+    suspect=0;measured=0
+    for word in lexical:
+        if word['text'].casefold() in vocabulary:continue
+        box=word['bbox'];height=box[3]-box[1]
+        nearby=[anchor for anchor in anchors
+            if abs(anchor['bbox'][3]-box[3])<=.45*(anchor['bbox'][3]-anchor['bbox'][1])]
+        if len(nearby)<2:continue
+        normal=statistics.median(anchor['bbox'][3]-anchor['bbox'][1] for anchor in nearby)
+        if height<=0 or height>=normal*.35 or box[2]-box[0]<=height*6:continue
+        measured+=1
+        if measured>32:return True
+        pix=display.pixmap(box,scale=6,max_pixels=200_000)
+        picture,components=vision_pixels._word_ink_components(pix)
+        if len(components)<3:continue
+        sx=(box[2]-box[0])/picture.width;sy=height/picture.height
+        if all((component[3]-component[1])*sy<normal*.35 and
+               .4<=(component[2]-component[0])*sx/max(.01,(component[3]-component[1])*sy)<=2.5
+               for component in components):
+            suspect+=1
+            if suspect>=2:return True
+    return False
+
+
 def compile_page(answer,words,display,pno,package,image_records,pixel_words=None,forced_uncertain=(),regions=None,body_owners=None,note_context=None,figure_cases=None):
     vision_reading.validate(answer)
     body=[];asides=[];alignment=[];marked=0;tokens_count=0;source_quote_suppressions={}
@@ -1875,6 +1912,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     run_limit=(max(len(optical_local),len(block['text'].split()))+1
                                if punctuation_proof else vision_reading.UNALIGNED_RUN))
                 if guarded['fallback']:
+                    if _unproved_optical_letter_clusters(block['text'],optical_local,display):
+                        raise _DisclosureQualityRejection('Optical letter claims have unproved punctuation-sized source ink')
                     if role=='heading':
                         # An unproved heading hint cannot turn an adjacent
                         # optical line into replacement heading words.

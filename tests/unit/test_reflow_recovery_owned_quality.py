@@ -476,3 +476,52 @@ def test_disclosed_omission_coverage_stays_separate_from_source_proof(tmp_path):
     assert not coverage.get('_instances')
     assert 'failed' not in coverage
     assert controller.omission_coverage[0]['live'] == [[80, 80, 100, 90]]
+
+
+def test_dot_leader_ink_cannot_be_substituted_as_dictionary_words(tmp_path, monkeypatch):
+    page = ink.InkPage()
+    page.text('The clear sample remains readable.', 'healthy', y=45)
+    page.text('Abacus sample .................. 11, 12, 41', 'leader', y=130)
+    finish = page.finish
+    def optical_dots():
+        image, words, answer = finish()
+        dot = next(word for word in words if word['text'] == '..................')
+        at = words.index(dot); left, _, right, _ = dot['bbox']
+        # The printed dots occupy only the baseline. The injected OCR readings
+        # are ordinary dictionary words, so spelling checks cannot reject them.
+        words[at:at+1] = [dict(text=text, bbox=[left+i*(right-left)/3, 128.7,
+            left+(i+1)*(right-left)/3, 130.3], confidence=0)
+            for i, text in enumerate(['see', 'ease', 'use'])]
+        return image, words, answer
+    monkeypatch.setattr(page, 'finish', optical_dots)
+    align = vp.vision_reading.align
+    def substitute(text, words, *args, **kwargs):
+        result = align(text, words, *args, **kwargs)
+        if any(word['text'] == 'ease' for word in words):
+            result.update(tokens=[word['text'] for word in words],
+                          boxes=[word['bbox'] for word in words],
+                          marked=set(range(len(words))), fallback=True)
+        return result
+    monkeypatch.setattr(vp.vision_reading, 'align', substitute)
+    _, report, docs = ink.convert_ink(tmp_path, monkeypatch, [page])
+    record = report['pages'][0]
+    assert record['source'] == 'vision'
+    assert 'The clear sample remains readable.' in ' '.join(ink.plain(root) for root in docs.values())
+    assert {unit['block'] for unit in record.get('degraded_units', [])} == {'leader'}
+    assert record['degraded_units'][0]['source_image']
+    assert not any('ease' in block.get('published_tokens', []) for block in record['blocks'])
+
+
+@pytest.mark.parametrize('size,y,anchor_size', [(9, 130, 9), (1, 130, 9),
+                                                (3, 120, 9), (3, 140, 9), (1, 130, 1)])
+def test_real_repeated_letters_and_small_text_are_not_dot_leaders(size, y, anchor_size):
+    from cps.services.reflow import source_display
+    page = ink.InkPage()
+    page.text('Abacus sample', 'anchor', y=130, size=anchor_size)
+    page.page.insert_text((120, y), 'eeeeeee iiiiiii', fontsize=size)
+    words = [dict(text=word[4], bbox=list(word[:4])) for word in page.page.get_text('words')]
+    try:
+        assert not vp._unproved_optical_letter_clusters('Abacus sample', words,
+            source_display.SourceDisplay(page.doc, 0))
+    finally:
+        page.doc.close()
