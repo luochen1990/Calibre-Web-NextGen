@@ -70,3 +70,24 @@ def test_partial_dispatch_marker_is_not_proof_of_no_dispatch(tmp_path):
     with pytest.raises(BudgetError):
         ledger.recover_authoritative(worker_gone=True)
     assert Path(ledger.path).read_bytes() == before
+
+
+def test_missing_previously_imported_ledger_is_not_store_only(tmp_path):
+    store, ledger = setup(tmp_path)
+    ledger.reserve_attempt('page', .9, context={'route_version':'vision-parent-v1'})
+    store.status()  # persist the file digest as part of shared admission
+    Path(ledger.path).unlink()
+    with pytest.raises(BudgetError):
+        ledger.recover_authoritative(worker_gone=True)
+    assert not Path(ledger.path).exists()
+
+
+def test_valid_but_lost_dispatch_tail_keeps_shared_dispatch_hold(tmp_path):
+    store, ledger = setup(tmp_path)
+    attempt=ledger.reserve_attempt('page', .9, context={'route_version':'vision-parent-v1'})
+    pending=Path(ledger.path).read_bytes()
+    ledger.record(dict(kind='vision_dispatch', attempt=attempt),durable=True)
+    Path(ledger.path).write_bytes(pending)
+    ledger.recover_authoritative(worker_gone=True)
+    assert ledger.pending_usd()==.9
+    assert store.status()['remaining_usd']==pytest.approx(4.1)

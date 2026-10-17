@@ -133,6 +133,7 @@ class Store:
             db.execute("""CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK(state IN ('pending','settled','released')), bound TEXT NOT NULL, cost TEXT, created REAL NOT NULL CHECK(created>=0 AND created<1e20), settled REAL, identity TEXT NOT NULL, CHECK((state='pending' AND cost IS NULL AND settled IS NULL) OR (state!='pending' AND cost IS NOT NULL AND settled>=0 AND settled<1e20)))""")
             db.execute('CREATE INDEX IF NOT EXISTS liability_window ON attempts(state,settled)')
             db.execute('CREATE TABLE IF NOT EXISTS imported (path TEXT PRIMARY KEY, digest TEXT NOT NULL, size INTEGER NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS dispatches (id TEXT PRIMARY KEY)')
             if db.execute('PRAGMA quick_check').fetchone()[0]!='ok':raise BudgetError()
             blocked = db.execute("SELECT value FROM meta WHERE key='blocked'").fetchone()
             if blocked:raise BudgetError()
@@ -255,6 +256,13 @@ class Store:
             if ledger:identity['ledger']=str(Path(ledger).relative_to(self.root))
             db.execute('INSERT INTO attempts VALUES (?,?,?,?,?,?,?)',(attempt,'pending',str(bound),None,now,None,json.dumps(identity,sort_keys=True)))
 
+    def mark_dispatched(self, attempt):
+        """Publish a second durable transport witness before the job mirror."""
+        with self._locked() as (db, _now):
+            if not db.execute("SELECT 1 FROM attempts WHERE id=? AND state='pending'", (attempt,)).fetchone():
+                raise BudgetError()
+            db.execute('INSERT OR IGNORE INTO dispatches VALUES (?)', (attempt,))
+
     def vision_job_ledgers(self):
         """Discover durable parent-vision reservations before their mirror exists."""
         with self._locked() as (db, _now):
@@ -264,7 +272,9 @@ class Store:
                 if identity.get('context', {}).get('route_version') == 'vision-parent-v1':
                     relative = identity.get('ledger')
                     path = Path(relative) if isinstance(relative, str) else None
-                    if path is None or path.is_absolute() or '..' in path.parts:
+                    if (path is None or path.is_absolute() or '..' in path.parts
+                            or len(path.parts) != 3 or path.parts[0] != 'jobs'
+                            or path.suffix != '.jsonl'):
                         raise BudgetError()
                     paths.add(self.root / path)
             return sorted(paths)
@@ -293,6 +303,10 @@ class Store:
             vision_job = any(e.get('kind') == 'job' and e.get('event') == 'start'
                 and e.get('route') == 'vision-page-1' for e in entries)
             with self._locked() as (db, now):
+                prior = db.execute('SELECT 1 FROM imported WHERE path=?', (relative,)).fetchone()
+                if not path.exists() and prior:
+                    raise BudgetError()
+                dispatched.update(row[0] for row in db.execute('SELECT id FROM dispatches'))
                 rows = list(db.execute('SELECT id,state,bound,cost,created,settled,identity FROM attempts'))
                 for attempt, state, bound, cost, created, settled, raw_identity in rows:
                     identity = json.loads(raw_identity)
@@ -341,6 +355,8 @@ class SharedLedger(Ledger):
     def record(self,entry,durable=False):
         entry=dict(entry);entry.setdefault('ts',self.store.clock())
         if entry.get('kind')=='job' and entry.get('event')=='start':entry['shared_budget_version']=1
+        if entry.get('kind') == 'vision_dispatch':
+            self.store.mark_dispatched(entry.get('attempt'))
         return super().record(entry,durable=durable)
 
     def reserve_attempt(self,page_label,bound_usd,model_id='',prompt_version='',context=None):
