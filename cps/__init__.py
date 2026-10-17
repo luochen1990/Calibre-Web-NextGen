@@ -192,6 +192,28 @@ def _register_sleep_screen_upload_limiter(application):
     application.extensions["cps_sleep_screen_upload_limiter_registered"] = True
 
 
+def _rollback_failed_app_session():
+    """Roll back ``ub.session`` when a failed flush has deactivated its transaction.
+
+    A flush that fails (``database is locked``, a constraint) leaves the one
+    app.db Session every request shares needing a rollback; until it gets one,
+    every later request that reads app.db raises PendingRollbackError (#2562).
+    A healthy transaction is left alone.
+    """
+    session = ub.session
+    if session is None:
+        return
+    try:
+        if not session.in_transaction():
+            return
+        transaction = session.get_transaction()
+        if transaction is None or transaction.is_active:
+            return
+        session.rollback()
+    except Exception as e:  # teardown must not raise; the next request will report it
+        log.warning("Could not roll back the app.db session after a failed write: %s", e)
+
+
 def _configure_base_app(application, runtime_config=None):
     """Install import-time Flask defaults exactly once on one app object."""
     application.config.update(
@@ -864,6 +886,7 @@ def create_app(config=None, services=None):
 
     @application.teardown_appcontext
     def shutdown_session(exception=None):
+        _rollback_failed_app_session()
         # Close before session_factory.remove(): they operate on different objects (concrete
         # Session vs scoped proxy), and NullPool needs an explicit close to drop the connection.
         if calibre_db._desktop_compat and calibre_db.session is not None:
