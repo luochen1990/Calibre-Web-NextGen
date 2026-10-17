@@ -154,3 +154,86 @@ def test_rotated_optional_detail_frame_uses_proved_prepared_pixels(tmp_path, mon
         path.write_bytes(path.read_bytes()+b'\n% synthetic changed source identity\n')
         with pytest.raises(unit_recovery.SourceIntegrityError):
             local_reading.reading_display(display, reading)
+
+
+from collections import Counter
+import io
+import re
+import shutil
+import zipfile
+from xml.etree import ElementTree as ET
+import pymupdf
+import pytest
+from PIL import Image
+from cps.services.reflow import vision_pipeline as vp, vision_reading as vr, build_epub
+from cps.services.reflow.ledger import Ledger
+
+ORIENTATION_LINES = [
+    'Fresh bread rests beside a clean basket.',
+    'The small garden has a clear quiet path.',
+    'A gentle wind moves through the green trees.',
+    'The bright window brings warm light into the room.',
+    'We carry clean water to the young plants.',
+    'The open gate leads toward a wide green field.',
+    'A little bird rests on the wooden fence.',
+    'The clean white cloth covers a round table.',
+    'We place the empty basket beside the window.',
+    'The soft grass grows along the quiet path.',
+    'A small bridge crosses the clear narrow stream.',
+    'The warm bread waits beside the clean water.',
+    'We walk through the garden before the rain.',
+    'The gentle rain falls across the green field.',
+    'A quiet room offers time for a clear thought.',
+    'We close the wooden gate and carry the basket.',
+]
+NS={'x':'http://www.w3.org/1999/xhtml'}
+
+def _orientation_tokens(text):
+    return re.findall(r'[A-Za-z]+', text.casefold())
+
+def _orientation_raster_fixture(angle, spread):
+    width,height=460*(2 if spread else 1),650
+    source=pymupdf.open();p=source.new_page(width=width,height=height)
+    for leaf in range(2 if spread else 1):
+        lines=ORIENTATION_LINES if leaf==0 else [s.replace('Fresh','Soft').replace('bread','cloth').replace('garden','window')for s in ORIENTATION_LINES]
+        for n,line in enumerate(lines):p.insert_text((30+460*leaf,65+28*n),line,fontsize=12)
+    image=Image.open(io.BytesIO(p.get_pixmap(matrix=pymupdf.Matrix(2,2)).tobytes('png')))
+    image=image.rotate(angle,expand=True);data=io.BytesIO();image.save(data,format='PNG')
+    doc=pymupdf.open();page=doc.new_page(width=image.width/2,height=image.height/2);page.insert_image(page.rect,stream=data.getvalue())
+    anchor=next(w[:4] for w in p.get_text('words') if w[4]=='Fresh')
+    source.close()
+    expected=' '.join(ORIENTATION_LINES)
+    if spread:expected+=' '+' '.join(s.replace('Fresh','Soft').replace('bread','cloth').replace('garden','window')for s in ORIENTATION_LINES)
+    return doc,expected,width,height,anchor
+
+@pytest.mark.skipif(shutil.which('tesseract') is None, reason='requires local OCR engine')
+@pytest.mark.parametrize('angle,spread',[(0,False),(90,False),(180,False),(270,False),(90,True),(270,True)])
+def test_scan_orientation_preserves_reading_geometry_and_uncertainty(tmp_path,angle,spread):
+    doc,expected,width,height,anchor=_orientation_raster_fixture(angle,spread)
+    reader=vr.Reader(None,tmp_path/'cache/readings',Ledger(tmp_path/'ledger.jsonl',0))
+    out=tmp_path/'reading.epub'
+    try:report=vp.convert(doc,str(out),reader)
+    finally:doc.close()
+    assert build_epub.validate(out)==[]
+    assert reader.ledger.spent()==reader.ledger.pending_usd()==0
+    assert not list(reader.cache.glob('*.json'))
+    with zipfile.ZipFile(out)as z:
+        documents={n:ET.fromstring(z.read(n))for n in z.namelist()if n.startswith('OEBPS/ch')and n.endswith('.xhtml')}
+        owned=[s for root in documents.values()for s in root.findall('.//x:span',NS)if s.get('data-source-page')=='0']
+        actual=' '.join(''.join(s.itertext())for s in owned)
+        gold=Counter(_orientation_tokens(expected));got=Counter(_orientation_tokens(actual));retained=sum((gold&got).values())
+        assert retained/sum(gold.values())>=.95, (retained,sum(gold.values()),actual)
+        assert report['pages'][0]['local_ocr']
+        original=next(w for u in report['pages'][0]['local_ocr_units'] for w in u['words'] if w['text']=='Fresh')
+        box=original['bbox'];center=((box[0]+box[2])/2,(box[1]+box[3])/2)
+        assert anchor[0]-5<=center[0]<=anchor[2]+5 and anchor[1]-5<=center[1]<=anchor[3]+5, 'Uncertainty coordinates own the printed word in the upright source frame'
+        uncertain=[s for parent in owned for s in parent.findall('.//x:span',NS)if s.get('class')=='uncertain']
+        marked=Counter(_orientation_tokens(' '.join(''.join(s.itertext())for s in uncertain)))
+        assert got==marked,'Every local lexical word remains explicitly unverified'
+        assert any(a.get('class')=='source-disclosure-ref'for root in documents.values()for a in root.findall('.//x:a',NS))
+        source=Image.open(io.BytesIO(z.read('OEBPS/images/v4-local-ocr-source-0.jpg')))
+        assert abs(source.width/source.height-width/height)<.03,'Original-page disclosure uses the same upright reading frame'
+        if spread:
+            assert actual.casefold().find('fresh')<actual.casefold().find('soft'),'Left leaf precedes right leaf after orientation'
+        for root in documents.values():
+            assert not any(a.get('class')=='noteref'for a in root.findall('.//x:a',NS))

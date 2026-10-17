@@ -134,6 +134,11 @@ def test_low_confidence_local_paragraph_does_not_drop_clear_neighbour(tmp_path,m
         upper=word['bbox'][1]<100
         word.update(paragraph=[0,1 if upper else 2,1],line=1,confidence=99 if upper else 20)
     monkeypatch.setattr(local_reading,'recognize',lambda display,cache:(copy.deepcopy(words),dict(cached=False)))
+    # This case isolates paragraph rejection; the orientation path has separate controls.
+    def unchanged_orientation(display, cache, reason):
+        return local_reading.read(display, cache, reason)
+    monkeypatch.setattr(local_reading, 'read_oriented', unchanged_orientation)
+    monkeypatch.setattr(local_reading, 'reading_display', lambda display, reading: display)
     monkeypatch.setattr(vision_pixels,'words',lambda display,cache:copy.deepcopy(words))
     class Reader:
         key=None
