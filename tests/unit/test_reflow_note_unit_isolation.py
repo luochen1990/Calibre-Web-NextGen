@@ -66,7 +66,7 @@ def test_unproved_note_association_preserves_body_and_links_only_source(tmp_path
         display = SourceDisplay(doc, 0)
         marker_box = [marker_x+3, 49, marker_x+7, 57]
         proof = dict(status='PROVED' if proved else 'UNPROVED', source_bbox=marker_box,
-                     reason=None if proved else 'original_marker_slot_not_uniquely_bound')
+                     reason=None if proved else 'synthetic_marker_instance_ambiguous')
         if proved:
             proof.update(label='7', method='synthetic_independent_original_glyph_proof')
         monkeypatch.setattr(vp, '_placeholder_display_evidence', lambda *args: {3: copy.deepcopy(proof)})
