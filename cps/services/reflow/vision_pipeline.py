@@ -4772,6 +4772,8 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
         prov=(provenance or {}).get(n,{})
         display=SourceDisplay(doc,n,dict(prov,layer='ocr' if prov.get('space')=='reading' else 'native',
             original_frame=(original_frames or {}).get(n)))
+        from . import local_reading
+        display=local_reading.reading_display(display,saved['reading'])
         optical=saved['optical']
         controller.source_repairs[n]=lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache')
         controller.register_regions(n,saved['regions'],
@@ -4794,8 +4796,13 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
     with unit_recovery.guard(n,'reading'):
         from . import local_reading
         reading=(controller.read(n,image,lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache'),
-                    local_read=lambda reason:local_reading.read(display,controller.staging/'local-ocr-cache',reason))
+                    local_read=lambda reason:local_reading.read_oriented(display,controller.staging/'local-ocr-cache',reason))
                  if controller else reader.read(image))
+        upright=local_reading.reading_display(display,reading)
+        if upright is not display:
+            display=upright
+            optical=vision_pixels.words(display,reader.cache.parent/'pixel-guard-cache')
+            controller.source_repairs[n]=lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache')
     regions={};body_owners={}
     selected=controller.filter_answer(n,reading['answer']) if controller else reading['answer']
     with unit_recovery.guard(n,'geometry'):

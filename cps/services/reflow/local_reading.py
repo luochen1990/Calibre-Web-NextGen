@@ -10,6 +10,7 @@ import io
 import json
 import math
 import os
+import re
 from pathlib import Path
 import tempfile
 
@@ -104,6 +105,132 @@ def _validate_words(words, rect):
                 or len(word['paragraph']) != 3
                 or any(type(v) is not int for v in word['paragraph']) or type(word['line']) is not int):
             raise ValueError('Invalid local recognition evidence')
+
+
+ORIENTATION_VERSION = 'local-orientation-2'
+ORIENTATION_MAX_PIXELS = 8_000_000
+ORIENTATION_TIMEOUT = 30
+ORIENTATION_MIN_CONFIDENCE = 10
+
+
+def orientation(display, cache):
+    """Bounded OSD evidence, used only after a primary reading is unavailable."""
+    executable, version, data = ocr._engine('eng')
+    pix = display.pixmap(scale=4, max_pixels=ORIENTATION_MAX_PIXELS)
+    image = pix.tobytes('png')
+    from .unit_recovery import page_fingerprint
+    from .extract import pymupdf
+    identity = dict(adapter=ORIENTATION_VERSION, renderer=pymupdf.VersionBind,
+        image=hashlib.sha256(image).hexdigest(), engine=version, data=data,
+        source_page=page_fingerprint(display.doc, display.pno),
+        max_pixels=ORIENTATION_MAX_PIXELS, scale=4, timeout=ORIENTATION_TIMEOUT,
+        min_confidence=ORIENTATION_MIN_CONFIDENCE, recognition_adapter=VERSION,
+        rect=list(display.rect), source_orientation=display.angle)
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    root = Path(cache)
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / ('orientation-' + key + '.json')
+    if target.exists() and target.stat().st_size <= 16_384:
+        try:
+            saved = json.loads(target.read_text())
+            if (saved['identity'] == identity and type(saved['clockwise']) is int
+                    and saved['clockwise'] in (0, 90, 180, 270)
+                    and type(saved['confidence']) in (int, float)
+                    and math.isfinite(saved['confidence']) and saved['confidence'] >= 0
+                    and (saved['clockwise'] == 0 or saved['confidence'] >= ORIENTATION_MIN_CONFIDENCE)):
+                return dict(saved, cached=True)
+        except (ValueError, KeyError, TypeError):
+            pass
+    with tempfile.TemporaryDirectory(prefix='local-osd-', dir=root) as temporary:
+        directory = Path(temporary)
+        source = directory / 'page.png'
+        source.write_bytes(image)
+        status, output, error = ocr._invoke(
+            [executable, str(source), 'stdout', '-l', 'osd', '--psm', '0'],
+            directory, timeout=ORIENTATION_TIMEOUT, should_stop=None)
+    angle = re.search(r'^Rotate:\s*(0|90|180|270)\s*$', output, re.M)
+    score = re.search(r'^Orientation confidence:\s*([\d.]+)', output, re.M)
+    confidence = float(score.group(1)) if score else 0.
+    if not math.isfinite(confidence):
+        raise ocr.OCRFailed('Local orientation returned invalid evidence.')
+    if status and 'Too few characters' not in output + error:
+        raise ocr.OCRFailed('Local page orientation failed.')
+    clockwise = int(angle.group(1)) if status == 0 and angle and confidence >= ORIENTATION_MIN_CONFIDENCE else 0
+    saved = dict(identity=identity, clockwise=clockwise, confidence=confidence,
+                 uncertain=not (status == 0 and angle and confidence >= ORIENTATION_MIN_CONFIDENCE))
+    with tempfile.NamedTemporaryFile(mode='w', dir=root, prefix='.orientation-', delete=False) as handle:
+        temporary = Path(handle.name)
+        json.dump(saved, handle)
+    try:
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return dict(saved, cached=False)
+
+
+def reading_display(display, reading):
+    """Restore one local reading's established space for guards and source crops."""
+    evidence = reading.get('local_ocr_orientation')
+    if not reading.get('local_ocr'):
+        return display
+    from .unit_recovery import SourceIntegrityError, page_fingerprint
+    if (not isinstance(evidence, dict) or not isinstance(evidence.get('identity'), dict)
+            or evidence['identity'].get('adapter') != ORIENTATION_VERSION):
+        raise SourceIntegrityError('Local reading orientation receipt is missing or obsolete.')
+    identity = evidence['identity']
+    from .extract import pymupdf
+    # This controller-owned checkpoint is bound to the complete current source
+    # and renderer/configuration. The orientation disk cache separately verifies
+    # the rendered SHA before use; restoring preparation need not render again.
+    if (not isinstance(identity.get('image'), str)
+            or not re.fullmatch(r'[0-9a-f]{64}', identity['image'])
+            or type(identity.get('source_orientation')) is not int):
+        raise SourceIntegrityError('Invalid local orientation source identity.')
+    _, version, data = ocr._engine('eng')
+    if (identity.get('engine') != version or identity.get('data') != data
+            or identity.get('renderer') != pymupdf.VersionBind
+            or identity.get('max_pixels') != ORIENTATION_MAX_PIXELS
+            or identity.get('scale') != 4 or identity.get('timeout') != ORIENTATION_TIMEOUT
+            or identity.get('min_confidence') != ORIENTATION_MIN_CONFIDENCE
+            or identity.get('recognition_adapter') != VERSION
+            or identity.get('rect') != list(display.rect)
+            or identity.get('source_page') != page_fingerprint(display.doc, display.pno)):
+        raise SourceIntegrityError('Local reading orientation belongs to another source or engine configuration.')
+    relative = evidence.get('clockwise')
+    confidence = evidence.get('confidence')
+    if (type(relative) is not int or relative not in (0, 90, 180, 270)
+            or type(confidence) not in (int, float) or not math.isfinite(confidence)
+            or confidence < 0 or type(evidence.get('uncertain')) is not bool
+            or (relative and (confidence < ORIENTATION_MIN_CONFIDENCE or evidence['uncertain']))):
+        raise SourceIntegrityError('Invalid local reading orientation.')
+    if identity['source_orientation'] != display.angle:
+        raise SourceIntegrityError('Local reading orientation belongs to another source space.')
+    if not relative:
+        return display
+    from .source_display import SourceDisplay
+    provenance = dict(display.provenance, layer='ocr',
+        orientation=(display.angle + relative) % 360,
+        source_rotation=display.page.rotation, page_rect=list(display.page.rect))
+    if provenance.get('original_frame') is not None:
+        # Verify the optional higher resolution lineage before selecting only
+        # already-proved prepared pixels. That optimization has no rotated ROI
+        # mapping; preserving it would mix two coordinate spaces.
+        display.roi_pixmap(scale=.01, max_pixels=16)
+        provenance.pop('original_frame')
+        provenance['local_ocr_detail_source'] = 'proved_prepared_pixels'
+    return SourceDisplay(display.doc, display.pno, provenance)
+
+
+def read_oriented(display, cache, reason):
+    """Keep the primary reading's identity, then orient only its local fallback."""
+    evidence = orientation(display, cache)
+    upright = reading_display(display, dict(local_ocr=True, local_ocr_orientation=evidence))
+    reading = read(upright, cache, reason)
+    reading['local_ocr_orientation'] = evidence
+    reading['local_ocr_evidence']['orientation'] = evidence
+    if upright.provenance.get('local_ocr_detail_source'):
+        reading['local_ocr_evidence']['detail_source'] = upright.provenance['local_ocr_detail_source']
+    return reading
 
 
 def read(display, cache, reason):
