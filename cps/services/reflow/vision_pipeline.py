@@ -14,7 +14,7 @@ from html import escape, unescape
 from pathlib import Path
 from . import assemble, build_epub, extract, pipeline, reading_flow, vision_reading
 from .source_display import SourceDisplay
-from . import unit_recovery, text_quality, visible_scripts
+from . import unit_recovery, text_quality, visible_scripts, local_reading
 
 
 def clean_native(page, raw=None):
@@ -1861,7 +1861,7 @@ def _unproved_optical_letter_clusters(text,optical,display):
     return False
 
 
-def compile_page(answer,words,display,pno,package,image_records,pixel_words=None,forced_uncertain=(),regions=None,body_owners=None,note_context=None,figure_cases=None,local_ocr=False):
+def compile_page(answer,words,display,pno,package,image_records,pixel_words=None,forced_uncertain=(),regions=None,body_owners=None,note_context=None,figure_cases=None,local_ocr=False,local_ocr_units=None):
     vision_reading.validate(answer)
     if local_ocr:words=[]
     body=[];asides=[];alignment=[];marked=0;tokens_count=0;source_quote_suppressions={}
@@ -1870,6 +1870,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
     unresolved_notes=set(footnotes)&set(controller.blocked(pno) if controller else {})
     refs={};extras=[];live_table_cells=[];marker_disclosures=[];marker_repairs=[];pixel_rows=_pixel_row_ids(pixel_words or [])
     quality_failures=[];pixel_claims={};optical_fallbacks=set()
+    final_local_units=[]
     if local_ocr:
         source=f'images/v4-local-ocr-source-{pno}.jpg'
         if hasattr(package,'disclosure_image'):
@@ -1988,6 +1989,35 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 # OCR and a PDF OCR layer are not independent witnesses. Their
                 # agreement never certifies a local-only transcription.
                 result['marked']=set(range(len(result['tokens'])))
+            if local_ocr and local_ocr_units is not None:
+                owned_units=[unit for unit in local_ocr_units if unit['id']==bid]
+                if len(owned_units)>1:
+                    raise _DisclosureQualityRejection('Local OCR has ambiguous source owners')
+                raw=owned_units[0] if owned_units else None
+                if raw and [word['text'] for word in raw['words']]==result['tokens']:
+                    source_unit=copy.deepcopy(raw)
+                    source_unit['source_method']='local_recognition_occurrences'
+                elif ((independent_optical_fallback or bid in forced_uncertain)
+                        and optical_local
+                        and [word['text'] for word in optical_local]==result['tokens']):
+                    # A recovery reading owns the actual independent occurrences
+                    # selected above, rather than the superseded OCR transcript.
+                    indices={id(word):index for index,word in enumerate(pixel_words or [])}
+                    selected=[indices.get(id(word)) for word in optical_local]
+                    if (len(indices)!=len(pixel_words or []) or None in selected
+                            or len(set(selected))!=len(selected)):
+                        raise _DisclosureQualityRejection('Local OCR recovery has nonunique source occurrences')
+                    source_unit=dict(id=bid,words=copy.deepcopy(optical_local),
+                        source_method='independent_pixel_occurrences',
+                        source_word_indices=selected,mean_confidence=None,
+                        low_confidence_tokens=list(range(len(optical_local))))
+                else:
+                    raise _DisclosureQualityRejection('Local OCR reading has no exact source occurrence inventory')
+                # Crop the words actually published. Independent recognition may
+                # miss a final row; interpolated alignment boxes cannot replace
+                # the original local occurrences that still supply that text.
+                evidence_boxes={index:word['bbox'] for index,word in enumerate(source_unit['words'])}
+                final_local_units.append(source_unit)
             # One discreet reference covers each contiguous disagreement span.
             # Every covered word remains recorded in the machine-readable alignment.
             if bid in forced_uncertain:
@@ -2288,7 +2318,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             'body':body,'asides':note_html+extras},dict(blocks=alignment,marks=marked,words=tokens_count,
             unlinked_notes=sorted(set(footnotes)-set(refs)),source_figure_contexts=list((figure_cases or {}).values()),
             live_table_cells=live_table_cells,note_marker_disclosures=marker_disclosures,note_marker_repairs=marker_repairs,
-            source_quote_suppressions=list(source_quote_suppressions.values()))
+            source_quote_suppressions=list(source_quote_suppressions.values()),
+            **({'local_ocr_units':final_local_units} if local_ocr and local_ocr_units is not None else {}))
 
 
 def bind_geometry(answer,optical,display,regions=None,body_owners=None):
@@ -5041,10 +5072,13 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
             s=scans[n];reading=s['reading'];recovered=s['recovered']
             try:
                 with unit_recovery.guard(n,'page_compilation'):
+                    local_units=(local_reading.partition_units(reading['local_ocr_units'],
+                        s.get('paragraph_repairs',[])) if reading.get('local_ocr') else None)
                     page,report=compile_page(s['answer'],s['source_words'],s['display'],n,package,images,
                         s['optical'],recovered,s['regions'],s['body_owners'],note_context,
                         {case['block']:case for case in s['figure_repairs'] if case.get('degraded')},
-                        local_ocr=reading.get('local_ocr',False))
+                        local_ocr=reading.get('local_ocr',False),
+                        **({'local_ocr_units':local_units} if local_units is not None else {}))
             except _CompilationQualityFailure as failure:
                 compilation_failures.extend(failure.units)
                 continue
@@ -5057,7 +5091,10 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
             report['degraded_figures']=[case for case in s['figure_repairs'] if case.get('degraded')]
             report['degraded_figure_count']=len(report['degraded_figures'])
             pages.append(page);records[n]=dict(source='vision',**report,
-                **{k:v for k,v in reading.items() if k!='answer'})
+                **{k:v for k,v in reading.items() if k not in ('answer','local_ocr_units')})
+            if local_units is not None:
+                records[n]['local_ocr_original_units']=copy.deepcopy(reading['local_ocr_units'])
+                records[n]['local_ocr_units']=report['local_ocr_units']
             records[n]['marker_readings']=note_context['marker_receipts'].get(n,[])
             records[n]['new_cost_usd']+=sum(r['new_cost_usd'] for r in records[n]['marker_readings'])
             records[n]['cached']=records[n]['cached'] and all(

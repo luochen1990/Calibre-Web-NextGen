@@ -4,6 +4,7 @@ Engine scores are not probabilities. Every locally transcribed word remains
 uncertain, including words that agree with an existing OCR text layer. Paragraph
 identities and word rectangles allow independent source disclosure on rejection.
 """
+import copy
 import csv
 import hashlib
 import io
@@ -19,6 +20,67 @@ from . import ocr, vision_reading
 VERSION = 'local-reading-1'
 MAX_PIXELS = 8_000_000
 TIMEOUT = 120
+
+
+def partition_units(units, repairs):
+    """Carry source occurrences through explicitly proved paragraph cuts.
+
+    The paragraph splitter records whitespace-token offsets. They identify the
+    original occurrences even when several words have identical spellings; a
+    text search cannot establish that ownership. Raw OCR receipts stay intact.
+    """
+    result = copy.deepcopy(units)
+    identities = [unit['id'] for unit in result]
+    if (any(not isinstance(ident, str) or not ident for ident in identities)
+            or len(set(identities)) != len(identities)):
+        raise ValueError('Local OCR source owners must be unique.')
+    methods = {'original_indented_paragraph_partition',
+               'original_delimited_hanging_paragraph_partition'}
+    for repair in repairs:
+        original = repair.get('block')
+        owners = {unit['id']: index for index, unit in enumerate(result)}
+        if original not in owners:
+            raise ValueError('Local OCR paragraph partition has no source owner.')
+        at = owners[original]
+        unit = result[at]
+        words = unit['words']
+        derived = repair.get('derived_blocks')
+        cuts = repair.get('whitespace_token_cuts')
+        if (repair.get('method') not in methods
+                or not isinstance(derived, (list, tuple)) or len(derived) < 2
+                or any(not isinstance(ident, str) or not ident for ident in derived)
+                or derived[0] != original or len(set(derived)) != len(derived)
+                or any(ident in owners for ident in derived[1:])
+                or not isinstance(cuts, (list, tuple))
+                or len(cuts) != len(derived) - 1
+                or any(type(cut) is not int or not 0 < cut < len(words) for cut in cuts)
+                or list(cuts) != sorted(set(cuts))
+                or any(not isinstance(word.get('text'), str)
+                       or word['text'].split() != [word['text']] for word in words)):
+            raise ValueError('Local OCR paragraph cuts have no unique source ownership.')
+        origin = unit.get('source_unit', original)
+        span = unit.get('source_word_range', [0, len(words)])
+        if (not isinstance(origin, str) or not origin
+                or not isinstance(span, (list, tuple)) or len(span) != 2
+                or any(type(value) is not int for value in span)
+                or span[0] < 0 or span[1] - span[0] != len(words)):
+            raise ValueError('Local OCR source occurrence range is invalid.')
+        boundaries = [0, *cuts, len(words)]
+        parts = []
+        for ident, begin, end in zip(derived, boundaries, boundaries[1:]):
+            owned = words[begin:end]
+            confidence = [word['confidence'] for word in owned]
+            if any(isinstance(value, bool) or not isinstance(value, (int, float))
+                   or not math.isfinite(value) or not 0 <= value <= 100
+                   for value in confidence):
+                raise ValueError('Local OCR source confidence is invalid.')
+            parts.append(dict(unit, id=ident, words=owned, source_unit=origin,
+                source_word_range=[span[0] + begin, span[0] + end],
+                mean_confidence=sum(confidence) / len(confidence),
+                low_confidence_tokens=[index for index, value in enumerate(confidence)
+                                       if value < 85]))
+        result[at:at + 1] = parts
+    return result
 
 
 def recognize(display, cache):
@@ -235,6 +297,16 @@ def read_oriented(display, cache, reason):
 
 def read(display, cache, reason):
     words, receipt = recognize(display, cache)
+    # TSV fields can carry boundary whitespace. Preserve the engine's literal
+    # value while binding each rendered whitespace token to one occurrence.
+    canonical = []
+    for word in words:
+        text = word['text'].strip()
+        if len(text.split()) != 1:
+            raise ocr.OCRFailed('Local recognition returned a non-atomic word.')
+        canonical.append(dict(word, text=text, recognition_text=word['text'])
+                         if text != word['text'] else dict(word))
+    words = canonical
     if not words:
         raise ocr.OCRFailed('Local recognition found no readable words.')
     paragraphs = {}
