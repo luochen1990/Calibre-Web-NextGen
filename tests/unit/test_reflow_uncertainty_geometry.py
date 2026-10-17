@@ -151,3 +151,52 @@ def test_model_source_block_mapping_uses_transcript_instead_of_output_order():
     tree = ET.fromstring('<root>' + out + '</root>')
     assert len(placed) == 1 and tree[0][0].text == 'Mark'
     assert list(tree[1]) == []
+
+
+def test_model_alternatives_cannot_discard_recovered_occurrence_geometry():
+    from cps.services.reflow import pipeline, source
+    elements = [paragraph('Mark is clear.', (10, 10, 160, 30)),
+                paragraph('Mark is damaged.', (10, 80, 160, 100))]
+    book = assemble.Book(elements=elements, pages={0: elements})
+    record = {'token': 'Mark', 'score': 22, 'source_bbox': [10, 80, 40, 100]}
+    recovery = source.Recovery()
+    recovery.provenance[0] = source.PageRecovery(
+        pno=0, layer='ocr', words=6, uncertain_words=1, uncertain=[record])
+    result = pipeline.ReflowResult(book=book, recovery=recovery)
+    outcome = pipeline.PageOutcome(pno=0)
+    pipeline._adopt(result, book, 0, outcome,
+                    '<p>Mark is clear.</p><p>Mark is damaged.</p>',
+                    [{'token': 'Mark', 'candidates': ['Mask']}], {}, False)
+    assert outcome.gate == 'PASS', outcome.gate_reasons
+    tree = ET.fromstring('<root>' + result.page_html[0] + '</root>')
+    assert list(tree[0]) == []
+    assert tree[1][0].text == 'Mark'
+    assert tree[1][0].get('title') == 'likely: Mask'
+    assert outcome.uncertain[0]['source_bbox'] == record['source_bbox']
+    assert outcome.uncertain[0]['score'] == 22
+
+
+def test_model_alternatives_preserve_every_distinct_recovered_occurrence():
+    from cps.services.reflow import pipeline, source
+    elements = [paragraph('Mark is clear.', (10, 10, 160, 30)),
+                paragraph('Mark is damaged.', (10, 80, 160, 100)),
+                paragraph('Mark is faded.', (10, 140, 160, 160))]
+    book = assemble.Book(elements=elements, pages={0: elements})
+    records = [{'token': 'Mark', 'score': 22, 'source_bbox': [10, 80, 40, 100]},
+               {'token': 'Mark', 'score': 31, 'source_bbox': [10, 140, 40, 160]}]
+    recovery = source.Recovery()
+    recovery.provenance[0] = source.PageRecovery(
+        pno=0, layer='ocr', words=9, uncertain_words=2, uncertain=records)
+    result = pipeline.ReflowResult(book=book, recovery=recovery)
+    outcome = pipeline.PageOutcome(pno=0)
+    pipeline._adopt(result, book, 0, outcome,
+                    '<p>Mark is clear.</p><p>Mark is damaged.</p><p>Mark is faded.</p>',
+                    [{'token': 'Mark', 'candidates': ['Mask']}], {}, False)
+    assert outcome.gate == 'PASS', outcome.gate_reasons
+    tree = ET.fromstring('<root>' + result.page_html[0] + '</root>')
+    assert list(tree[0]) == []
+    assert [tree[i][0].text for i in (1, 2)] == ['Mark', 'Mark']
+    assert outcome.marked == 2
+    assert [r['source_bbox'] for r in outcome.uncertain] == [r['source_bbox'] for r in records]
+    assert [r['score'] for r in outcome.uncertain] == [22, 31]
+    assert [r['candidates'] for r in outcome.uncertain] == [['Mask'], ['Mask']]

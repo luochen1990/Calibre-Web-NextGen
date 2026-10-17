@@ -736,19 +736,34 @@ def _source_uncertainty(result, pno):
 
 
 def _merge_uncertainty(model_spans, evidence):
-    """Model-reported readings first, then every recovered low-confidence
-    source record the model did not also name. A word-conserving answer is
-    not allowed to strip the engine's own doubts from the page it adopted."""
-    merged = list(model_spans or [])
-    have = set()
-    for span in merged:
+    """Merge alternatives while retaining every recovered occurrence identity.
+
+    A word-conserving answer cannot strip source geometry or confidence by
+    returning an unowned model record with the same token.
+    """
+    models = list(model_spans or [])
+    evidence = list(evidence or [])
+    def key(span):
         token = span.get("token") if isinstance(span, dict) else span
-        have.add(str(token or "").strip().lower())
+        return str(token or "").strip().lower()
+    source_tokens = {key(span) for span in evidence if key(span)}
+    # A model's alternatives may enrich source evidence but cannot replace its
+    # occurrence identity. Preserve every source record, including equal tokens
+    # with different boxes or scores, and remove their unowned model duplicate.
+    merged = [span for span in models if key(span) not in source_tokens]
     for span in evidence:
-        token = str(span.get("token", "")).strip().lower()
-        if token and token not in have:
-            have.add(token)
-            merged.append(span)
+        if not key(span):
+            continue
+        record = dict(span)
+        readings = []
+        for alternative in [model for model in models if key(model) == key(span)] + [span]:
+            normalized = annotate.uncertain_record(alternative)
+            for candidate in normalized["candidates"] if normalized is not None else []:
+                if candidate not in readings:
+                    readings.append(candidate)
+        if readings:
+            record["candidates"] = readings
+        merged.append(record)
     return merged
 
 
