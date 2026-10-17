@@ -842,8 +842,16 @@ def _adopt(result, book, pno, outcome, html, uncertain, ladder,
         # said, and the mark is ours. It is placed only where it cannot change a
         # word (see annotate.mark_uncertain), so a gate re-run on this page would
         # reach the same verdict.
+        from dataclasses import asdict
+        from .enriched_source import model_uncertainty_ranges
+        recovery = getattr(result, "recovery", None)
+        provenance = recovery.provenance.get(pno) if recovery is not None else None
+        source_ranges = model_uncertainty_ranges(
+            book, pno, asdict(provenance) if provenance is not None else {},
+            outcome.uncertain, html)
         html, outcome.uncertain, outcome.marked = annotate.annotate_page(
-            html, outcome.uncertain, recovered=outcome.recovered_markers)
+            html, outcome.uncertain, recovered=outcome.recovered_markers,
+            source_ranges=source_ranges)
         result.page_html[pno] = html
     else:
         outcome.gate = "FAIL" if words.verdict != "NOT_APPLICABLE" or not structure.ok \

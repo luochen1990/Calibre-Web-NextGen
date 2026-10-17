@@ -16,6 +16,7 @@ _TAG = re.compile(r"<[^>]*>", re.S)
 _SPAN_OPEN = re.compile(r"<\s*span\b", re.I)
 _SPAN_CLOSE = re.compile(r"<\s*/\s*span\s*>", re.I)
 _SELF_CLOSING = re.compile(r"/\s*>$")
+_IS_ANNOTATION = re.compile(r'class\s*=\s*"[^"]*\bsource-reading-annotation\b', re.I)
 _IS_UNCERTAIN = re.compile(r'class\s*=\s*"[^"]*\b%s\b' % CLASS, re.I)
 #: One character of readable text: an entity reference, or a character that is
 #: already itself. Matching entities whole is what lets a token containing "&" be
@@ -172,7 +173,7 @@ def _text_nodes(html, *, include_uncertain=False):
     """The readable runs of *html*, skipping anything already marked uncertain."""
     nodes, spans, cursor = [], [], 0
     for tag in _TAG.finditer(html):
-        if tag.start() > cursor and (include_uncertain or not any(spans)):
+        if tag.start() > cursor and not any(s[1] for s in spans) and (include_uncertain or not any(s[0] for s in spans)):
             nodes.append(_TextNode(html, cursor, tag.start()))
         cursor = tag.end()
         text = tag.group(0)
@@ -180,8 +181,8 @@ def _text_nodes(html, *, include_uncertain=False):
             if spans:
                 spans.pop()
         elif _SPAN_OPEN.match(text) and not _SELF_CLOSING.search(text):
-            spans.append(bool(_IS_UNCERTAIN.search(text)))
-    if cursor < len(html) and (include_uncertain or not any(spans)):
+            spans.append((bool(_IS_UNCERTAIN.search(text)), bool(_IS_ANNOTATION.search(text))))
+    if cursor < len(html) and not any(s[1] for s in spans) and (include_uncertain or not any(s[0] for s in spans)):
         nodes.append(_TextNode(html, cursor, len(html)))
     return nodes
 
