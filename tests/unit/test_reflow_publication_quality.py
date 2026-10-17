@@ -214,3 +214,40 @@ def test_accessibility_joint_damage_has_no_page_length_cliff(monkeypatch, count,
     assert sweep['pages'][0]['needs_read']
     assert any('combined_case_dictionary_window' in unit['reasons']
                for unit in sweep['pages'][0]['units'].values())
+
+
+def test_damaged_header_line_does_not_implicate_ordinary_misses_in_clear_paragraphs():
+    header = 'coNtAiner zqxa baskets carry fresh bread'
+    paragraphs = [('clear-'+str(n), ' '.join(CLEAR.split()*8) + ' zqxb') for n in range(3)]
+    for _, paragraph in paragraphs:
+        assert not q.inspect(paragraph, lexicon=LEXICON)['needs_read']
+    metric = q.inspect_partitioned([('header', header)] + paragraphs, lexicon=LEXICON)
+    assert metric['case_flip_rate'] < q.CASE_FLIP_RATE
+    assert metric['damaged_case_lines'] == 1
+    assert metric['reasons'] == ['internal_case_and_dictionary_misses']
+    assert metric['needs_read']
+    assert metric['rejected_units'] == ['header']
+
+
+def test_severe_case_word_does_not_implicate_an_unrelated_normal_case_miss():
+    paragraph = ' '.join(CLEAR.split()*8) + ' zqxb'
+    assert not q.inspect(paragraph, lexicon=LEXICON)['needs_read']
+    metric = q.inspect_partitioned([('damaged', 'coNtAiNeR'), ('clear', paragraph)], lexicon=LEXICON)
+    assert metric['reasons'] == ['repeated_internal_case_transitions']
+    assert metric['needs_read']
+    assert metric['rejected_units'] == ['damaged']
+
+
+def test_global_case_rule_still_attributes_cross_owner_evidence():
+    lexicon = LEXICON | {'brightforms', 'cedarworks', 'clearpath'}
+    case = 'coNtAiner BrightForms CedarWorks ClearPath ' + ' '.join(CLEAR.split()[:6])
+    missed = ' '.join(['zqx'+chr(97+n) if n%6 == 0 else CLEAR.split()[n%len(CLEAR.split())]
+                       for n in range(30)])
+    assert not q.inspect(case, lexicon=lexicon)['needs_read']
+    assert not q.inspect(missed, lexicon=lexicon)['needs_read']
+    metric = q.inspect_partitioned([('case',case), ('missed',missed)], lexicon=lexicon)
+    assert metric['latin_words'] == 40
+    assert metric['dictionary_miss_rate'] == .125
+    assert metric['case_flip_rate'] == .1
+    assert metric['needs_read']
+    assert metric['rejected_units'] == ['case','missed']

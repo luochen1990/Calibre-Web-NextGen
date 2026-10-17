@@ -387,7 +387,35 @@ def inspect_partitioned(units, *, disclosure=False, lexicon=None):
             rejected.update(owner for owner, _ in words)
         if 'dictionary_miss_rate' in reasons:
             rejected.update(owner for (owner, _), missing in zip(words, misses) if missing)
-        if reasons & {'internal_case_and_dictionary_misses', 'repeated_internal_case_transitions', 'combined_case_dictionary_window'}:
+        if 'internal_case_and_dictionary_misses' in reasons:
+            count = len(words)
+            page_case_damage = (count >= MIN_CASE_WORDS
+                and any(_case_anomaly(word) for _, word in words)
+                and sum(any(a.islower() and z.isupper() for a, z in zip(word, word[1:]))
+                        for _, word in words) / count >= CASE_FLIP_RATE
+                and sum(misses) / count >= CASE_MISS_RATE)
+            if page_case_damage:
+                rejected.update(owner for (owner, word), missing in zip(words, misses)
+                                if missing or _case_anomaly(word))
+            else:
+                # The same reason also records a locally damaged line whose
+                # evidence is diluted in the page average. Ordinary dictionary
+                # misses elsewhere did not supply that line's rejection.
+                for owner, text, _ in segments:
+                    for line in text.splitlines():
+                        line_words = [word for word in _WORDS.findall(line)
+                                      if len(word) >= 3 and _latin(word)]
+                        if (len(line_words) >= MIN_CASE_WORDS
+                                and any(_case_anomaly(word) for word in line_words)
+                                and sum(any(a.islower() and z.isupper() for a, z in zip(word, word[1:]))
+                                        for word in line_words) / len(line_words) >= CASE_FLIP_RATE
+                                and sum(vocabulary is not None and word.casefold().replace('’', "'") not in vocabulary
+                                        for word in line_words) / len(line_words) >= CASE_MISS_RATE):
+                            rejected.add(owner)
+        if 'repeated_internal_case_transitions' in reasons:
+            rejected.update(owner for owner, word in words
+                if sum(a.islower() and z.isupper() for a, z in zip(word, word[1:])) >= SEVERE_CASE_TRANSITIONS)
+        if 'combined_case_dictionary_window' in reasons:
             rejected.update(owner for (owner, word), missing in zip(words, misses) if missing or _case_anomaly(word))
         if 'dense_dictionary_miss_window' in reasons:
             for start in range(max(0, len(words) - WINDOW_WORDS + 1)):
