@@ -198,18 +198,23 @@ def _rollback_failed_app_session():
     A flush that fails (``database is locked``, a constraint) leaves the one
     app.db Session every request shares needing a rollback; until it gets one,
     every later request that reads app.db raises PendingRollbackError (#2562).
-    A healthy transaction is left alone.
+
+    Only the DEACTIVE state qualifies. ``is_active`` is also False while a
+    commit is in progress (PREPARED), and task worker threads share this
+    Session, so rolling back on ``is_active`` alone could abort another
+    thread's commit. ``_state`` is private but stable across SQLAlchemy 2.0.
     """
+    from sqlalchemy.orm.session import SessionTransactionState
+
     session = ub.session
-    if session is None:
+    if not hasattr(session, "in_transaction"):
         return
     try:
         if not session.in_transaction():
             return
-        transaction = session.get_transaction()
-        if transaction is None or transaction.is_active:
-            return
-        session.rollback()
+        transactions = (session.get_transaction(), session.get_nested_transaction())
+        if any(getattr(t, "_state", None) is SessionTransactionState.DEACTIVE for t in transactions):
+            session.rollback()
     except Exception as e:  # teardown must not raise; the next request will report it
         log.warning("Could not roll back the app.db session after a failed write: %s", e)
 

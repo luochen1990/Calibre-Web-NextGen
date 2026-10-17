@@ -17,7 +17,7 @@ real SQLite file whose write lock is held by a second connection.
 import sqlite3
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 import cps
@@ -91,3 +91,38 @@ def test_teardown_leaves_a_healthy_transaction_alone(app_and_session):
     assert session.in_transaction()
     session.commit()
     assert session.query(cps.ub.User).filter_by(name="pending").count() == 1
+
+
+def test_teardown_during_another_threads_commit_does_not_abort_it(app_and_session, monkeypatch):
+    """Task worker threads share ub.session; a request ending mid-commit must not roll it back.
+
+    In one thread SQLAlchemy refuses that rollback, so the commit would still land;
+    from a request thread racing a worker it would not. Assert it is never attempted.
+    """
+    application, session, _db_path = app_and_session
+    engine = session.get_bind()
+    attempts = []
+    real_rollback = session.rollback
+
+    def counting_rollback():
+        attempts.append(1)
+        return real_rollback()
+
+    monkeypatch.setattr(session, "rollback", counting_rollback)
+
+    def request_ends_while_committing(_connection):
+        with application.test_request_context("/"):
+            pass
+
+    worker_row = cps.ub.User()
+    worker_row.name = "committed by a worker"
+    worker_row.email = "worker@example.invalid"
+    session.add(worker_row)
+    event.listen(engine, "commit", request_ends_while_committing)
+    try:
+        session.commit()
+    finally:
+        event.remove(engine, "commit", request_ends_while_committing)
+
+    assert attempts == []
+    assert session.query(cps.ub.User).filter_by(name="committed by a worker").count() == 1
