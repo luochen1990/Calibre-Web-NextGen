@@ -6,6 +6,7 @@ must be read from pixels; a rejected reading retains its original source image.
 The English dictionary comes from the already installed OCR language data.
 """
 from functools import lru_cache
+from math import ceil
 from html.parser import HTMLParser
 import hashlib
 from pathlib import Path
@@ -16,7 +17,7 @@ from subprocess import run as _run
 import tempfile
 import unicodedata
 
-VERSION = 'page-text-quality-2'
+VERSION = 'page-text-quality-3'
 MIN_PAGE_WORDS = 40
 MISS_RATE = .40
 MIN_CASE_WORDS = 3
@@ -186,16 +187,27 @@ def inspect(text, *, lexicon=None):
     # isolated threshold is crossed. Require repeated damaged casing, sustained
     # lexical loss and a dense local pocket together; ordinary unfamiliar names
     # or a single mixed-case product name cannot satisfy this rule.
-    if (count >= MIN_PAGE_WORDS
-            and anomalous_case_words >= COMBINED_MIN_ANOMALOUS_WORDS
-            and flip_rate >= COMBINED_CASE_FLIP_RATE
-            and miss_rate >= COMBINED_MISS_RATE
-            and worst >= COMBINED_WINDOW_MISS_RATE):
+    # Evidence scales with the actual passage, not the independent page-size
+    # minimum: deleting one clear word cannot disable corroborating damage.
+    # Two damaged-case words remain the minimum; a longer passage must supply
+    # proportionally more flips and lexical misses. Short passages use their
+    # own width for the local pocket instead of an implicitly padded window.
+    combined_width = min(WINDOW_WORDS, count)
+    combined_flips = max(COMBINED_MIN_ANOMALOUS_WORDS, ceil(count * COMBINED_CASE_FLIP_RATE))
+    combined_misses = ceil(count * COMBINED_MISS_RATE)
+    combined_dense = max((sum(missing[n:n+combined_width])
+        for n in range(count-combined_width+1)), default=0) if combined_width else 0
+    if (anomalous_case_words >= COMBINED_MIN_ANOMALOUS_WORDS
+            and sum(flips) >= combined_flips
+            and sum(missing) >= combined_misses
+            and combined_dense >= ceil(combined_width * COMBINED_WINDOW_MISS_RATE)):
         reasons.append('combined_case_dictionary_window')
     return dict(version=VERSION, latin_words=count, dictionary_available=lexicon is not None,
         dictionary_misses=sum(missing), dictionary_miss_rate=round(miss_rate, 6),
         case_flip_words=sum(flips), case_flip_rate=round(flip_rate, 6), anomalous_case_words=anomalous_case_words, severe_case_words=severe_case_words,
         worst_window_miss_rate=round(worst, 6), damaged_case_lines=damaged_lines, scripts=script_counts(text),
+        combined_window_words=combined_width, combined_required_case_flips=combined_flips,
+        combined_required_dictionary_misses=combined_misses,
         reasons=reasons, needs_read=bool(reasons))
 
 

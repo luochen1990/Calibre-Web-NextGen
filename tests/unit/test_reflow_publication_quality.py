@@ -155,3 +155,62 @@ def test_missing_installed_dictionary_cannot_borrow_a_callers_source_vocabulary(
     metric = sweep['pages'][0]
     assert not metric['dictionary_available']
     assert 'dictionary_unavailable' in metric['reasons']
+
+
+def scaled_joint_damage(count):
+    """Authored damage keeps constant rates as the passage grows."""
+    import math
+    words = [CLEAR.split()[n % len(CLEAR.split())] for n in range(count)]
+    missed = [(n // 8) * 40 + n % 8 for n in range(max(8, math.ceil(count * .20)))]
+    for n, offset in enumerate(missed):
+        # Groups of eight are separated by recognized words, preserving a
+        # half-missing local window without tripping the independent limit.
+        words[offset] = 'zqx' + chr(97 + n % 26)
+    clear = [n for n in range(count) if n not in missed]
+    anomalous = max(2, math.ceil(count * .05))
+    for n in range(anomalous):
+        words[clear[n * (len(clear)-1) // (anomalous-1)]] = 'coNtAiner'
+    return ' '.join(words)
+
+
+@pytest.mark.parametrize('count', [26, 32, 39, 40, 80, 160])
+def test_joint_evidence_scales_with_the_reading_length(count):
+    metric = q.inspect(scaled_joint_damage(count), lexicon=LEXICON)
+    assert metric['latin_words'] == count
+    assert metric['needs_read']
+    assert metric['reasons'] == ['combined_case_dictionary_window']
+
+
+def test_same_absolute_damage_dilutes_but_proportional_damage_does_not():
+    damaged = scaled_joint_damage(40)
+    assert q.inspect(damaged, lexicon=LEXICON)['needs_read']
+    padding = ' '.join(CLEAR.split()[n % len(CLEAR.split())] for n in range(40))
+    assert not q.inspect(damaged + ' ' + padding, lexicon=LEXICON)['needs_read']
+    assert q.inspect(scaled_joint_damage(80), lexicon=LEXICON)['needs_read']
+
+
+@pytest.mark.parametrize('count', [39, 40])
+def test_joint_evidence_crossing_two_safe_owners_has_no_page_length_cliff(count):
+    words = [CLEAR.split()[n % len(CLEAR.split())] for n in range(count)]
+    split = count // 2
+    words[0], words[-1] = 'coNtAiner', 'paInTwork'
+    words[split-4:split+4] = ['zqx' + chr(97+n) for n in range(8)]
+    left, right = ' '.join(words[:split]), ' '.join(words[split:])
+    assert not q.inspect(left, lexicon=LEXICON)['needs_read']
+    assert not q.inspect(right, lexicon=LEXICON)['needs_read']
+    metric = q.inspect_partitioned([('left',left),('right',right)], lexicon=LEXICON)
+    assert metric['needs_read']
+    assert metric['rejected_units'] == ['left','right']
+    assert metric['reasons'] == ['combined_case_dictionary_window']
+
+
+@pytest.mark.parametrize('count', [39, 40])
+@pytest.mark.parametrize('attribute', ['alt', 'aria-label', 'title'])
+def test_accessibility_joint_damage_has_no_page_length_cliff(monkeypatch, count, attribute):
+    monkeypatch.setattr(q, 'publication_lexicon', lambda: LEXICON)
+    page = dict(pno=0, body=['<img src="figure.png" '+attribute+'="'+scaled_joint_damage(count)+'"/>'], asides=[])
+    sweep = q.sweep_publication_pages([page], {0:dict(source='vision')}, [0], lexicon=LEXICON)
+    assert not sweep['passed']
+    assert sweep['pages'][0]['needs_read']
+    assert any('combined_case_dictionary_window' in unit['reasons']
+               for unit in sweep['pages'][0]['units'].values())
