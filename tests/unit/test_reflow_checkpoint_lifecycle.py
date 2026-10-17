@@ -16,7 +16,10 @@ def _prepare(tmp_path, monkeypatch):
     page = doc.new_page(width=240, height=300)
     page.insert_text((20, 40), 'The clear sample remains readable.')
     answer = {'blocks': [{'id': 'body', 'role': 'body',
-                         'text': 'The clear sample remains readable.'}]}
+                         'text': 'The clear sample remains readable.',
+                         'bbox': [80, 80, 950, 160], 'marker': '',
+                         'low_confidence': [], 'continues_previous': False,
+                         'continues_next': False}]}
 
     class Reader:
         cache = tmp_path / 'cache' / 'readings'
