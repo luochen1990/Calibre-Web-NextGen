@@ -91,3 +91,17 @@ def test_valid_but_lost_dispatch_tail_keeps_shared_dispatch_hold(tmp_path):
     ledger.recover_authoritative(worker_gone=True)
     assert ledger.pending_usd()==.9
     assert store.status()['remaining_usd']==pytest.approx(4.1)
+
+
+def test_vision_job_route_does_not_prove_untagged_attempt_was_unsent(tmp_path):
+    store, ledger = setup(tmp_path)
+    ledger.record(dict(kind='job', event='start', route='vision-page-1', cap_usd=1))
+    ambiguous = ledger.reserve_attempt('page', .2)
+    unsent = ledger.reserve_attempt('page', .3, context={'route_version':'vision-parent-v1'})
+    ledger.recover_authoritative(worker_gone=True)
+    assert ledger._financial_state()[1] == {ambiguous: .2}
+    assert store.status()['remaining_usd'] == pytest.approx(4.8)
+    assert next(e for e in ledger.entries('reservation')
+        if e.get('attempt') == unsent and e.get('event') == 'released')['reason'] == 'worker_exited_before_dispatch'
+    assert not any(e.get('attempt') == ambiguous and e.get('event') == 'released'
+                   for e in ledger.entries('reservation'))

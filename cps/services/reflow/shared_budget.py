@@ -300,8 +300,6 @@ class Store:
                 raise BudgetError() from None
             ledger._entries = entries
             dispatched = {e.get('attempt') for e in entries if e.get('kind') == 'vision_dispatch'}
-            vision_job = any(e.get('kind') == 'job' and e.get('event') == 'start'
-                and e.get('route') == 'vision-page-1' for e in entries)
             with self._locked() as (db, now):
                 prior = db.execute('SELECT 1 FROM imported WHERE path=?', (relative,)).fetchone()
                 if not path.exists() and prior:
@@ -312,7 +310,7 @@ class Store:
                     identity = json.loads(raw_identity)
                     if identity.get('ledger') != relative: continue
                     parent_vision = identity.get('context', {}).get('route_version') == 'vision-parent-v1'
-                    if state == 'pending' and worker_gone and (parent_vision or vision_job) and attempt not in dispatched:
+                    if state == 'pending' and worker_gone and parent_vision and attempt not in dispatched:
                         state, cost, settled = 'released', '0', now
                         db.execute('UPDATE attempts SET state=?,cost=?,settled=? WHERE id=?',
                                    (state, cost, settled, attempt))
