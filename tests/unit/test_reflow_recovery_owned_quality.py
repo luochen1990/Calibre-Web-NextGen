@@ -297,3 +297,92 @@ def test_equal_fallback_words_on_distinct_source_instances_remain_distinct(tmp_p
     assert all(block['fallback'] for block in record['blocks'])
     assert all(block['published_tokens'] == text.split() for block in record['blocks'])
     assert vp._seam_text(' '.join(page['body'])).replace('†', '') == text+' '+text
+
+
+@pytest.mark.parametrize('edge', ['first', 'last'])
+def test_displaced_numeric_boundary_cannot_span_another_source_unit(tmp_path, edge):
+    import pymupdf
+    from cps.services.reflow.source_display import SourceDisplay
+    lines = ['The clear sample remains readable near',
+             'the open window while the soft light',
+             'crosses the wooden panel beside the door.']
+    text = ('2. ' if edge == 'first' else '')+' '.join(lines)+(' 2.' if edge == 'last' else '')
+    with pymupdf.open() as doc:
+        source = doc.new_page(width=300, height=400)
+        source.insert_text((30, 40 if edge == 'first' else 260), '2.', fontsize=9)
+        source.insert_text((30, 90 if edge == 'first' else 210), 'A separate clear heading', fontsize=9)
+        for line, y in zip(lines, [130, 148, 166]):
+            source.insert_text((30, y), line, fontsize=9)
+        optical = [dict(text=w[4], bbox=list(w[:4])) for w in source.get_text('words', sort=True)]
+        # The correct numeric boundary is unrecognized; a displaced hint covers
+        # only the reading's final or initial two rows. Another number is exact.
+        hint = [29, 155, 285, 170] if edge == 'first' else [29, 115, 285, 135]
+        display = SourceDisplay(doc, 0)
+        regions, owners = {}, {}
+        bound, repairs = vp.bind_geometry(dict(blocks=[_ownership_block(text, 'reading', hint)]),
+                                          optical, display, regions, owners)
+        box = vp.block_rect(bound['blocks'][0], display)
+        assert 110 < box[1] < box[3] < 180
+        assert bound['blocks'][0]['text'] == text
+        position = 0 if edge == 'first' else len(text.split())-1
+        assert position in bound['blocks'][0]['low_confidence']
+        controller = ur.Controller(SimpleNamespace(key=None), [0], tmp_path)
+        controller.admit_answer(0, bound)
+        with ur.activated(controller):
+            page, record = vp.compile_page(bound, [], display, 0,
+                SimpleNamespace(image=lambda *args: None), {}, pixel_words=optical,
+                regions=regions, body_owners=owners)
+        assert record['blocks'][0]['published_tokens'] == text.split()
+        assert position in record['blocks'][0]['marked']
+        assert 'separate clear heading' not in vp._seam_text(' '.join(page['body']))
+
+
+def test_adjacent_numeric_body_boundary_keeps_its_exact_physical_instance(tmp_path):
+    text = '2. The clear sample remains readable near the open window.'
+    page, record = _compile_ownership_sample(tmp_path, [(text, 130)],
+        [_ownership_block(text, 'reading', [29, 115, 285, 140])], bind=True)
+    reading = record['blocks'][0]
+    assert reading['published_tokens'] == text.split()
+    assert reading['physical_head']['text'] == '2.'
+    assert reading['marked'] == []
+    assert vp._seam_text(' '.join(page['body'])) == text
+
+
+@pytest.mark.parametrize('incoming', ['empty', 'conflicting'])
+def test_rejected_exact_source_instance_stays_reserved_across_retries(tmp_path, incoming):
+    controller = ur.Controller(SimpleNamespace(key=None), [0], tmp_path)
+    original = ('sample', (20, 40, 50, 50))
+    distinct = ('sample', (20, 140, 50, 150))
+    controller.register_regions(0, {'failed': [[20, 40, 50, 50]],
+                                    '_instances': {original: 'failed'}})
+    controller.degraded[(0, 'failed')] = dict(page=0, block='failed')
+    for _ in range(2):
+        claims = {} if incoming == 'empty' else {original: 'live'}
+        claims[distinct] = 'live'
+        controller.register_regions(0, {'_instances': claims})
+        coverage = controller.coverage_regions(0, {'_instances': {original: 'live', distinct: 'live'}})
+        assert coverage['_instances'][original] == 'failed'
+        assert coverage['_instances'][distinct] == 'live'
+        assert controller.regions[0]['_instances'][original] == 'failed'
+    assert controller.regions[0]['failed'] == [[20, 40, 50, 50]]
+
+
+def test_successful_cached_reread_rebuilds_exact_source_ownership(tmp_path):
+    replacement = dict(answer=dict(blocks=[_ownership_block('The clear sample remains readable.',
+        'reading', [29, 115, 285, 140])]), config_sha256='new-reading')
+    reader = SimpleNamespace(key=None, cached_reread=lambda *args: copy.deepcopy(replacement))
+    controller = ur.Controller(reader, [0], tmp_path)
+    image = tmp_path/'source.jpg'
+    image.write_bytes(b'synthetic source identity')
+    controller.images[0] = dict(path=str(image), sha256='synthetic-source')
+    controller.readings[0] = dict(config_sha256='old-reading')
+    controller.regions[0] = {'_instances': {('sample', (20, 40, 50, 50)): 'reading'}}
+    controller.admitted_answers[0] = copy.deepcopy(replacement['answer'])
+    controller.prepared_pages[0] = ('old-preparation', tmp_path/'old.pickle')
+    controller.recover(ur.UnitFailure([dict(page=0, block='reading')],
+        'synthetic_reading', ValueError('A synthetic source unit needs another reading.')))
+    assert controller.readings[0] == replacement
+    assert 0 not in controller.regions
+    assert 0 not in controller.admitted_answers
+    assert 0 not in controller.prepared_pages
+    assert controller.events[-1]['transition'] == 'TARGETED_REREAD_REASSEMBLE'

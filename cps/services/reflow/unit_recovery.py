@@ -354,6 +354,13 @@ class Controller:
             pickle.dump(prepared, handle, protocol=pickle.HIGHEST_PROTOCOL)
         self.prepared_pages[page] = (key, path)
 
+    def _replace_reading(self, page, record):
+        self.readings[page] = copy.deepcopy(record)
+        self.answers[page] = copy.deepcopy(record['answer'])
+        self.admitted_answers.pop(page, None)
+        self.regions.pop(page, None)
+        self.prepared_pages.pop(page, None)
+
     def read(self, page, image, source_repair=None):
         identity = self.register_image(page, image)
         if source_repair is not None:self.source_repairs[page]=source_repair
@@ -368,8 +375,7 @@ class Controller:
             self.events.extend(record.get('recovery_events', []))
             self.recovery_closed.add(page)
             raise UnitFailure([dict(page=page)], 'reading', ValueError(record['failure']))
-        self.readings[page] = copy.deepcopy(record)
-        self.answers[page] = copy.deepcopy(record['answer'])
+        self._replace_reading(page, record)
         self.events.extend(record.get('recovery_events', []))
         return copy.deepcopy(record)
 
@@ -404,8 +410,7 @@ class Controller:
                 try:
                     record=self.reader.cached_reread(Path(image_record['path']).read_bytes(),self.source_repairs.get(page))
                     if record and record.get('config_sha256')!=self.readings.get(page,{}).get('config_sha256'):
-                        self.readings[page]=copy.deepcopy(record);self.answers[page]=copy.deepcopy(record['answer'])
-                        self.admitted_answers.pop(page, None)
+                        self._replace_reading(page, record)
                         self.retried.add(page);reread=True
                         event.setdefault('cached_reread_receipts',[]).append(dict(page=page,**{k:v for k,v in record.items() if k!='answer'}))
                         continue
@@ -425,9 +430,7 @@ class Controller:
                     self.claim_reread(page, image_record['sha256'])):
                 try:
                     record = self.reader.reread(Path(image_record['path']).read_bytes())
-                    self.readings[page] = copy.deepcopy(record)
-                    self.answers[page] = copy.deepcopy(record['answer'])
-                    self.admitted_answers.pop(page, None)
+                    self._replace_reading(page, record)
                     event.setdefault('reread_receipts', []).append(
                         dict(page=page, **{k: v for k, v in record.items() if k != 'answer'}))
                     reread = True
@@ -500,7 +503,13 @@ class Controller:
         return copy.deepcopy(self.admitted_answers.get(page, self.answers.get(page, {'blocks': []})))
 
     def register_regions(self, page, regions):
-        self.regions.setdefault(page, {}).update(copy.deepcopy(regions))
+        previous = self.regions.setdefault(page, {})
+        blocked = self.blocked(page)
+        # Disclosing a unit does not release its already admitted physical ink.
+        protected = {instance: owner for instance, owner in previous.get('_instances', {}).items()
+                     if owner in blocked}
+        previous.update(copy.deepcopy(regions))
+        previous.setdefault('_instances', {}).update(protected)
 
     def coverage_regions(self, page, regions):
         """Source territory retained by a visible fallback cannot be recovered twice.
@@ -509,7 +518,11 @@ class Controller:
         reserves ink only; it does not validate or publish the rejected wording.
         """
         regions = copy.deepcopy(regions)
-        for bid in self.blocked(page):
+        blocked = self.blocked(page)
+        protected = {instance: owner for instance, owner in self.regions.get(page, {}).get('_instances', {}).items()
+                     if owner in blocked}
+        regions.setdefault('_instances', {}).update(copy.deepcopy(protected))
+        for bid in blocked:
             if bid in self.regions.get(page, {}):
                 regions.setdefault('_degraded_territories', []).extend(copy.deepcopy(self.regions[page][bid]))
         return regions

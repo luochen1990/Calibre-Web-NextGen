@@ -2321,6 +2321,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             for owner in owners if owner!=block['id']))
         count=len({j for _,j in matched})
         local_owned=borrowed and count>=5 and count/max(1,len(local_indices))>=.6
+        globally_relocated=False
         if count/max(1,len(candidate))<.6 and not local_owned:
             # A damaged marginal heading can repeat verbatim inside the prose.
             # Its valid source rectangle still owns that margin: a global text
@@ -2332,7 +2333,30 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             else:
                 local_indices=available
                 if block['role']!='footnote':matched=_geometry_anchors(optical,local_indices,candidate)
+                globally_relocated=block['role']=='body'
         anchors=matched
+        if globally_relocated:
+            # A repeated list number elsewhere on the page cannot bridge a
+            # displaced hint to its real paragraph. A numeric boundary needs
+            # adjacent printed ink; otherwise keep its reading uncertain and
+            # leave that remote physical occurrence with its original unit.
+            for position in (0,len(candidate)-1):
+                if not candidate or not re.fullmatch(r'[0-9]{1,4}',candidate[position]):continue
+                edges=[(i,j) for i,j in anchors if j==position]
+                rest=[(i,j) for i,j in anchors if j!=position]
+                if len(edges)!=1 or not rest:continue
+                index,_=edges[0]
+                neighbor=min(rest,key=lambda pair:abs(pair[1]-position))[0]
+                box=optical[index]['bbox'];near=optical[neighbor]['bbox']
+                height=max(1,box[3]-box[1],near[3]-near[1])
+                gap=max(0,max(box[1],near[1])-min(box[3],near[3]))
+                if gap<=2.5*height:continue
+                anchors=[pair for pair in anchors if pair!=edges[0]]
+                positions=[i for i,word in enumerate(block['text'].split())
+                    for token in re.sub(r'<n:[^>]+>',' ',word).split()]
+                block['low_confidence']=sorted(set(block['low_confidence']+[positions[position]]))
+                repairs.append(dict(block=block['id'],method='unplaced_numeric_boundary',
+                    candidate_position=position))
         if len(anchors)<min(5,len(candidate)) or (len(anchors)/max(1,len(candidate))<.6 and not (valid and borrowed)):
             if valid:continue
             raise ValueError('Model block rectangle cannot be bound to printed pixels: '+block['id'])
