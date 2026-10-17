@@ -29,6 +29,10 @@ never removes what something still needs:
 A partial write (``*.tmp``) or a scratch folder is removed once it is a day old:
 every writer finishes, or is stopped, long before that. Nothing younger than a
 day is removed to meet a size budget.
+
+Native worker scratch instead requires exclusive ownership of the inherited
+native-resource lock. It is removed as soon as that lock proves the worker has
+exited; its age and a PID lookup are not evidence of exit.
 """
 
 import fcntl
@@ -43,6 +47,7 @@ from typing import Optional
 
 from . import ledger as ledger_mod
 from . import unit_recovery
+from . import native_resources
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +172,14 @@ def sweep(root, active_jobs=(), now=None):
             except (OSError,unit_recovery.SourceIntegrityError):
                 continue
     if count:removed['conversion-scratch']=count
+    try:
+        count = native_resources.recover_stale_scratch(root)
+        if count:
+            removed['native-scratch'] = count
+    except (native_resources.ResourceUnavailable, OSError):
+        # A live worker owns its scratch, including response artifacts. Do not
+        # infer death from time, job status or a failed process-table lookup.
+        pass
     return removed
 
 

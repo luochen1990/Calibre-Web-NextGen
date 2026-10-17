@@ -200,11 +200,13 @@ class NativeDocument:
         self.resource_lease = None
         self.operation_deadline = None
         self.deadline_exceeded = False
-        os.makedirs(scratch_root, mode=0o700, exist_ok=True)
-        self.root = tempfile.mkdtemp(prefix='native-', dir=scratch_root)
+        self.root = None
         self.selector = selectors.DefaultSelector()
         try:
             self.resource_lease = Lease(cache_root or Path(scratch_root).parent, should_stop)
+            self.resource_lease.remove_stale_scratch(scratch_root)
+            os.makedirs(scratch_root, mode=0o700, exist_ok=True)
+            self.root = tempfile.mkdtemp(prefix='native-', dir=scratch_root)
             shutil.copyfile(source, Path(self.root) / 'source.pdf')
             self.fingerprint = extract.document_fingerprint(Path(self.root) / 'source.pdf')
             if extract.document_fingerprint(source) != self.fingerprint:
@@ -683,7 +685,8 @@ class NativeDocument:
             if self.control: self.control.close()
             self.selector.close()
             if process and self.drain and not self.drain.is_alive(): process.stdout.close()
-            shutil.rmtree(self.root)
+            if self.root is not None:
+                shutil.rmtree(self.root)
         except BaseException as exc:
             if evidence is not None: evidence['cleanup_error'] = type(exc).__name__
             raise
