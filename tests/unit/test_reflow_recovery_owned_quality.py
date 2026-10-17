@@ -203,3 +203,97 @@ def test_leading_art_cannot_join_across_a_disclosed_or_unmapped_body(side, defec
     assert vp._leading_art_continuation(dict(blocks=before), current, before, after,
                                        '<p>A clear previous sample continues</p>', after) is None
     assert (before, after, current) == saved
+
+
+def _compile_ownership_sample(tmp_path, rows, blocks, regions=None, bind=False):
+    """Procedural source words and geometry written for these ownership tests."""
+    import pymupdf
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open() as doc:
+        source = doc.new_page(width=300, height=400)
+        for text, y in rows:
+            source.insert_text((30, y), text, fontsize=9)
+        optical = [dict(text=w[4], bbox=list(w[:4])) for w in source.get_text('words', sort=True)]
+        display = SourceDisplay(doc, 0)
+        answer = dict(blocks=copy.deepcopy(blocks))
+        regions = copy.deepcopy(regions or {})
+        owners = {}
+        if bind:
+            answer, _ = vp.bind_geometry(answer, optical, display, regions, owners)
+        controller = ur.Controller(SimpleNamespace(key=None), [0], tmp_path)
+        controller.admit_answer(0, answer)
+        package = SimpleNamespace(image=lambda *args: None)
+        with ur.activated(controller):
+            try:
+                return vp.compile_page(answer, [], display, 0, package, {},
+                                       pixel_words=optical, regions=regions, body_owners=owners)
+            except ur.UnitFailure as error:
+                # Recompile only the surviving units to prove the failure is local.
+                controller.recover(error)
+                remaining = controller.filter_answer(0, answer)
+                error.surviving_page, error.surviving_record = vp.compile_page(
+                    remaining, [], display, 0, package, {}, pixel_words=optical,
+                    regions=regions, body_owners=owners)
+                raise
+
+
+def _ownership_block(text, ident, rect, role='body'):
+    return dict(id=ident, role=role, text=text, marker='',
+                bbox=[rect[0]/300*1000, rect[1]/400*1000,
+                      rect[2]/300*1000, rect[3]/400*1000],
+                low_confidence=[], continues_previous=False, continues_next=False)
+
+
+def test_displaced_heading_cannot_publish_a_neighbouring_optical_line(tmp_path):
+    title = 'A CLEAR SAMPLE HEADING'
+    neighbour = 'The clear sample remains readable near the open window.'
+    healthy = 'Every healthy source unit remains readable.'
+    blocks = [_ownership_block(title, 'title', [29, 72, 285, 105], 'heading'),
+              _ownership_block(healthy, 'healthy', [29, 145, 285, 165])]
+    with pytest.raises(ur.UnitFailure) as caught:
+        _compile_ownership_sample(tmp_path,
+            [('A CLEAR', 60), ('SAMPLE HEADING', 80), (neighbour, 100), (healthy, 160)],
+            blocks, bind=True)
+    assert {(unit['page'], unit['block']) for unit in caught.value.units} == {(0, 'title')}
+    assert all('optical heading' in unit['source_failure_reason'] for unit in caught.value.units)
+    assert [b['id'] for b in caught.value.surviving_record['blocks']] == ['healthy']
+    assert healthy in vp._seam_text(' '.join(caught.value.surviving_page['body']))
+
+
+def test_exact_optical_heading_keeps_its_authored_words(tmp_path):
+    title = 'A CLEAR SAMPLE HEADING'
+    page, record = _compile_ownership_sample(tmp_path,
+        [('A CLEAR', 60), ('SAMPLE HEADING', 80)],
+        [_ownership_block(title, 'title', [29, 45, 285, 85], 'heading')], bind=True)
+    assert vp._seam_text(' '.join(page['body'])) == title
+    assert record['blocks'][0]['published_tokens'] == title.split()
+    assert not record['blocks'][0]['fallback']
+
+
+@pytest.mark.parametrize('second_fallback', [False, True])
+def test_optical_fallback_cannot_republish_another_units_source_instance(tmp_path, second_fallback):
+    first = 'A clear sample heading'
+    second = 'The clear sample remains readable near the open window.'
+    blocks = [_ownership_block(first, 'first', [29, 45, 285, 105]),
+              _ownership_block('Readable' if second_fallback else second,
+                               'second', [29, 85, 285, 105])]
+    regions = {'first': [[29, 45, 285, 105]], 'second': [[29, 85, 285, 105]]}
+    with pytest.raises(ur.UnitFailure) as caught:
+        _compile_ownership_sample(tmp_path, [(first, 60), (second, 100)], blocks, regions)
+    expected = {'first', 'second'} if second_fallback else {'first'}
+    assert {unit['block'] for unit in caught.value.units} == expected
+    assert all(unit['page'] == 0 for unit in caught.value.units)
+    if not second_fallback:
+        assert vp._seam_text(' '.join(caught.value.surviving_page['body'])) == second
+        assert [b['id'] for b in caught.value.surviving_record['blocks']] == ['second']
+
+
+def test_equal_fallback_words_on_distinct_source_instances_remain_distinct(tmp_path):
+    text = 'The clear sample remains readable near the open window.'
+    blocks = [_ownership_block('Readable', name, [29, y-15, 285, y+5])
+              for name, y in [('first', 60), ('second', 160)]]
+    page, record = _compile_ownership_sample(tmp_path, [(text, 60), (text, 160)], blocks)
+    assert len(record['blocks']) == 2
+    assert all(block['fallback'] for block in record['blocks'])
+    assert all(block['published_tokens'] == text.split() for block in record['blocks'])
+    assert vp._seam_text(' '.join(page['body'])).replace('†', '') == text+' '+text

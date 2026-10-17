@@ -1804,7 +1804,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
     body=[];asides=[];alignment=[];marked=0;tokens_count=0;source_quote_suppressions={}
     footnotes={b['id']:b for b in answer['blocks'] if b['role']=='footnote'}
     refs={};extras=[];live_table_cells=[];marker_disclosures=[];marker_repairs=[];pixel_rows=_pixel_row_ids(pixel_words or [])
-    quality_failures=[]
+    quality_failures=[];pixel_claims={};optical_fallbacks=set()
     for block in answer['blocks']:
         try:
             bid=block['id'];role=block['role'];box=block_rect(block,display)
@@ -1859,7 +1859,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                        if punctuation_proof else vision_reading.UNALIGNED_RUN)
             result=vision_reading.align(block['text'],local,block['low_confidence'],
                 has_layer=bool(words),pixel_words=optical_evidence,run_limit=run_limit)
-            evidence_boxes=result['boxes'];wraps=set();optical_local=[]
+            evidence_boxes=result['boxes'];wraps=set();optical_local=[];independent_optical_fallback=False
             if pixel_words is not None:
                 optical_local=_owned_block_words(block,answer,pixel_words,display,regions,body_owners,ordered=True)
                 if role=='footnote' and optical_local and vision_reading.normalized(optical_local[0]['text']).strip('.')==vision_reading.normalized(block['marker']).strip('.'):
@@ -1875,6 +1875,11 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     run_limit=(max(len(optical_local),len(block['text'].split()))+1
                                if punctuation_proof else vision_reading.UNALIGNED_RUN))
                 if guarded['fallback']:
+                    if role=='heading':
+                        # An unproved heading hint cannot turn an adjacent
+                        # optical line into replacement heading words.
+                        raise _DisclosureQualityRejection('Unproved optical heading requires original source disclosure')
+                    independent_optical_fallback=True
                     result=guarded
                     result['guard'].append({'kind':'independent_pixel_line_fallback'})
                 elif result['fallback'] and optical_local:
@@ -2131,6 +2136,22 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 if complete_box==local_box:
                     # Structural location only; original context stays whole.
                     alignment[-1]['source_complete_caption_bbox']=local_box
+            if optical_local:
+                # Whole original optical tokens can belong to only one live
+                # reading unit. Equal spelling at another rectangle is distinct;
+                # fused/partial tokens and interpolated alignment boxes prove no
+                # ownership. Only successfully compiled blocks make claims.
+                from difflib import SequenceMatcher
+                lexical=lambda text:re.sub(r'[^\w]', '', vision_reading.normalized(text).casefold())
+                source=[(word,lexical(word['text'])) for word in optical_local
+                        if lexical(word['text'])]
+                chosen=[lexical(token) for token in result['tokens']
+                        if not token.startswith('<n:') and lexical(token)]
+                matched=SequenceMatcher(None,[key for word,key in source],chosen,autojunk=False)
+                for first,_,count in matched.get_matching_blocks():
+                    for word,key in source[first:first+count]:
+                        pixel_claims.setdefault(_source_instance(word),set()).add(bid)
+                if independent_optical_fallback:optical_fallbacks.add(bid)
         except _DisclosureQualityRejection as error:
             controller=unit_recovery.current()
             if controller is None:raise
@@ -2140,6 +2161,14 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             owned=block['id'] if block['id'] in admitted else None
             units=controller.refine_units([dict(page=pno,block=owned)],error)
             quality_failures.extend(dict(unit,source_failure_reason=str(error)) for unit in units)
+    borrowed={bid for claimants in pixel_claims.values() if len(claimants)>1
+              for bid in claimants if bid in optical_fallbacks}
+    if borrowed:
+        error=_DisclosureQualityRejection('Optical fallback has nonunique source ownership; original source disclosure required')
+        controller=unit_recovery.current()
+        if controller is None:raise error
+        units=controller.refine_units([dict(page=pno,block=bid) for bid in sorted(borrowed)],error)
+        quality_failures.extend(dict(unit,source_failure_reason=str(error)) for unit in units)
     if quality_failures:
         raise _CompilationQualityFailure(quality_failures)
     note_html=[]
