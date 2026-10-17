@@ -107,3 +107,14 @@ def test_one_quarter_source_token_coverage_is_not_catastrophic_contraction(compi
     assert report['blocks'][0]['fallback']
     assert report['blocks'][0]['published_tokens'] == ['silver', 'copper']
     assert 'silver copper' in ''.join(published['body'])
+
+
+def test_source_bound_alphanumeric_labels_are_not_english_dictionary_misses(compilation):
+    display, package = compilation
+    labels = 'RackLeft00 RackRight01 BinUpper02 BinLower03'
+    published, report = vision_pipeline.compile_page(
+        answer(block(labels, bbox=(0, 0, 1000, 1000))), words(labels),
+        display, 0, package, {}, forced_uncertain=('b1',))
+    assert report['blocks'][0]['fallback']
+    assert report['blocks'][0]['published_tokens'] == labels.split()
+    assert all(label in ''.join(published['body']) for label in labels.split())

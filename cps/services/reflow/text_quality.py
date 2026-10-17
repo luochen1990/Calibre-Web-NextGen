@@ -180,7 +180,19 @@ def inspect_disclosure(text, *, lexicon=None):
     Latin words suffice here; non-Latin scripts remain outside English misses.
     Rejection retains original pixels rather than guessing replacement words.
     """
-    metric = inspect(text, lexicon=lexicon)
+    # Codes and labelled coordinates such as RackLeft00 are identifiers, not
+    # misspelled English. Exclude the complete alphanumeric identifier rather
+    # than feeding only its letter prefix to the English word classifier.
+    identifiers=[]
+    def prose_token(match):
+        token=match[0]
+        if any(char.isalpha() for char in token) and any(char.isdigit() for char in token):
+            identifiers.append(token)
+            return ''
+        return token
+    prose=re.sub(r'\w+',prose_token,text or '')
+    metric = inspect(prose, lexicon=lexicon)
+    metric['alphanumeric_identifiers'] = len(identifiers)
     if (metric['latin_words'] >= MIN_CASE_WORDS
             and metric['dictionary_miss_rate'] >= MISS_RATE):
         if 'short_disclosure_dictionary_misses' not in metric['reasons']:
