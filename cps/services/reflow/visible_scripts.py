@@ -84,7 +84,9 @@ def _page_evidence(display):
             if char in LATIN_CONFUSABLES:
                 refuse('latin_confusable'); continue
             matches = fonts.get(_font_key(span.get('font')), ())
-            if not any(font.has_glyph(item[0], fallback=False) == item[1] and item[1] > 0 for font in matches):
+            # Trace names can collide across embedded font subsets. A glyph
+            # cannot borrow a script mapping from just one ambiguous candidate.
+            if not matches or not all(font.has_glyph(item[0], fallback=False) == item[1] and item[1] > 0 for font in matches):
                 refuse('glyph_mapping_unproved'); continue
             rect = display.reading_rect(item[3])
             if rect.is_empty:

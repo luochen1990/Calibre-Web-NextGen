@@ -104,3 +104,14 @@ def test_disclosed_script_region_does_not_require_script_in_retained_sibling():
         assert visible_scripts.source_text(display, rectangles=[sibling_box, script_box]) == all_evidence['text']
         assert visible_scripts.evidence(display)['text'] == all_evidence['text']
         assert all(30 <= (g['bbox'][1]+g['bbox'][3])/2 <= 70 for g in script_evidence['glyphs'])
+
+
+def test_ambiguous_font_name_cannot_borrow_another_fonts_script_mapping(monkeypatch):
+    with pymupdf.open() as doc:
+        source = page(doc)
+        key = visible_scripts._font_key(source.get_texttrace()[0]['font'])
+        monkeypatch.setattr(visible_scripts, '_fonts', lambda display: {
+            key: [pymupdf.Font('helv'), pymupdf.Font('cjk')]})
+        proof = visible_scripts.evidence(SourceDisplay(doc, 0))
+        assert proof['scripts'] == {}
+        assert proof['rejected']['glyph_mapping_unproved'] >= 4
