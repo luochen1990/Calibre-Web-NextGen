@@ -1,8 +1,11 @@
 """Synthetic raster readings retain their own source occurrence and uncertainty."""
 import shutil
+import copy
 
 import pymupdf
 import pytest
+from tests.unit import test_round4_defects as ink
+from cps.services.reflow import local_reading, vision_pixels
 
 from cps.services.reflow import unit_recovery, vision_pipeline, vision_reading
 
@@ -19,7 +22,7 @@ def test_unavailable_reading_uses_local_words_without_releasing_a_financial_hold
                         recovery_events=[dict(transition='UNKNOWN_FULL_BOUND_RETAINED')])
     controller = unit_recovery.Controller(Reader(), [0], tmp_path)
     answer = {'blocks': [dict(id='o1', role='body', text='A small bridge crosses the stream.',
-        marker='', bbox=[10, 10, 900, 100], low_confidence=list(range(7)),
+        marker='', bbox=[10, 10, 900, 100], low_confidence=list(range(6)),
         continues_previous=False, continues_next=False)]}
     called = []
     def local(reason):
@@ -118,3 +121,41 @@ def test_local_recognition_uses_bounded_owned_scratch_and_retains_occurrence_sco
     assert again['local_ocr_evidence']['cached'] and len(calls) == 1
     assert not list(tmp_path.glob('local-ocr-*')), 'owned invocation scratch must be removed'
     doc.close()
+
+
+def test_low_confidence_local_paragraph_does_not_drop_clear_neighbour(tmp_path,monkeypatch):
+    page=ink.InkPage()
+    healthy='The clear sample remains readable.'
+    weak='The narrow bridge crosses the quiet stream.'
+    page.text(healthy,'healthy',y=50)
+    page.text(weak,'weak',y=145)
+    image,words,_=page.finish()
+    for word in words:
+        upper=word['bbox'][1]<100
+        word.update(paragraph=[0,1 if upper else 2,1],line=1,confidence=99 if upper else 20)
+    monkeypatch.setattr(local_reading,'recognize',lambda display,cache:(copy.deepcopy(words),dict(cached=False)))
+    monkeypatch.setattr(vision_pixels,'words',lambda display,cache:copy.deepcopy(words))
+    class Reader:
+        key=None
+        cache=tmp_path/'reader'
+        def read_unit(self,*args,**kwargs):return dict(degraded_source=True,failure='No local test reading')
+    doc=pymupdf.open();p=doc.new_page(width=ink.W,height=ink.H);p.insert_image(p.rect,stream=image)
+    try:result=vision_pipeline.convert(doc,tmp_path/'review.epub',Reader())
+    finally:doc.close()
+    assert result['pages'][0]['source']=='vision'
+    assert result['pages'][0]['local_ocr']
+    assert {u['block'] for u in result['pages'][0]['degraded_units']}=={'ocr1'}
+    import zipfile,xml.etree.ElementTree as ET
+    with zipfile.ZipFile(tmp_path/'review.epub') as z:
+        roots=[ET.fromstring(z.read(n)) for n in z.namelist() if n.endswith('.xhtml')]
+    nodes=[el for root in roots for el in root.iter() if el.get('data-source-block')=='ocr0']
+    assert healthy in ' '.join(''.join(el.itertext()) for el in nodes)
+    spans=[el for root in roots for el in root.iter() if el.get('class')=='uncertain']
+    assert spans
+    assert healthy.replace(' ','') in ''.join(''.join(el.itertext()) for el in spans).replace(' ','')
+
+def test_accepted_reading_never_invokes_local_substitute(tmp_path,monkeypatch):
+    monkeypatch.setattr(local_reading,'read',lambda *args,**kwargs:pytest.fail('accepted model reading must win'))
+    page=ink.InkPage();page.text('The clear sample remains readable.','healthy',y=50)
+    path,result,docs=ink.convert_ink(tmp_path,monkeypatch,[page])
+    assert not result['pages'][0].get('local_ocr')
