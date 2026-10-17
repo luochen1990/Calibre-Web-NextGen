@@ -151,3 +151,55 @@ def test_bad_joined_paragraph_tail_does_not_discard_its_clean_source_page(tmp_pa
     with ur.activated(controller), pytest.raises(ur.UnitFailure) as failure:
         vp._compiled_text_quality(pages, records, [0, 1])
     assert failure.value.units == [dict(page=1, block=None)]
+
+
+def test_rejected_table_retains_its_admitted_geometry_and_safe_heading(tmp_path):
+    page = ink.InkPage()
+    page.text('A clear sample heading', 'heading', role='heading', y=45)
+    graphic = page.text('A clear sample row', 'graphic', role='table', y=145)
+    graphic['bbox'] = [-5, -5, -1, -1]
+    _, words, raw = page.finish()
+    display = SimpleNamespace(rect=ink.pymupdf.Rect(0, 0, ink.W, ink.H))
+    admitted, _ = vp.bind_geometry(copy.deepcopy(raw), words, display)
+    admitted_box = next(b['bbox'] for b in admitted['blocks'] if b['id'] == 'graphic')
+    assert admitted_box != graphic['bbox']
+    controller = ur.Controller(SimpleNamespace(key=None), [0], tmp_path)
+    controller.answers[0] = copy.deepcopy(raw)
+    controller.admit_answer(0, admitted)
+    saved = copy.deepcopy(controller.admitted_answers)
+    controller.degraded[(0, 'graphic')] = dict(page=0, block='graphic')
+    selected = controller.filter_answer(0, raw)
+    assert next(b['bbox'] for b in selected['blocks'] if b['id'] == 'graphic') == admitted_box
+    rebound, _ = vp.bind_geometry(selected, words, display)
+    assert next(b['text'] for b in rebound['blocks'] if b['id'] == 'heading') == 'A clear sample heading'
+    assert next(b['text'] for b in rebound['blocks'] if b['id'] == 'graphic') == 'Original source image'
+    assert controller.admitted_answers == saved
+    assert controller.answers[0] == raw
+    controller.admitted_answers.clear()
+    unproved = controller.filter_answer(0, raw)
+    assert next(b['bbox'] for b in unproved['blocks'] if b['id'] == 'graphic') == graphic['bbox']
+    with pytest.raises(ValueError, match='cannot be bound to printed pixels'):
+        vp.bind_geometry(unproved, words, display)
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+@pytest.mark.parametrize('defect', ['disclosed', 'unmapped'])
+def test_leading_art_cannot_join_across_a_disclosed_or_unmapped_body(side, defect):
+    left = dict(id='previous-tail', role='body', source_regions=[[20, 500, 300, 550]], continues_next=True)
+    barrier = dict(id='barrier', role='body', source_regions=[[20, 200, 300, 250]])
+    selected = left if side == 'left' else barrier
+    if defect == 'disclosed':
+        selected['degraded_source_context'] = True
+    else:
+        selected['source_regions'] = []
+    after = [dict(id='art', role='figure', degraded_source_context=True),
+             dict(id='caption', role='caption'), barrier,
+             dict(id='healthy', role='body', source_regions=[[20, 400, 300, 500]], continues_previous=False)]
+    current = dict(body=['<figure>Original source image</figure>',
+                         '<p class="caption">A clear caption.</p>',
+                         '<p>A retained sample.</p>', '<p>A clear sample remains readable.</p>'])
+    before = [left]
+    saved = copy.deepcopy((before, after, current))
+    assert vp._leading_art_continuation(dict(blocks=before), current, before, after,
+                                       '<p>A clear previous sample continues</p>', after) is None
+    assert (before, after, current) == saved

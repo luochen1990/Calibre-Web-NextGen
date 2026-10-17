@@ -3500,6 +3500,9 @@ def _leading_art_continuation(previous,current,before,after,tail,blocks):
     opening=next((i for i,b in enumerate(after) if b['role']=='body'),None)
     if not opening or opening>=len(current['body']):return None
     leading=after[:opening];right=after[opening];left=before[-1]
+    # A disclosed or unbound body is a structural barrier, including when
+    # another readable body follows it. Never reorder across that barrier.
+    if any(b.get('degraded_source_context') or not b.get('source_regions') for b in (left,right)):return None
     if not _floating_art(leading):return None
     source_position=next(i for i,b in enumerate(blocks) if b['id']==right['id'])
     territory=right['source_regions'][0]

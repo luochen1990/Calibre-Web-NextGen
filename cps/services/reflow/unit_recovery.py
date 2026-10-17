@@ -544,8 +544,14 @@ class Controller:
                     status='DEGRADED_SOURCE_CONTEXT'))
         blocked = self.blocked(page)
         answer['blocks'] = [b for b in answer['blocks'] if b['id'] not in blocked or b['role'] in ('figure','table')]
+        admitted = {b['id']: b for b in self.admitted_answers.get(page, {}).get('blocks', [])}
         for block in answer['blocks']:
             if block['id'] in blocked and block['role'] in ('figure','table'):
+                # Geometry was already bound before this unit was rejected.
+                # Its neutral label cannot establish a new pixel match.
+                owned = admitted.get(block['id'])
+                if owned is not None and owned['role'] == block['role']:
+                    block['bbox'] = copy.deepcopy(owned['bbox'])
                 # The retained source image owns this rejected graphic. Its
                 # discarded wording cannot demand note owners during geometry
                 # or leak into live table cells or accessibility descriptions.
