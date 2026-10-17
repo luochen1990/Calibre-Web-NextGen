@@ -377,6 +377,7 @@ def test_successful_cached_reread_rebuilds_exact_source_ownership(tmp_path):
     controller.images[0] = dict(path=str(image), sha256='synthetic-source')
     controller.readings[0] = dict(config_sha256='old-reading')
     controller.regions[0] = {'_instances': {('sample', (20, 40, 50, 50)): 'reading'}}
+    controller.omission_coverage[0] = {'reading': [[20, 40, 50, 50]]}
     controller.admitted_answers[0] = copy.deepcopy(replacement['answer'])
     controller.prepared_pages[0] = ('old-preparation', tmp_path/'old.pickle')
     controller.recover(ur.UnitFailure([dict(page=0, block='reading')],
@@ -384,6 +385,7 @@ def test_successful_cached_reread_rebuilds_exact_source_ownership(tmp_path):
     assert controller.readings[0] == replacement
     assert 0 not in controller.regions
     assert 0 not in controller.admitted_answers
+    assert 0 not in controller.omission_coverage
     assert 0 not in controller.prepared_pages
     assert controller.events[-1]['transition'] == 'TARGETED_REREAD_REASSEMBLE'
 
@@ -419,3 +421,58 @@ def test_quality_progress_on_another_page_does_not_defer_a_failing_source_unit(t
                                     'publication_text_quality', ValueError('Original source presentation fails.')))
     assert controller.source_pages() == {0}
     assert set(controller.blocked(1)) == {'damaged'}
+
+
+def test_a_disclosed_row_keeps_its_previous_omission_coverage(tmp_path, monkeypatch):
+    page = ink.InkPage()
+    page.text('The clear sample remains readable.', 'healthy', y=45)
+    original = 'Abacus guide .................. 11, 12, 41, 52, 67, 84'
+    page.text(original, 'rejected', y=130)
+    omitted = page.text(['The separate amber panel remains readable',
+                         'while soft light crosses the clear window.'], 'omitted', y=220)
+    page.blocks.remove(omitted)
+    finish = page.finish
+    def optical_dots():
+        image, words, answer = finish()
+        dots = next(word for word in words if word['text'] == '..................')
+        at = words.index(dots); left, top, right, bottom = dots['bbox']
+        width = (right-left)/3
+        words[at:at+1] = [dict(text=text, bbox=[left+i*width, top, left+(i+1)*width, bottom], confidence=0)
+                          for i, text in enumerate(['6...', 'eee', 'eee'])]
+        return image, words, answer
+    monkeypatch.setattr(page, 'finish', optical_dots)
+    # A valid model rectangle can retain its default omission footprint without
+    # earning relocated geometry or exact lexical-source-instance claims.
+    monkeypatch.setattr(vp, 'bind_geometry', lambda answer, *args: (copy.deepcopy(answer), []))
+    compile_page = vp.compile_page
+    def reject_original(answer, words, display, pno, *args, **kwargs):
+        if any(block['id'] == 'rejected' for block in answer['blocks']):
+            raise ur.UnitFailure([dict(page=pno, block='rejected')], 'page_compilation',
+                                 ValueError('Synthetic original reading rejection'))
+        return compile_page(answer, words, display, pno, *args, **kwargs)
+    monkeypatch.setattr(vp, 'compile_page', reject_original)
+    _, report, docs = ink.convert_ink(tmp_path, monkeypatch, [page])
+    record = report['pages'][0]
+    assert record['source'] == 'vision', repr(report['unit_recovery_events'])
+    text = ' '.join(ink.plain(root) for root in docs.values())
+    assert 'The clear sample remains readable.' in text
+    assert 'The separate amber panel remains readable' in text
+    assert 'while soft light crosses the clear window.' in text
+    assert 'eee' not in text and '6...' not in text
+    assert {unit['block'] for unit in record['degraded_units']} == {'rejected'}
+    assert record['degraded_units'][0]['source_image'] and record['degraded_units'][0]['source_reference']
+
+
+def test_disclosed_omission_coverage_stays_separate_from_source_proof(tmp_path):
+    controller = ur.Controller(SimpleNamespace(key=None), [0], tmp_path)
+    boxes = [[20, 40, 50, 50], [20, 140, 50, 150]]
+    controller.register_regions(0, {}, {'failed': boxes})
+    boxes[0][0] = 999
+    controller.degraded[(0, 'failed')] = dict(page=0, block='failed')
+    controller.register_regions(0, {}, {'failed': [[0, 0, 300, 300]], 'live': [[80, 80, 100, 90]]})
+    coverage = controller.coverage_regions(0, {})
+    assert coverage['_degraded_territories'] == [[20, 40, 50, 50], [20, 140, 50, 150]]
+    assert not controller.regions[0].get('failed')
+    assert not coverage.get('_instances')
+    assert 'failed' not in coverage
+    assert controller.omission_coverage[0]['live'] == [[80, 80, 100, 90]]

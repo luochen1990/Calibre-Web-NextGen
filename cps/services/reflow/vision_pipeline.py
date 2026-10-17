@@ -3865,6 +3865,11 @@ def _source_paragraph_boundaries(answer,optical,display,regions,body_owners):
     return answer,repairs
 
 
+def _omission_coverage(answer,display,regions):
+    """Record exactly the footprints used to consider each live unit covered."""
+    return {b['id']:regions.get(b['id'],[block_rect(b,display)]) for b in answer['blocks']}
+
+
 def cover_missing_lines(answer,optical,source_words,display,regions=None,body_owners=None):
     """Recover line-sized printed text omitted entirely by the page reader.
 
@@ -4660,7 +4665,8 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
             original_frame=(original_frames or {}).get(n)))
         optical=saved['optical']
         controller.source_repairs[n]=lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache')
-        controller.register_regions(n,saved['regions'])
+        controller.register_regions(n,saved['regions'],
+            _omission_coverage(saved['answer'],display,saved['regions']))
         receipts=saved.pop('boundary_receipts')
         return dict(display=display,**saved),receipts
     with unit_recovery.guard(n,'primary_source_render'):
@@ -4688,7 +4694,7 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
             getattr(reader,'read_marker',None),boundary_receipts,n)
         repairs.extend(boundary_repairs)
     if controller:
-        controller.register_regions(n,regions)
+        controller.register_regions(n,regions,_omission_coverage(answer,display,regions))
         controller.admit_answer(n,answer)
     with unit_recovery.guard(n,'reading_text_quality'):
         units=[(b['id'],b['text']) for b in answer['blocks'] if b['role'] not in ('figure','table')]
@@ -4863,7 +4869,8 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                 s['answer'],s['paragraph_repairs']=_source_paragraph_boundaries(
                     s['answer'],s['optical'],s['display'],s['regions'],s['body_owners'])
                 if controller:
-                    controller.register_regions(n,s['regions'])
+                    controller.register_regions(n,s['regions'],
+                        _omission_coverage(s['answer'],s['display'],s['regions']))
                     controller.admit_answer(n,s['answer'])
                     s['answer']=controller.filter_answer(n,s['answer'])
         if unproved_art_cases:

@@ -232,6 +232,7 @@ class Controller:
         self.readings, self.images, self.answers, self.regions = {}, {}, {}, {}
         self.source_repairs = {}
         self.admitted_answers = {}
+        self.omission_coverage = {}
         self.source_image_provider = None
         self.retried, self.degraded, self.events = set(), {}, []
         self.source_render_repaired = set()
@@ -359,6 +360,7 @@ class Controller:
         self.answers[page] = copy.deepcopy(record['answer'])
         self.admitted_answers.pop(page, None)
         self.regions.pop(page, None)
+        self.omission_coverage.pop(page, None)
         self.prepared_pages.pop(page, None)
 
     def read(self, page, image, source_repair=None):
@@ -516,7 +518,7 @@ class Controller:
     def source_answer(self, page):
         return copy.deepcopy(self.admitted_answers.get(page, self.answers.get(page, {'blocks': []})))
 
-    def register_regions(self, page, regions):
+    def register_regions(self, page, regions, omission_coverage=None):
         previous = self.regions.setdefault(page, {})
         blocked = self.blocked(page)
         # Disclosing a unit does not release its already admitted physical ink.
@@ -524,6 +526,13 @@ class Controller:
                      if owner in blocked}
         previous.update(copy.deepcopy(regions))
         previous.setdefault('_instances', {}).update(protected)
+        # The boxes previously used to suppress omitted-line recovery need not
+        # be independently proved clipping geometry. Keep that narrower purpose
+        # separate, and never let a retry release a disclosed row's footprint.
+        coverage = self.omission_coverage.setdefault(page, {})
+        for bid, boxes in (omission_coverage or {}).items():
+            if bid not in blocked or bid not in coverage:
+                coverage[bid] = copy.deepcopy(boxes)
 
     def coverage_regions(self, page, regions):
         """Source territory retained by a visible fallback cannot be recovered twice.
@@ -537,8 +546,9 @@ class Controller:
                      if owner in blocked}
         regions.setdefault('_instances', {}).update(copy.deepcopy(protected))
         for bid in blocked:
-            if bid in self.regions.get(page, {}):
-                regions.setdefault('_degraded_territories', []).extend(copy.deepcopy(self.regions[page][bid]))
+            boxes = self.omission_coverage.get(page, {}).get(bid,
+                self.regions.get(page, {}).get(bid, []))
+            regions.setdefault('_degraded_territories', []).extend(copy.deepcopy(boxes))
         return regions
 
     def source_pages(self):
