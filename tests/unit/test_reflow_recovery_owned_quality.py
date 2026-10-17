@@ -386,3 +386,36 @@ def test_successful_cached_reread_rebuilds_exact_source_ownership(tmp_path):
     assert 0 not in controller.admitted_answers
     assert 0 not in controller.prepared_pages
     assert controller.events[-1]['transition'] == 'TARGETED_REREAD_REASSEMBLE'
+
+
+@pytest.mark.parametrize('stage', ['publication_text_quality', 'compiled_publication_text_quality'])
+@pytest.mark.parametrize('repeat_first', [False, True])
+def test_quality_batch_makes_unit_progress_before_retrying_an_existing_disclosure(tmp_path, stage, repeat_first):
+    controller = ur.Controller(SimpleNamespace(key=None), [0], tmp_path)
+    controller.answers[0] = dict(blocks=[dict(id=bid, role='body', text='The printed row is clear.')
+                                        for bid in ['healthy', 'earlier', 'damaged']])
+    controller.recover(ur.UnitFailure([dict(page=0, block='earlier')], 'page_compilation',
+                                    ValueError('The first reading needs source disclosure.')))
+    units = [dict(page=0, block=bid) for bid in
+             (['earlier', 'damaged'] if repeat_first else ['damaged', 'earlier'])]
+    controller.recover(ur.UnitFailure(units, stage, ValueError('Joined reading has unresolved text quality')))
+    assert not controller.source_pages()
+    assert set(controller.blocked(0)) == {'earlier', 'damaged'}
+    assert controller.degraded[(0, 'earlier')]['stage'] == 'page_compilation'
+    assert controller.events[-1]['deferred_source_unit_rechecks'] == [dict(page=0, block='earlier')]
+    # A new assembly must check the original disclosure again. If it still
+    # fails without another rejected unit to remove, escalation remains bounded.
+    controller.recover(ur.UnitFailure([dict(page=0, block='earlier')], stage,
+                                    ValueError('Original source presentation still fails.')))
+    assert controller.source_pages() == {0}
+    assert set(controller.degraded) == {(0, None)}
+
+
+def test_quality_progress_on_another_page_does_not_defer_a_failing_source_unit(tmp_path):
+    controller = ur.Controller(SimpleNamespace(key=None), [0, 1], tmp_path)
+    controller.recover(ur.UnitFailure([dict(page=0, block='earlier')], 'page_compilation',
+                                    ValueError('The first reading needs source disclosure.')))
+    controller.recover(ur.UnitFailure([dict(page=0, block='earlier'), dict(page=1, block='damaged')],
+                                    'publication_text_quality', ValueError('Original source presentation fails.')))
+    assert controller.source_pages() == {0}
+    assert set(controller.blocked(1)) == {'damaged'}

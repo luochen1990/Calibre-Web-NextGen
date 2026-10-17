@@ -446,8 +446,22 @@ class Controller:
             event['transition'] = 'TARGETED_REREAD_REASSEMBLE'
             self.events.append(event)
             return
+        # A publication batch can implicate an existing source presentation
+        # alongside newly rejected readings. Remove the new readings first and
+        # check a fresh assembly before concluding the original presentation is
+        # unusable. This makes bounded same-page progress; a repeated failure
+        # without a new unit still escalates through the original fallback path.
+        progress_pages = {unit['page'] for unit in failure.units
+                          if unit.get('block') is not None
+                          and (unit['page'], unit['block']) not in self.degraded
+                          and (unit['page'], None) not in self.degraded}
         for unit in failure.units:
             key = (unit['page'], unit.get('block'))
+            if (key in self.degraded and unit.get('block') is not None
+                    and unit['page'] in progress_pages
+                    and failure.stage in {'publication_text_quality', 'compiled_publication_text_quality'}):
+                event.setdefault('deferred_source_unit_rechecks', []).append(copy.deepcopy(unit))
+                continue
             if key in self.degraded:
                 if unit.get('block') is None:
                     raise SourceIntegrityError('Original source fallback itself is unusable') from failure.cause
