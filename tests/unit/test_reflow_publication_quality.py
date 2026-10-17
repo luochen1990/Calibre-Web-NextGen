@@ -143,3 +143,15 @@ def test_inline_source_owner_changes_do_not_split_a_damaged_word():
     assert parts[0]['spans'] == [dict(start=0,end=4,owners=[dict(page=0,block='left')]),
         dict(start=4,end=9,owners=[dict(page=1,block='right')])]
     assert q.inspect(parts[0]['text'], lexicon={'container'})['needs_read']
+
+
+def test_missing_installed_dictionary_cannot_borrow_a_callers_source_vocabulary(monkeypatch):
+    custom = {'container', 'original', 'source', 'page', 'return'}
+    monkeypatch.setattr(q, 'publication_lexicon', lambda: None)
+    monkeypatch.setattr(q, 'english_lexicon', lambda: custom)
+    page = dict(pno=0, body=['<p>container</p>', '<aside class="vision-disclosure">Original source page</aside>'], asides=[])
+    sweep = q.sweep_publication_pages([page], {0:dict(source='native')}, [0], lexicon=custom)
+    assert not sweep['passed']
+    metric = sweep['pages'][0]
+    assert not metric['dictionary_available']
+    assert 'dictionary_unavailable' in metric['reasons']

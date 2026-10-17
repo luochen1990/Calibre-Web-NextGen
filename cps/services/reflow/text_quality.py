@@ -30,6 +30,7 @@ COMBINED_CASE_FLIP_RATE = .05
 COMBINED_MISS_RATE = .20
 COMBINED_WINDOW_MISS_RATE = .50
 MAX_WORDLIST_BYTES = 8 * 1024 * 1024
+_UNAVAILABLE_LEXICON = object()
 _WORDS = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*", re.UNICODE)
 
 
@@ -145,6 +146,8 @@ def inspect(text, *, lexicon=None):
     Non-Latin words never count as English dictionary misses.
     """
     lexicon = english_lexicon() if lexicon is None else lexicon
+    if lexicon is _UNAVAILABLE_LEXICON:
+        lexicon = None
     words = [w for w in _WORDS.findall(text or '') if len(w) >= 3 and _latin(w)]
     folded = [w.casefold().replace('’', "'") for w in words]
     flips = [any(a.islower() and z.isupper() for a, z in zip(w, w[1:])) for w in words]
@@ -352,13 +355,14 @@ def inspect_partitioned(units, *, disclosure=False, lexicon=None):
     generated = {owner for owner in texts if kinds[owner] - {'reading'}}
     generated_lexicon = publication_lexicon() if generated else lexicon
     metrics = {owner: (inspect_disclosure if disclosure or owner in generated else inspect)(
-        text, lexicon=generated_lexicon if owner in generated else lexicon)
+        text, lexicon=(generated_lexicon if generated_lexicon is not None else _UNAVAILABLE_LEXICON) if owner in generated else lexicon)
         for owner, text in texts.items()}
     # In production both vocabularies are the same installed language data. A
     # caller's tiny source-only vocabulary must not invalidate generated controls;
     # its source units are independently checked above without any augmentation.
     aggregate_lexicon = generated_lexicon if generated else lexicon
-    aggregate = inspect('\n'.join(text for _, text, _ in ordered), lexicon=aggregate_lexicon)
+    aggregate = inspect('\n'.join(text for _, text, _ in ordered),
+                        lexicon=_UNAVAILABLE_LEXICON if generated and aggregate_lexicon is None else aggregate_lexicon)
     rejected = {owner for owner, metric in metrics.items() if metric['needs_read']}
     def attribute(metric, segments, vocabulary):
         words = [(owner, word) for owner, text, _ in segments for word in _WORDS.findall(text)
