@@ -14,7 +14,7 @@ from html import escape, unescape
 from pathlib import Path
 from . import assemble, build_epub, extract, pipeline, reading_flow, vision_reading
 from .source_display import SourceDisplay
-from . import unit_recovery, text_quality
+from . import unit_recovery, text_quality, visible_scripts
 
 
 def clean_native(page, raw=None):
@@ -2134,9 +2134,11 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
         except _DisclosureQualityRejection as error:
             controller=unit_recovery.current()
             if controller is None:raise
-            # Refine only against admitted source response identities. A
-            # recovered block without one retains its page-level fallback.
-            units=controller.refine_units([dict(page=pno,block=None)],error)
+            # Refine only against source-bound admitted unit identities,
+            # including omitted-line recovery registered before compilation.
+            admitted={b['id'] for b in controller.source_answer(pno)['blocks']}
+            owned=block['id'] if block['id'] in admitted else None
+            units=controller.refine_units([dict(page=pno,block=owned)],error)
             quality_failures.extend(dict(unit,source_failure_reason=str(error)) for unit in units)
     if quality_failures:
         raise _CompilationQualityFailure(quality_failures)
@@ -3850,7 +3852,9 @@ def cover_missing_lines(answer,optical,source_words,display,regions=None,body_ow
         sm=SequenceMatcher(None,optical_text,source_text,autojunk=False)
         score=sum(size for _,_,size in sm.get_matching_blocks())/max(1,len(run))
         chosen=local if score>=.75 else run
-        ident='recovered-'+str(index)
+        # Geometry, rather than the current omission list's index, owns a
+        # recovered ID. Removing a failed neighbour cannot rename another unit.
+        ident='recovered-'+hashlib.sha256(repr(tuple(round(v, 3) for v in bbox)).encode()).hexdigest()[:16]
         while any(b['id']==ident for b in blocks):ident+='x'
         r=display.rect;normalized=[bbox[0]/r.width*1000,bbox[1]/r.height*1000,bbox[2]/r.width*1000,bbox[3]/r.height*1000]
         block=dict(id=ident,role='other',text=' '.join(w['text'] for w in chosen),marker='',bbox=normalized,
@@ -4524,21 +4528,53 @@ def _source_note_id_repair(answer,display,optical,cache):
     return vision_reading.repair_note_ids(answer,evidence)
 
 
-def _compiled_text_quality(pages,records,numbers):
-    """Recheck actual joined words and retain every involved source owner."""
-    sweep=text_quality.sweep_pages(pages,records,numbers)
+def _compiled_text_quality(pages,records,numbers,stage='compiled_publication_text_quality'):
+    """Sweep all reader-facing channels and retain only implicated owners."""
+    sweep=text_quality.sweep_publication_pages(pages,records,numbers)
     controller=unit_recovery.current()
+    failures=[]
     for page in pages:
         n=page['pno'];quality=sweep['pages'][n]
         records[n]['compiled_text_quality']=quality
         if quality['passed']:continue
-        owners={n}
+        fragments=page['body']+page['asides']
+        parts=[];owners={}
+        for fragment in fragments:
+            for part in text_quality.publication_parts(dict(body=[fragment],asides=[])):
+                index=len(parts)
+                parts.append((index,part['text'],part['kind']))
+                explicit=part.get('owners',[])
+                if controller and explicit:
+                    controller.check_units(explicit)
+                    for unit in explicit:
+                        if unit.get('block') is not None and unit['block'] not in {
+                                b['id'] for b in records[unit['page']].get('blocks',[])}:
+                            raise unit_recovery.SourceIntegrityError('Publication text has an unregistered source unit')
+                    owners[index]=explicit
+                else:
+                    owners[index]=(controller.fragment_owners(fragment) if controller else [dict(page=n,block=None)])
+        local=text_quality.inspect_partitioned(parts)
+        for index in local['rejected_units']:
+            failures.extend(owners[index])
+        if not local['rejected_units']:
+            failures.append(dict(page=n,block=None))
+    if failures:
+        unique=list({(unit['page'],unit.get('block')):unit for unit in failures}.values())
+        # A failed joined fragment may own the complete reading of its source
+        # pages. Only those pages with no independently safe unit left need a
+        # whole-page fallback; partial pages keep their unaffected fragments.
+        if stage=='compiled_publication_text_quality':
+            whole=set()
+            for n in {unit['page'] for unit in unique}:
+                ids={b['id'] for b in records[n].get('blocks',[])
+                     if b['role'] not in ('running_head','folio') and not b.get('degraded_source_context')}
+                bad={unit.get('block') for unit in unique if unit['page']==n}
+                if None in bad or ids and ids<=bad:whole.add(n)
+            unique=[unit for unit in unique if unit['page'] not in whole]+[dict(page=n,block=None) for n in sorted(whole)]
         if controller:
-            for fragment in page['body']+page['asides']:
-                if text_quality.reading_text(dict(body=[fragment],asides=[])).strip():
-                    owners.update(unit['page'] for unit in controller.fragment_owners(fragment))
-        with unit_recovery.guard(sorted(owners),'compiled_publication_text_quality'):
-            raise ValueError('Joined reading has unresolved text quality: '+', '.join(quality['reasons']))
+            controller.check_units(unique)
+            raise unit_recovery.UnitFailure(unique,stage,ValueError('Joined reading has unresolved text quality'))
+        raise ValueError('Joined reading has unresolved text quality')
     return sweep
 
 
@@ -4574,19 +4610,33 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
                  if controller else reader.read(image))
     regions={};body_owners={}
     selected=controller.filter_answer(n,reading['answer']) if controller else reading['answer']
-    with unit_recovery.guard(n,'reading_text_quality'):
-        read_text='\n'.join(b['text'] for b in selected['blocks'] if b['role'] not in ('figure','table'))
-        quality=text_quality.inspect(read_text)
-        missing_scripts=text_quality.script_mismatches(doc[n].get_text('text'),read_text)
-        if quality['needs_read'] or missing_scripts:
-            raise ValueError('Pixel reading has unresolved text quality: '+', '.join(quality['reasons']+['missing_source_script_'+v for v in missing_scripts]))
     with unit_recovery.guard(n,'geometry'):
         answer,repairs=bind_geometry(selected,optical,display,regions,body_owners)
     with unit_recovery.guard(n,'note_boundaries'):
         answer,boundary_repairs=_source_note_boundaries(answer,optical,display,regions,body_owners,
             getattr(reader,'read_marker',None),boundary_receipts,n)
         repairs.extend(boundary_repairs)
-    if controller:controller.register_regions(n,regions)
+    if controller:
+        controller.register_regions(n,regions)
+        controller.admit_answer(n,answer)
+    with unit_recovery.guard(n,'reading_text_quality'):
+        units=[(b['id'],b['text']) for b in answer['blocks'] if b['role'] not in ('figure','table')]
+        quality=text_quality.inspect_partitioned(units)
+        failed=list(quality['rejected_units']);missing_scripts=set()
+        for block in answer['blocks']:
+            if block['role'] in ('figure','table'):continue
+            boxes=regions.get(block['id'],[block_rect(block,display)])
+            missing=text_quality.script_mismatches(visible_scripts.source_text(display,boxes),block['text'])
+            missing_scripts.update(missing)
+            if missing and block['id'] not in failed:failed.append(block['id'])
+        if failed:
+            reason='Pixel reading has unresolved text quality: '+', '.join(quality['reasons']+['missing_source_script_'+v for v in sorted(missing_scripts)])
+            if controller:
+                owned=([dict(page=n,block=None)] if set(failed)=={b['id'] for b in answer['blocks']}
+                       else [dict(page=n,block=bid) for bid in failed])
+                raise unit_recovery.UnitFailure(owned,
+                    'reading_text_quality',ValueError(reason))
+            raise ValueError(reason)
     prepared=dict(reading=reading,optical=optical,regions=regions,
         body_owners=body_owners,answer=answer,geometry_repairs=repairs,
         source_words=[])
@@ -4742,6 +4792,7 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                     s['answer'],s['optical'],s['display'],s['regions'],s['body_owners'])
                 if controller:
                     controller.register_regions(n,s['regions'])
+                    controller.admit_answer(n,s['answer'])
                     s['answer']=controller.filter_answer(n,s['answer'])
         if unproved_art_cases:
             raise unit_recovery.UnitFailure(unproved_art_cases,'figure_separation',
@@ -4791,7 +4842,7 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                 compilation_failures.extend(failure.units)
                 continue
             if controller and controller.blocked(n):
-                _insert_source_units(page,report,reading['answer'],controller.blocked(n),s['display'],package,images)
+                _insert_source_units(page,report,controller.source_answer(n),controller.blocked(n),s['display'],package,images)
             report['recovered_omitted_blocks']=list(recovered)
             report['source_paragraph_repairs']=s.get('paragraph_repairs',[])
             report['pixel_bound_geometry_repairs']=s['geometry_repairs']
@@ -4813,17 +4864,11 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         # All physical pages, including short notes and headings, are checked.
         # Failure uses the same source-owned reread/disclosure recovery as any
         # other rejected reading; no lexical correction is ever performed.
-        quality_sweep=text_quality.sweep_pages(pages,records,numbers)
-        for n,quality in quality_sweep['pages'].items():
-            records[n]['text_quality']=quality
-            if not quality['passed']:
-                with unit_recovery.guard(n,'publication_text_quality'):
-                    raise ValueError('Published page has unresolved text quality: '+', '.join(quality['reasons']))
-        # Shared publication handles scoped native IDs, chapter splits and page turns.
-        # Vision IDs already include physical page identity, so do not scope twice.
         if controller:
             controller.records=records
             for page in pages:controller.register_page(page,records[page['pno']])
+        quality_sweep=_compiled_text_quality(pages,records,numbers,'publication_text_quality')
+        for n,quality in quality_sweep['pages'].items():records[n]['text_quality']=quality
         _finish_notes(pages,owners,catalogue,note_context['refs'])
         carriers=_join_control_carriers(pages)
         scan_words,scan_compounds=_scan_wrap_vocabulary(scans)

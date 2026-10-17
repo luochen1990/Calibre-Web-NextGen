@@ -231,6 +231,7 @@ class Controller:
         self.staging.mkdir(parents=True, exist_ok=True)
         self.readings, self.images, self.answers, self.regions = {}, {}, {}, {}
         self.source_repairs = {}
+        self.admitted_answers = {}
         self.source_image_provider = None
         self.retried, self.degraded, self.events = set(), {}, []
         self.source_render_repaired = set()
@@ -268,7 +269,7 @@ class Controller:
         if any(u.get('block') for u in units) or len(units) != 1:
             return units
         n = units[0]['page']
-        answer = self.answers.get(n)
+        answer = self.admitted_answers.get(n, self.answers.get(n))
         blocks = answer.get('blocks', []) if isinstance(answer, dict) else []
         if not isinstance(blocks, list):
             blocks = []
@@ -404,6 +405,7 @@ class Controller:
                     record=self.reader.cached_reread(Path(image_record['path']).read_bytes(),self.source_repairs.get(page))
                     if record and record.get('config_sha256')!=self.readings.get(page,{}).get('config_sha256'):
                         self.readings[page]=copy.deepcopy(record);self.answers[page]=copy.deepcopy(record['answer'])
+                        self.admitted_answers.pop(page, None)
                         self.retried.add(page);reread=True
                         event.setdefault('cached_reread_receipts',[]).append(dict(page=page,**{k:v for k,v in record.items() if k!='answer'}))
                         continue
@@ -425,6 +427,7 @@ class Controller:
                     record = self.reader.reread(Path(image_record['path']).read_bytes())
                     self.readings[page] = copy.deepcopy(record)
                     self.answers[page] = copy.deepcopy(record['answer'])
+                    self.admitted_answers.pop(page, None)
                     event.setdefault('reread_receipts', []).append(
                         dict(page=page, **{k: v for k, v in record.items() if k != 'answer'}))
                     reread = True
@@ -450,6 +453,16 @@ class Controller:
                 unit=dict(page=unit['page'],block=None)
                 event.setdefault('source_page_escalations',[]).append(dict(page=unit['page'],previous_units=previous))
                 key=(unit['page'],None)
+            if unit.get('block') is None:
+                previous=[copy.deepcopy(v) for k,v in self.degraded.items()
+                          if k[0]==unit['page'] and k[1] is not None]
+                self.degraded={k:v for k,v in self.degraded.items()
+                               if k[0]!=unit['page'] or k[1] is None}
+                if previous:
+                    event.setdefault('source_page_escalations',[]).append(
+                        dict(page=unit['page'],previous_units=previous))
+            elif (unit['page'],None) in self.degraded:
+                continue
             unit_reason=unit.get('source_failure_reason')
             if not isinstance(unit_reason,str) or not unit_reason.strip():
                 unit_reason=reason
@@ -462,6 +475,29 @@ class Controller:
 
     def blocked(self, page):
         return {bid: case for (n, bid), case in self.degraded.items() if n == page and bid is not None}
+
+    def admit_answer(self, page, answer):
+        """Retain identities only after source geometry admitted their units.
+
+        Omitted-line recovery creates units absent from the model response. Their
+        IDs must survive transactional retries just like the original response's
+        IDs. Previously blocked units remain in this registry for source targets,
+        without reintroducing their rejected text into compilation.
+        """
+        previous = self.admitted_answers.get(page, self.answers.get(page, {'blocks': []}))
+        blocks = copy.deepcopy(answer['blocks'])
+        ids = {b['id'] for b in blocks}
+        old = previous['blocks']
+        for index, block in enumerate(old):
+            if block['id'] in ids:
+                continue
+            following = {b['id'] for b in old[index+1:]}
+            at = next((i for i, b in enumerate(blocks) if b['id'] in following), len(blocks))
+            blocks.insert(at, copy.deepcopy(block)); ids.add(block['id'])
+        self.admitted_answers[page] = dict(answer, blocks=blocks)
+
+    def source_answer(self, page):
+        return copy.deepcopy(self.admitted_answers.get(page, self.answers.get(page, {'blocks': []})))
 
     def register_regions(self, page, regions):
         self.regions.setdefault(page, {}).update(copy.deepcopy(regions))
@@ -508,6 +544,13 @@ class Controller:
                     status='DEGRADED_SOURCE_CONTEXT'))
         blocked = self.blocked(page)
         answer['blocks'] = [b for b in answer['blocks'] if b['id'] not in blocked or b['role'] in ('figure','table')]
+        for block in answer['blocks']:
+            if block['id'] in blocked and block['role'] in ('figure','table'):
+                # The retained source image owns this rejected graphic. Its
+                # discarded wording cannot demand note owners during geometry
+                # or leak into live table cells or accessibility descriptions.
+                block.update(text='Original source image',marker='',low_confidence=[],
+                             continues_previous=False,continues_next=False)
         return answer
 
     def register_page(self,page,record):
@@ -522,10 +565,18 @@ class Controller:
                 self.id_units.setdefault(ident,[]).append(unit)
         for fragment in page['asides']:
             ident=re.search(r'<aside\b[^>]*\bid="v4-note-\d+-([^" ]+)"',fragment)
-            unit=dict(page=page['pno'],block=ident[1] if ident else None)
-            self.fragment_units[hashlib.sha256(fragment.encode()).hexdigest()]=[unit]
+            units=[dict(page=page['pno'],block=ident[1])] if ident else []
+            if not units:
+                target=re.search(r'<aside\b[^>]*\bid="([^"]+)"',fragment)
+                if target:
+                    for origin in page['body']:
+                        if re.search(r'href="#'+re.escape(target[1])+r'"',origin):
+                            units.extend(self.fragment_units.get(hashlib.sha256(origin.encode()).hexdigest(),[]))
+            if not units:units=[dict(page=page['pno'],block=None)]
+            units=list({(unit['page'],unit.get('block')):unit for unit in units}.values())
+            self.fragment_units[hashlib.sha256(fragment.encode()).hexdigest()]=units
             for name in re.findall(r'\bid="([^"]+)"',fragment):
-                self.id_units.setdefault(name,[]).append(unit)
+                self.id_units.setdefault(name,[]).extend(units)
 
     def fragment_owners(self,fragment,anchor=None):
         found=(self.id_units.get(anchor,[]) if anchor else
