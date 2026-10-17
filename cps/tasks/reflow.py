@@ -795,6 +795,13 @@ def recover_interrupted_jobs(worker=None):
                                     cap_usd=0.0, job_id=job_id)
             if job_id in active_ids:
                 continue
+            # Preparation is disposable even when publication evidence must stay.
+            # Only this inactive job's real, directly owned scratch is removed.
+            from ..services.reflow import unit_recovery
+            try:
+                unit_recovery.remove_job_scratch(reflow_dir('conversion-scratch'),job_id)
+            except (OSError,unit_recovery.SourceIntegrityError) as exc:
+                log.error('reflow: could not remove preparation scratch for job %s: %s',job_id,exc)
             settled=_recover_publication(led)
             if settled is None:
                 continue

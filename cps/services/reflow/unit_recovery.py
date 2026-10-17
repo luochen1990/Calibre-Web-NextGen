@@ -15,6 +15,9 @@ from pathlib import Path
 import threading
 import re
 import pickle
+import shutil
+import stat
+import tempfile
 from xml.etree import ElementTree as ET
 
 
@@ -23,6 +26,151 @@ _active = ContextVar('reflow_unit_recovery', default=None)
 
 class SourceIntegrityError(ValueError):
     """Authoritative source/configuration cannot safely be used."""
+
+
+def _pdf_references(value):
+    """Read indirect references while ignoring PDF strings, names and comments."""
+    tokens=[];index=0
+    while index<len(value):
+        char=value[index]
+        if char=='(':
+            depth=1;index+=1
+            while index<len(value) and depth:
+                if value[index]=='\\':index+=2;continue
+                if value[index]=='(':depth+=1
+                elif value[index]==')':depth-=1
+                index+=1
+            if depth:raise SourceIntegrityError('Cannot verify source object string')
+            tokens=[]
+        elif value[index:index+2] in ('<<','>>'):
+            index+=2
+        elif char=='<':
+            end=value.find('>',index+1)
+            if end<0:raise SourceIntegrityError('Cannot verify source object string')
+            index=end+1;tokens=[]
+        elif char=='%':
+            end=value.find('\n',index+1);index=len(value) if end<0 else end+1
+        elif char=='/':
+            index+=1
+            while index<len(value) and not value[index].isspace() and value[index] not in '[]<>()/%':index+=1
+            tokens=[]
+        elif char.isspace() or char in '[]<>':index+=1
+        else:
+            end=index+1
+            while end<len(value) and not value[end].isspace() and value[end] not in '[]<>()/%':end+=1
+            token=value[index:end];index=end
+            if token=='R' and len(tokens)>=2 and all(v.isdigit() for v in tokens[-2:]):
+                yield int(tokens[-2]);tokens=[]
+            else:tokens=(tokens+[token])[-2:]
+
+
+def page_fingerprint(doc, page):
+    """Hash current page objects, encoded streams and inherited render resources.
+
+    File identities and text alone miss in-memory edits and image-only changes.
+    Reading raw streams avoids decoding them, and walking the page's resources
+    avoids serializing or rendering the entire document on every retry.
+    """
+    try:
+        source=doc[page];root=source.xref
+        digest=hashlib.sha256(b'reflow-page-source-v1\x00')
+        digest.update(repr((page,tuple(source.rect),source.rotation)).encode())
+        pending=[root]
+        # Page-tree parents carry inherited resource and geometry values. Their
+        # Kids arrays name unrelated pages and are deliberately not traversed.
+        ancestor=root;seen_parents=set()
+        for key in ('Resources','MediaBox','CropBox','Rotate','UserUnit'):
+            ancestor=root;seen_parents.clear()
+            while ancestor and ancestor not in seen_parents:
+                seen_parents.add(ancestor)
+                kind,value=doc.xref_get_key(ancestor,key)
+                if kind!='null':
+                    digest.update((key+'\x00'+value+'\x00').encode())
+                    pending.extend(_pdf_references(value));break
+                kind,value=doc.xref_get_key(ancestor,'Parent')
+                ancestor=int(value.split()[0]) if kind=='xref' else 0
+        # Optional-content visibility, output profiles and form appearances can
+        # affect a page without changing its own contents or resource dictionary.
+        catalog=doc.pdf_catalog()
+        for key in ('OCProperties','OutputIntents','AcroForm'):
+            kind,value=doc.xref_get_key(catalog,key)
+            digest.update((key+'\x00'+value+'\x00').encode())
+            pending.extend(_pdf_references(value))
+            if key=='OCProperties' and kind!='null':
+                digest.update(json.dumps(doc.layer_ui_configs(),sort_keys=True).encode())
+        visited=set()
+        while pending:
+            xref=pending.pop()
+            if xref in visited:continue
+            if not 0<xref<doc.xref_length():
+                raise SourceIntegrityError('Cannot verify source object reference')
+            visited.add(xref)
+            value=doc.xref_object(xref,compressed=False)
+            digest.update((str(xref)+'\x00'+value+'\x00').encode())
+            references=set(_pdf_references(value))
+            if doc.xref_get_key(xref,'Type')==('name','/Page'):
+                kind,parent=doc.xref_get_key(xref,'Parent')
+                if kind=='xref':references.discard(int(parent.split()[0]))
+            pending.extend(sorted(references))
+            if doc.xref_is_stream(xref):
+                data=doc.xref_stream_raw(xref)
+                if not isinstance(data,bytes):
+                    raise SourceIntegrityError('Cannot verify source stream bytes')
+                digest.update(data)
+            digest.update(b'\x00')
+        return digest.hexdigest()
+    except SourceIntegrityError:raise
+    except Exception as error:
+        raise SourceIntegrityError('Cannot verify current source page') from error
+
+
+def _job_component(job_id):
+    value=str(job_id)
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}',value):
+        raise SourceIntegrityError('Invalid conversion scratch job identity')
+    return value
+
+
+def owned_job_scratch(root, job_id):
+    """A real, direct job directory under its configured scratch root, or None."""
+    root=Path(root).absolute();job_id=_job_component(job_id)
+    # Do not follow a substituted root or job directory during cleanup.
+    if any(part.is_symlink() for part in (root,*root.parents)):return None
+    path=root/job_id
+    try:info=path.lstat()
+    except FileNotFoundError:return None
+    return path if stat.S_ISDIR(info.st_mode) else None
+
+
+def remove_job_scratch(root, job_id):
+    path=owned_job_scratch(root,job_id)
+    if path is None:return False
+    shutil.rmtree(path)
+    return not path.exists()
+
+
+@contextmanager
+def preparation_scratch(*, scratch_dir=None, job_id=None):
+    """Ephemeral preparation under a removable job owner, never beside an EPUB."""
+    if scratch_dir is None:
+        if job_id is not None:raise SourceIntegrityError('Job scratch root is required')
+        with tempfile.TemporaryDirectory(prefix='reflow-preparation-') as staging:
+            yield Path(staging)
+        return
+    if job_id is None:raise SourceIntegrityError('Conversion scratch job identity is required')
+    root=Path(scratch_dir).absolute();root.mkdir(parents=True,exist_ok=True)
+    if any(part.is_symlink() for part in (root,*root.parents)):
+        raise SourceIntegrityError('Conversion scratch root must not contain symlinks')
+    owner=root/_job_component(job_id)
+    owner.mkdir(mode=0o700,exist_ok=True)
+    if owned_job_scratch(root,job_id)!=owner:
+        raise SourceIntegrityError('Conversion scratch owner is not a real directory')
+    try:
+        with tempfile.TemporaryDirectory(prefix='prepare-',dir=owner) as staging:
+            yield Path(staging)
+    finally:
+        try:owner.rmdir()
+        except OSError:pass             # another preparation or a retained crash file
 
 
 class UnitFailure(Exception):
@@ -92,6 +240,7 @@ class Controller:
         self.recovery_closed = set()
         self.records = {}
         self.prepared_pages = {}
+        self.source_fingerprints = {}
         self.native_classification = {}
         self.fragment_units, self.id_units = {}, {}
         self.ledger = getattr(reader, 'ledger', None)
@@ -168,13 +317,22 @@ class Controller:
         self._page_by_image[identity] = page
         return identity
 
+    def verify_source(self, doc, page):
+        """Fail before any cached reading or preparation can cross a source edit."""
+        value=page_fingerprint(doc,page)
+        previous=self.source_fingerprints.setdefault(page,value)
+        if previous!=value:
+            raise SourceIntegrityError('Current source page changed during conversion')
+        return value
+
     def _preparation_key(self, page):
         record = self.readings.get(page)
         if record is None:
             return None
         # Scoped to this controller's admitted source and reading image. Block
         # removal changes geometry, so it invalidates preparation as a reread does.
-        value = [record, sorted(self.blocked(page)), self.images.get(page, {}).get('sha256')]
+        value = [record, sorted(self.blocked(page)), self.images.get(page, {}).get('sha256'),
+                 self.source_fingerprints.get(page)]
         return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
     def load_prepared(self, page):

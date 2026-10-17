@@ -4545,6 +4545,7 @@ def _compiled_text_quality(pages,records,numbers):
 def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
     """Checkpoint source geometry before any mutable book-level assembly."""
     boundary_receipts={}
+    if controller:controller.verify_source(doc,n)
     saved=controller.load_prepared(n) if controller else None
     if saved is not None:
         prov=(provenance or {}).get(n,{})
@@ -4605,6 +4606,8 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
     # extracting image metadata, which also invalidates the reading cache.
     # clean_native reads native spans only after ruling out scanned pages.
     controller=unit_recovery.current()
+    if controller:
+        for n in numbers:controller.verify_source(doc,n)
     source_pages=controller.source_pages() if controller else set()
     native=[]
     for n in numbers:
@@ -4961,7 +4964,7 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         package.abandon();raise
 
 
-def _convert_with_recovery(doc,out_path,reader,*,page_numbers=None,provenance=None,progress=None,native_prepared=None,original_frames=None,metadata=None):
+def _convert_with_recovery(doc,out_path,reader,*,page_numbers=None,provenance=None,progress=None,native_prepared=None,original_frames=None,metadata=None,scratch_dir=None,job_id=None):
     """Complete source-owned units despite rejected readings or assembly units.
 
     Each failed publication attempt is abandoned. Its source-bound unit either
@@ -4991,7 +4994,7 @@ def _convert_with_recovery(doc,out_path,reader,*,page_numbers=None,provenance=No
                     status='source_integrity_failure',cause_type=type(error).__name__,reason=str(error))
                 raise
     parent=Path(out_path).parent;parent.mkdir(parents=True,exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='.unit-recovery-',dir=parent) as staging:
+    with unit_recovery.preparation_scratch(scratch_dir=scratch_dir,job_id=job_id) as staging:
         controller=unit_recovery.Controller(reader,numbers,staging)
         from .image_budget import EvidenceRaster
         source_raster=EvidenceRaster()
@@ -5011,7 +5014,7 @@ def _convert_with_recovery(doc,out_path,reader,*,page_numbers=None,provenance=No
                     controller.recover(failure)
 
 
-def convert(doc,out_path,reader,*,page_numbers=None,provenance=None,progress=None,native_prepared=None,original_frames=None,metadata=None):
+def convert(doc,out_path,reader,*,page_numbers=None,provenance=None,progress=None,native_prepared=None,original_frames=None,metadata=None,scratch_dir=None,job_id=None):
     """Publish source-owned units; persist bounded SOURCE-fatal diagnostics.
 
     Optional source-record metadata supplies OPF title, authors and language.
@@ -5020,7 +5023,7 @@ def convert(doc,out_path,reader,*,page_numbers=None,provenance=None,progress=Non
     try:
         return _convert_with_recovery(doc,out_path,reader,page_numbers=page_numbers,
             provenance=provenance,progress=progress,native_prepared=native_prepared,
-            original_frames=original_frames,metadata=metadata)
+            original_frames=original_frames,metadata=metadata,scratch_dir=scratch_dir,job_id=job_id)
     except unit_recovery.SourceIntegrityError as error:
         import os,tempfile
         event=getattr(error,'source_recovery_event',{})
