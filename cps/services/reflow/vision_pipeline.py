@@ -4639,8 +4639,9 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
         quality=text_quality.inspect_partitioned(units)
         failed=list(quality['rejected_units']);missing_scripts=set()
         for block in answer['blocks']:
-            if block['role'] in ('figure','table'):continue
-            boxes=regions.get(block['id'],[block_rect(block,display)])
+            if block['role'] in ('figure','table') or not visible_scripts.source_text(display):continue
+            boxes=regions.get(block['id'])
+            if boxes is None:boxes=[block_rect(block,display)]
             missing=text_quality.script_mismatches(visible_scripts.source_text(display,boxes),block['text'])
             missing_scripts.update(missing)
             if missing and block['id'] not in failed:failed.append(block['id'])
