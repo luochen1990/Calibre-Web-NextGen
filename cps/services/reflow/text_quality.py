@@ -126,6 +126,16 @@ def english_lexicon():
         return None
 
 
+# Preserve the installed-dictionary loader separately from a caller's source
+# vocabulary. Tests and library callers may inject a deliberately tiny source
+# lexicon; converter-authored explanations still receive the real language check.
+_installed_english_lexicon = english_lexicon
+
+
+def publication_lexicon():
+    return _installed_english_lexicon()
+
+
 def inspect(text, *, lexicon=None):
     """Return counters and rejection reasons, never source words or corrections.
 
@@ -318,7 +328,10 @@ def inspect_partitioned(units, *, disclosure=False, lexicon=None):
 
     Units are ``(owner, text)`` pairs, or ``(owner, text, kind)`` triples. Alt,
     accessibility and disclosure units use the short-reading safeguard; ordinary
-    reading units retain the page rule. Repeated owners are joined before their
+    reading units retain the page rule and supplied source vocabulary. Generated
+    channels use the independently loaded installed English dictionary, including
+    any quoted source text; none of their words bypasses lexical checks. Repeated
+    owners are joined before their
     independent check. Aggregate checks also catch damage across unit boundaries.
     A mixed-owner failing window implicates owners of its missed words, never a
     clean owner merely adjacent to that window. Page-wide case and miss evidence
@@ -332,19 +345,28 @@ def inspect_partitioned(units, *, disclosure=False, lexicon=None):
     kinds = {}
     for unit in units:
         owner, text = unit[:2]
-        ordered.append((owner, text or ''))
+        ordered.append((owner, text or '', unit[2] if len(unit) > 2 else 'reading'))
         grouped.setdefault(owner, []).append(text or '')
         kinds.setdefault(owner, set()).add(unit[2] if len(unit) > 2 else 'reading')
     texts = {owner: '\n'.join(parts) for owner, parts in grouped.items()}
-    metrics = {owner: (inspect_disclosure if disclosure or kinds[owner] - {'reading'} else inspect)(text, lexicon=lexicon)
-               for owner, text in texts.items()}
-    aggregate = inspect('\n'.join(text for _, text in ordered), lexicon=lexicon)
+    generated = {owner for owner in texts if kinds[owner] - {'reading'}}
+    generated_lexicon = publication_lexicon() if generated else lexicon
+    metrics = {owner: (inspect_disclosure if disclosure or owner in generated else inspect)(
+        text, lexicon=generated_lexicon if owner in generated else lexicon)
+        for owner, text in texts.items()}
+    # In production both vocabularies are the same installed language data. A
+    # caller's tiny source-only vocabulary must not invalidate generated controls;
+    # its source units are independently checked above without any augmentation.
+    aggregate_lexicon = generated_lexicon if generated else lexicon
+    aggregate = inspect('\n'.join(text for _, text, _ in ordered), lexicon=aggregate_lexicon)
     rejected = {owner for owner, metric in metrics.items() if metric['needs_read']}
-    words = [(owner, word) for owner, text in ordered for word in _WORDS.findall(text)
-             if len(word) >= 3 and _latin(word)]
-    if aggregate['needs_read']:
-        reasons = set(aggregate['reasons'])
-        misses = [lexicon is not None and word.casefold().replace('’', "'") not in lexicon for _, word in words]
+    def attribute(metric, segments, vocabulary):
+        words = [(owner, word) for owner, text, _ in segments for word in _WORDS.findall(text)
+                 if len(word) >= 3 and _latin(word)]
+        if not metric['needs_read']:
+            return
+        reasons = set(metric['reasons'])
+        misses = [vocabulary is not None and word.casefold().replace('’', "'") not in vocabulary for _, word in words]
         if 'dictionary_unavailable' in reasons:
             rejected.update(owner for owner, _ in words)
         if 'dictionary_miss_rate' in reasons:
@@ -355,6 +377,15 @@ def inspect_partitioned(units, *, disclosure=False, lexicon=None):
             for start in range(max(0, len(words) - WINDOW_WORDS + 1)):
                 if sum(misses[start:start + WINDOW_WORDS]) / WINDOW_WORDS >= WINDOW_MISS_RATE:
                     rejected.update(words[n][0] for n in range(start, start + WINDOW_WORDS) if misses[n])
+    attribute(aggregate, ordered, aggregate_lexicon)
+    # Generated explanations may not dilute the former source-only page check.
+    # Keep that projection independently authoritative as publication channels grow.
+    reading = [segment for segment in ordered if segment[2] == 'reading']
+    reading_metric = inspect('\n'.join(text for _, text, _ in reading), lexicon=lexicon)
+    attribute(reading_metric, reading, lexicon)
+    aggregate['source_reading'] = reading_metric
+    if reading_metric['needs_read'] and not aggregate['needs_read']:
+        aggregate['reasons'].append('source_reading_text_quality')
     # An individually bad short reading remains bad beside a long clean body.
     aggregate['units'] = metrics
     aggregate['rejected_units'] = [owner for owner in texts if owner in rejected]
@@ -375,12 +406,27 @@ class _PublicationText(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts, self.stack, self.pending = [], [], []
         self.kind = 'reading'
+        self.owner = None
+        self.pending_provenance = []
+        self.pending_size = 0
 
     def _flush(self):
-        text = ''.join(self.pending).strip()
+        raw = ''.join(self.pending)
+        text = raw.strip()
         if text:
-            self.parts.append(dict(id=len(self.parts), text=text, kind=self.kind))
+            left = len(raw) - len(raw.lstrip())
+            right = left + len(text)
+            spans = []
+            owners = []
+            for start, end, owner in self.pending_provenance:
+                if owner is not None and start < right and end > left:
+                    if owner not in owners:
+                        owners.append(owner)
+                    spans.append(dict(start=max(start, left)-left, end=min(end, right)-left, owners=[owner]))
+            self.parts.append(dict(id=len(self.parts), text=text, kind=self.kind, owners=owners, spans=spans))
         self.pending = []
+        self.pending_provenance = []
+        self.pending_size = 0
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
@@ -388,15 +434,23 @@ class _PublicationText(HTMLParser):
         kind = 'disclosure' if set(values.get('class', '').split()) & self._DISCLOSURES else self.kind
         if tag in self._BLOCKS or kind != self.kind:
             self._flush()
+        owner = self.owner
+        if values.get('data-source-page', '').isdigit():
+            owner = dict(page=int(values['data-source-page']), block=values.get('data-source-block') or None)
+        elif values.get('data-source-block') and owner is not None:
+            owner = dict(page=owner['page'], block=values['data-source-block'])
         if not excluded:
             for attribute in ('alt', 'aria-label', 'title'):
                 if values.get(attribute):
                     self._flush()
                     self.parts.append(dict(id=len(self.parts), text=values[attribute],
-                                           kind='alt' if attribute == 'alt' else 'accessibility'))
+                                           kind='alt' if attribute == 'alt' else 'accessibility',
+                                           owners=[owner] if owner is not None else [],
+                                           spans=[dict(start=0, end=len(values[attribute]), owners=[owner])] if owner is not None else []))
         if tag not in self._VOID:
-            self.stack.append((tag, excluded, self.kind))
+            self.stack.append((tag, excluded, self.kind, self.owner))
             self.kind = kind
+            self.owner = owner
 
     def handle_endtag(self, tag):
         if tag in self._BLOCKS:
@@ -407,12 +461,15 @@ class _PublicationText(HTMLParser):
                 if restored != self.kind:
                     self._flush()
                 self.kind = restored
+                self.owner = self.stack[index][3]
                 del self.stack[index:]
                 break
 
     def handle_data(self, value):
         if not any(frame[1] for frame in self.stack):
             self.pending.append(value)
+            self.pending_provenance.append((self.pending_size, self.pending_size + len(value), self.owner))
+            self.pending_size += len(value)
 
 
 def publication_parts(page):
@@ -420,7 +477,9 @@ def publication_parts(page):
 
     This projection deliberately includes generated notes and image attributes.
     ``reading_text`` remains the source-only projection used for word inventory.
-    Parts carry local IDs so a caller can retain source geometry separately.
+    Parts carry local IDs, inherited source owners and character-offset spans.
+    Inline provenance changes preserve a word's exact character sequence; the
+    owner union is conservative when one word crosses multiple source spans.
     """
     parser = _PublicationText()
     parser.feed('\n'.join(page.get('body', []) + page.get('asides', [])))

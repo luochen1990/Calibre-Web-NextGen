@@ -94,3 +94,52 @@ def test_publication_projection_keeps_inline_words_and_excludes_nonreading_code(
     sweep = q.sweep_publication_pages([page], {0:dict(source='native')}, [0], lexicon=LEXICON)
     assert sweep['passed']
     q.validate_sweep(sweep, [0])
+
+
+def test_generated_controls_use_installed_vocabulary_without_exempting_source_quotes(monkeypatch):
+    installed = LEXICON | {'original', 'source', 'page', 'return'}
+    monkeypatch.setattr(q, 'publication_lexicon', lambda: installed)
+    page = dict(pno=0, body=['<p>container</p>',
+        '<aside class="vision-disclosure"><p>Original source page</p><a>Return</a></aside>'], asides=[])
+    assert q.sweep_publication_pages([page], {0:dict(source='native')}, [0], lexicon={'container'})['passed']
+    page['body'][1] = '<aside class="vision-disclosure">Original source page: zqxone zqxtwo zqxthree zqxfour</aside>'
+    assert not q.sweep_publication_pages([page], {0:dict(source='native')}, [0], lexicon={'container'})['passed']
+    monkeypatch.setattr(q, 'publication_lexicon', lambda: None)
+    assert not q.sweep_publication_pages([page], {0:dict(source='native')}, [0], lexicon={'container'})['passed']
+
+
+def test_generated_controls_cannot_dilute_the_source_reading_gate(monkeypatch):
+    monkeypatch.setattr(q, 'publication_lexicon', lambda: LEXICON)
+    unknown = ['zqx' + chr(97+n) for n in range(20)]
+    # Distribute misses so no sixteen-word window reaches the independent limit.
+    words = [word for pair in zip(CLEAR.split()*2, unknown) for word in pair]
+    units = [('reading-'+str(n), ' '.join(words[n:n+4]), 'reading') for n in range(0,40,4)]
+    units += [('control', (CLEAR+' ')*100, 'disclosure')]
+    metric = q.inspect_partitioned(units, lexicon=LEXICON)
+    assert metric['dictionary_miss_rate'] < .02
+    assert metric['source_reading']['dictionary_miss_rate'] == .5
+    assert metric['needs_read']
+    assert all(owner != 'control' for owner in metric['rejected_units'])
+
+
+def test_note_continuation_parts_keep_their_own_source_owners():
+    page = dict(pno=0, body=[], asides=[
+        '<aside class="footnote"><p><span data-source-page="0" data-source-block="note-a">'+CLEAR+'</span></p>'
+        '<p><span data-source-page="1" data-source-block="note-b">'+convergent_damage()+'</span></p></aside>'])
+    parts = q.publication_parts(page)
+    assert parts[0]['owners'] == [dict(page=0, block='note-a')]
+    assert parts[1]['owners'] == [dict(page=1, block='note-b')]
+    metric = q.inspect_partitioned([(p['id'],p['text'],p['kind']) for p in parts], lexicon=LEXICON)
+    assert metric['rejected_units'] == [parts[1]['id']]
+    assert [owner for p in parts if p['id'] in metric['rejected_units'] for owner in p['owners']] == [dict(page=1, block='note-b')]
+
+
+def test_inline_source_owner_changes_do_not_split_a_damaged_word():
+    page = dict(pno=0, body=['<p><span data-source-page="0" data-source-block="left">coNt</span>'
+        '<span data-source-page="1" data-source-block="right">AiNeR</span></p>'], asides=[])
+    parts = q.publication_parts(page)
+    assert parts[0]['text'] == 'coNtAiNeR'
+    assert parts[0]['owners'] == [dict(page=0,block='left'),dict(page=1,block='right')]
+    assert parts[0]['spans'] == [dict(start=0,end=4,owners=[dict(page=0,block='left')]),
+        dict(start=4,end=9,owners=[dict(page=1,block='right')])]
+    assert q.inspect(parts[0]['text'], lexicon={'container'})['needs_read']
