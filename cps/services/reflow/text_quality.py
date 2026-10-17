@@ -16,7 +16,7 @@ from subprocess import run as _run
 import tempfile
 import unicodedata
 
-VERSION = 'page-text-quality-1'
+VERSION = 'page-text-quality-2'
 MIN_PAGE_WORDS = 40
 MISS_RATE = .40
 MIN_CASE_WORDS = 3
@@ -25,6 +25,10 @@ CASE_FLIP_RATE = .08
 SEVERE_CASE_TRANSITIONS = 3
 WINDOW_WORDS = 16
 WINDOW_MISS_RATE = .65
+COMBINED_MIN_ANOMALOUS_WORDS = 2
+COMBINED_CASE_FLIP_RATE = .05
+COMBINED_MISS_RATE = .20
+COMBINED_WINDOW_MISS_RATE = .50
 MAX_WORDLIST_BYTES = 8 * 1024 * 1024
 _WORDS = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*", re.UNICODE)
 
@@ -165,6 +169,16 @@ def inspect(text, *, lexicon=None):
         reasons.append('repeated_internal_case_transitions')
     if worst >= WINDOW_MISS_RATE:
         reasons.append('dense_dictionary_miss_window')
+    # Independent weak signals can corroborate each other even when no one
+    # isolated threshold is crossed. Require repeated damaged casing, sustained
+    # lexical loss and a dense local pocket together; ordinary unfamiliar names
+    # or a single mixed-case product name cannot satisfy this rule.
+    if (count >= MIN_PAGE_WORDS
+            and anomalous_case_words >= COMBINED_MIN_ANOMALOUS_WORDS
+            and flip_rate >= COMBINED_CASE_FLIP_RATE
+            and miss_rate >= COMBINED_MISS_RATE
+            and worst >= COMBINED_WINDOW_MISS_RATE):
+        reasons.append('combined_case_dictionary_window')
     return dict(version=VERSION, latin_words=count, dictionary_available=lexicon is not None,
         dictionary_misses=sum(missing), dictionary_miss_rate=round(miss_rate, 6),
         case_flip_words=sum(flips), case_flip_rate=round(flip_rate, 6), anomalous_case_words=anomalous_case_words, severe_case_words=severe_case_words,
@@ -281,7 +295,11 @@ def sweep_pages(pages, records, expected_pages, *, lexicon=None):
         thresholds=dict(min_page_words=MIN_PAGE_WORDS, dictionary_miss_rate=MISS_RATE,
             min_case_words=MIN_CASE_WORDS, case_flip_rate=CASE_FLIP_RATE,
             case_dictionary_miss_rate=CASE_MISS_RATE, severe_case_transitions=SEVERE_CASE_TRANSITIONS, window_words=WINDOW_WORDS,
-            window_dictionary_miss_rate=WINDOW_MISS_RATE))
+            window_dictionary_miss_rate=WINDOW_MISS_RATE,
+            combined_min_anomalous_words=COMBINED_MIN_ANOMALOUS_WORDS,
+            combined_case_flip_rate=COMBINED_CASE_FLIP_RATE,
+            combined_dictionary_miss_rate=COMBINED_MISS_RATE,
+            combined_window_dictionary_miss_rate=COMBINED_WINDOW_MISS_RATE))
 
 
 def validate_sweep(sweep, expected_pages):
@@ -293,3 +311,137 @@ def validate_sweep(sweep, expected_pages):
             or sweep.get('checked_pages') != expected or observed != expected
             or not sweep.get('passed') or any(not m.get('passed') or m.get('needs_read') for m in pages.values())):
         raise ValueError('Every source page requires a passing text quality sweep or retained source disclosure')
+
+
+def inspect_partitioned(units, *, disclosure=False, lexicon=None):
+    """Attribute a rejected reading to the source units supplying its evidence.
+
+    Units are ``(owner, text)`` pairs, or ``(owner, text, kind)`` triples. Alt,
+    accessibility and disclosure units use the short-reading safeguard; ordinary
+    reading units retain the page rule. Repeated owners are joined before their
+    independent check. Aggregate checks also catch damage across unit boundaries.
+    A mixed-owner failing window implicates owners of its missed words, never a
+    clean owner merely adjacent to that window. Page-wide case and miss evidence
+    implicates its contributing owners; ownership cannot prove which contributing
+    damaged word to repair, so all such contributors are retained as disclosures.
+    The result contains counters and owner IDs, never the supplied source text.
+    """
+    lexicon = english_lexicon() if lexicon is None else lexicon
+    grouped = {}
+    ordered = []
+    kinds = {}
+    for unit in units:
+        owner, text = unit[:2]
+        ordered.append((owner, text or ''))
+        grouped.setdefault(owner, []).append(text or '')
+        kinds.setdefault(owner, set()).add(unit[2] if len(unit) > 2 else 'reading')
+    texts = {owner: '\n'.join(parts) for owner, parts in grouped.items()}
+    metrics = {owner: (inspect_disclosure if disclosure or kinds[owner] - {'reading'} else inspect)(text, lexicon=lexicon)
+               for owner, text in texts.items()}
+    aggregate = inspect('\n'.join(text for _, text in ordered), lexicon=lexicon)
+    rejected = {owner for owner, metric in metrics.items() if metric['needs_read']}
+    words = [(owner, word) for owner, text in ordered for word in _WORDS.findall(text)
+             if len(word) >= 3 and _latin(word)]
+    if aggregate['needs_read']:
+        reasons = set(aggregate['reasons'])
+        misses = [lexicon is not None and word.casefold().replace('’', "'") not in lexicon for _, word in words]
+        if 'dictionary_unavailable' in reasons:
+            rejected.update(owner for owner, _ in words)
+        if 'dictionary_miss_rate' in reasons:
+            rejected.update(owner for (owner, _), missing in zip(words, misses) if missing)
+        if reasons & {'internal_case_and_dictionary_misses', 'repeated_internal_case_transitions', 'combined_case_dictionary_window'}:
+            rejected.update(owner for (owner, word), missing in zip(words, misses) if missing or _case_anomaly(word))
+        if 'dense_dictionary_miss_window' in reasons:
+            for start in range(max(0, len(words) - WINDOW_WORDS + 1)):
+                if sum(misses[start:start + WINDOW_WORDS]) / WINDOW_WORDS >= WINDOW_MISS_RATE:
+                    rejected.update(words[n][0] for n in range(start, start + WINDOW_WORDS) if misses[n])
+    # An individually bad short reading remains bad beside a long clean body.
+    aggregate['units'] = metrics
+    aggregate['rejected_units'] = [owner for owner in texts if owner in rejected]
+    if rejected and not aggregate['needs_read']:
+        aggregate['reasons'].append('unit_text_quality')
+    aggregate['needs_read'] = bool(rejected)
+    return aggregate
+
+
+class _PublicationText(HTMLParser):
+    """Keep reader-facing text channels distinct from source word accounting."""
+    _BLOCKS = {'p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'aside', 'br', 'li', 'tr', 'td', 'th'}
+    _VOID = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
+    _DISCLOSURES = {'vision-disclosure', 'source-original', 'source-disclosure', 'source-reading-annotation',
+                    'source-evidence-notice', 'source-disclosure-ref', 'note-return'}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self.stack, self.pending = [], [], []
+        self.kind = 'reading'
+
+    def _flush(self):
+        text = ''.join(self.pending).strip()
+        if text:
+            self.parts.append(dict(id=len(self.parts), text=text, kind=self.kind))
+        self.pending = []
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        excluded = tag in {'script', 'style', 'head'} or any(frame[1] for frame in self.stack)
+        kind = 'disclosure' if set(values.get('class', '').split()) & self._DISCLOSURES else self.kind
+        if tag in self._BLOCKS or kind != self.kind:
+            self._flush()
+        if not excluded:
+            for attribute in ('alt', 'aria-label', 'title'):
+                if values.get(attribute):
+                    self._flush()
+                    self.parts.append(dict(id=len(self.parts), text=values[attribute],
+                                           kind='alt' if attribute == 'alt' else 'accessibility'))
+        if tag not in self._VOID:
+            self.stack.append((tag, excluded, self.kind))
+            self.kind = kind
+
+    def handle_endtag(self, tag):
+        if tag in self._BLOCKS:
+            self._flush()
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index][0] == tag:
+                restored = self.stack[index][2]
+                if restored != self.kind:
+                    self._flush()
+                self.kind = restored
+                del self.stack[index:]
+                break
+
+    def handle_data(self, value):
+        if not any(frame[1] for frame in self.stack):
+            self.pending.append(value)
+
+
+def publication_parts(page):
+    """Return ordered reader-visible blocks and accessible image descriptions.
+
+    This projection deliberately includes generated notes and image attributes.
+    ``reading_text`` remains the source-only projection used for word inventory.
+    Parts carry local IDs so a caller can retain source geometry separately.
+    """
+    parser = _PublicationText()
+    parser.feed('\n'.join(page.get('body', []) + page.get('asides', [])))
+    parser.close()
+    parser._flush()
+    return parser.parts
+
+
+def publication_text(page):
+    return '\n'.join(part['text'] for part in publication_parts(page))
+
+
+def sweep_publication_pages(pages, records, expected_pages, *, lexicon=None):
+    """Sweep source readings, visible disclosures and accessibility text alike."""
+    sweep = sweep_pages(pages, records, expected_pages, lexicon=lexicon)
+    for page in pages:
+        parts = publication_parts(page)
+        metric = inspect_partitioned([(part['id'], part['text'], part['kind']) for part in parts], lexicon=lexicon)
+        metric['resolution'] = records[page['pno']]['source']
+        metric['passed'] = not metric['needs_read']
+        sweep['pages'][page['pno']] = metric
+    sweep['passed'] = all(metric['passed'] for metric in sweep['pages'].values())
+    sweep['projection'] = 'reader-publication-text-1'
+    return sweep
