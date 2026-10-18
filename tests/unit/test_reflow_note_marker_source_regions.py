@@ -42,3 +42,16 @@ def test_unproved_label_cannot_select_a_nearby_repeated_note():
     optical = words('7', 520) + words('8', 540)
     assert labelled_note_anchors(optical, range(len(optical)),
                                  note('', '')['text'].split(), '9') is None
+
+
+def test_reserved_following_label_still_bounds_the_original_note():
+    from cps.services.reflow.source_geometry import labelled_note_anchors
+    first = words('7', 520)
+    next_note = words('8', 540)
+    later = words('?', 560)
+    optical = first + next_note + later
+    available = list(range(len(first))) + list(range(len(first)+len(next_note), len(optical)))
+    proof = labelled_note_anchors(optical, available, note('', '')['text'].split(), '7')
+    assert proof is not None
+    assert proof['marker_bbox'] == [40, 520, 45, 527]
+    assert {optical[i]['bbox'][1] for i, _ in proof['anchors']} == {520}

@@ -140,7 +140,10 @@ def labelled_note_anchors(optical, available, candidate, marker):
             if optical[current]['bbox'][0] - optical[previous]['bbox'][2] > height * 4:
                 break
             right = optical[current]['bbox'][2]
-        endings = [center(optical[i]['bbox']) for i in available if i != index and
+        # Other units can own a label already; its physical boundary still
+        # limits this note. Ownership filters which words may be claimed, not
+        # which original source markers exist.
+        endings = [center(optical[i]['bbox']) for i in range(len(optical)) if i != index and
                    re.fullmatch(r'\d{1,4}|[*†‡]', label_text(optical[i])) and
                    abs(optical[i]['bbox'][0] - box[0]) <= height and
                    center(optical[i]['bbox']) > center(box) + height * .8]
