@@ -233,7 +233,13 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         wrapped=(z-a>1 and y-b==1 and (different_rows or
                  any(t.endswith(('-', '\u00ad')) for t in source_tokens[a:z-1]))
                  and ''.join(placement(t) for t in source_tokens[a:z])==placement(proposed[b]))
-        if wrapped:supported=[];boundary=None
+        # A crop that ends at a divided atom has not observed the complete
+        # lexical word. Matching that prefix cannot certify deleting the
+        # continuation from a complete first reading.
+        partial_wrap=(z-a==y-b==1 and source_tokens[a].endswith(('-', '\u00ad'))
+            and placement(proposed[b]).startswith(placement(source_tokens[a]))
+            and len(placement(proposed[b]))>len(placement(source_tokens[a])))
+        if wrapped or partial_wrap:supported=[];boundary=None
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
             boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or not proposed[b:y] else ('model',proposed[b:y],[]))

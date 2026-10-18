@@ -912,3 +912,44 @@ def test_split_terminal_punctuation_does_not_create_a_word_or_duplicate_symbol(p
     damaged=adjudicate(proposed,damaged_source,[dict(w)for w in damaged_source])
     assert damaged['tokens'][-1].endswith(punctuation)
     assert 5 in damaged['marked'],'letter disagreement still needs its own uncertainty'
+
+
+@pytest.mark.parametrize('notice_kind',['punctuation','source_context','source_raster'])
+def test_generated_native_notice_is_not_an_unbound_authored_paragraph(tmp_path,monkeypatch,notice_kind):
+    import pymupdf
+    from cps.services.reflow import assemble,build_epub,vision_pipeline as vp,pixel_adjudication as pa
+    text='The clear sample remains readable beside the quiet window.'
+    with pymupdf.open()as doc:
+        original=doc.new_page(width=500,height=500)
+        original.insert_text((30,70),text,fontsize=10)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in original.get_text('words')]
+        element=assemble.Element('p',runs=[['t',text]],pno=0,bbox=[30,58,450,73])
+        book=assemble.Book(elements=[element],pages={0:[element]})
+        notice=(build_epub._punctuation_notice(0,0)if notice_kind=='punctuation'else
+                build_epub._source_check_notice('Original source retained','original-p0000.xhtml#page','View original source'))
+        if notice_kind=='source_raster':
+            notice='<p><span class="source-raster"><img src="images/source.png" alt="Original source lettering"/></span></p>'
+        native=dict(pno=0,body=['<p>'+text+'</p>',notice],asides=[])
+        records=vp._native_seam_blocks(doc,book,0,native)
+        assert records[0]['role']=='body' and records[0]['source_regions']
+        assert records[1]['role']=='other' and records[1]['source_regions']==[]
+        calls=[]
+        monkeypatch.setattr(pa,'read_crop',lambda *args:(calls.append(args[1])or source))
+        vp._audit_native_pixels(doc,native,records,tmp_path,object(),{})
+        assert len(calls)==1 and native['body']==['<p>'+text+'</p>',notice]
+        # Equal prose without the generated notice class remains subject to
+        # normal physical ownership, even when its words describe a notice.
+        unbound=dict(pno=0,body=['<p>Original source retained</p>'],asides=[])
+        authored=vp._native_seam_blocks(doc,book,0,unbound)
+        assert authored[0]['role']=='body'
+        with pytest.raises(ValueError,match='Native live text has no uniquely bound source occurrence'):
+            vp._audit_native_pixels(doc,unbound,authored,tmp_path,object(),{})
+
+
+def test_partial_printed_hyphen_atom_cannot_certify_truncating_a_complete_word():
+    source=words('Please inspect the printed wor-')
+    proposed='Please inspect the printed workpieces:'.split()
+    result=adjudicate(proposed,source,[dict(w)for w in source])
+    assert result['tokens']==proposed
+    assert result['word_notes'][4]['status']=='UNRESOLVED'
+    assert not any(d['status']=='RESOLVED'for d in result['decisions'])

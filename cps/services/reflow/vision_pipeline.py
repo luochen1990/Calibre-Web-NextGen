@@ -4035,7 +4035,12 @@ def _native_seam_blocks(doc,book,pno,page):
             for item_index,r in enumerate(element.list_items)))
     rows=_pixel_row_ids(physical);result=[]
     for index,fragment in enumerate(page['body']):
-        role=('heading' if re.match(r'<h[1-6](?:>|\s)',fragment) else
+        # Factory notices describe source evidence; they are not authored
+        # paragraphs and cannot have a printed lexical occurrence. Keep their
+        # body position, but never make their missing source box reject healthy
+        # neighboring prose during the independent native pixel audit.
+        role=('other' if build_epub._LEADING_NOTICE.match(fragment) or not _seam_text(fragment) else
+              'heading' if re.match(r'<h[1-6](?:>|\s)',fragment) else
               'caption' if fragment.startswith('<p class="caption"') else
               'body' if build_epub._is_paragraph(fragment) or fragment.startswith('<ol class="source-list"') else 'other')
         text=_seam_text(fragment)
