@@ -479,8 +479,9 @@ class _PublicationText(HTMLParser):
         if tag in self._BLOCKS or kind != self.kind:
             self._flush()
         owner = self.owner
-        if values.get('data-source-page', '').isdigit():
-            owner = dict(page=int(values['data-source-page']), block=values.get('data-source-block') or None)
+        page_owner=values.get('data-source-page',values.get('data-reflow-owner-page',''))
+        if page_owner.isdigit():
+            owner = dict(page=int(page_owner), block=values.get('data-source-block',values.get('data-reflow-owner-block')) or None)
         elif values.get('data-source-block') and owner is not None:
             owner = dict(page=owner['page'], block=values['data-source-block'])
         if not excluded:

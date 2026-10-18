@@ -67,3 +67,17 @@ def test_printed_label_and_four_words_locate_a_damaged_opening_without_certifyin
     bound,_=vp.bind_geometry(answer,optical,display,regions,{})
     assert bound['blocks'][0]['text']=='Brindle brought the clear sample.'
     assert regions['short']==[[40,540,256,548]]
+
+
+def test_same_row_unclaimed_word_between_note_anchors_stays_in_its_source_crop():
+    optical=[dict(text='7',bbox=[40,520,45,527])]
+    text='The narrow bridge remains Brindle open beside the quiet mill.'
+    optical += [dict(text=t,bbox=[60+i*35,520,90+i*35,528])for i,t in enumerate(text.split())]
+    answer={'blocks':[dict(note('gap','7'),text=text.replace('Brindle','Brindlc'))]}
+    regions={}
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    vp.bind_geometry(answer,optical,display,regions,{})
+    assert len(regions['gap'])==1
+    missing=next(w for w in optical if w['text']=='Brindle')
+    assert vp.owned_words([missing],regions['gap'][0])==[missing]
+    assert regions['_instances'][vp._source_instance(missing)]=='gap'

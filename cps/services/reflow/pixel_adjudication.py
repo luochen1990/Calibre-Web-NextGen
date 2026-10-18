@@ -28,7 +28,25 @@ def _same_occurrence(left,right):
             and min(a[2],b[2])-max(a[0],b[0])>=.3*min(a[2]-a[0],b[2]-b[0]))
 
 
-def adjudicate(model, source, witness, uncertain=()):
+def blank_between(display,left,right,regions):
+    """Prove absence only from complete original intervening ink, not OCR gaps."""
+    from . import extract
+    a=left['bbox'];b=right['bbox']
+    height=min(a[3]-a[1],b[3]-b[1])
+    if min(a[3],b[3])-max(a[1],b[1])<height*.5 or b[0]<=a[2]:return False
+    # Concatenated disjoint crops can exclude the very word under dispute.
+    envelope=[a[0],min(a[1],b[1]),b[2],max(a[3],b[3])]
+    if not any(r[0]<=envelope[0] and r[1]<=envelope[1] and r[2]>=envelope[2] and r[3]>=envelope[3] for r in regions):return False
+    box=extract.pymupdf.Rect(a[2]+.1,envelope[1],b[0]-.1,envelope[3])
+    if box.width<=0:return False
+    pix=display.pixmap(box,scale=4,max_pixels=200_000)
+    from PIL import Image
+    import io
+    gray=Image.open(io.BytesIO(pix.tobytes('png'))).convert('L')
+    return gray.getextrema()[0]>=180
+
+
+def adjudicate(model, source, witness, uncertain=(), absence_proof=None):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
     Empty alternatives require both adjacent anchors, so a missing edge cannot
@@ -61,13 +79,14 @@ def adjudicate(model, source, witness, uncertain=()):
             anchors=list(zip(source[max(0,a-2):a],context[:len(left)]))
             if right:anchors+=list(zip(source[z:z+2],context[-len(right):]))
             if not anchors or not all(_same_occurrence(a,b) for a,b in anchors):continue
+            if not seq and (absence_proof is None or not absence_proof(source[a-1],source[z])):continue
             start=locations[0]+len(left)
             evidence=witness[start:start+len(seq)]
             if any(w.get('confidence',0)<85 for w in witness[locations[0]:locations[0]+len(left+seq+right)]):continue
             supported.append((name,literal,evidence))
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
-            ('model',proposed[b:y],[]))
+            ('source',source_tokens[a:z],[]) if not proposed[b:y] else ('model',proposed[b:y],[]))
         record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=list(literal),
                     status='RESOLVED' if resolved else 'UNRESOLVED',
                     method='independent_upright_crop' if resolved else 'pixel_read_inconclusive',

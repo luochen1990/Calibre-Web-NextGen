@@ -21,7 +21,8 @@ def test_pixel_read_restores_short_model_deletion():
 
 def test_pixel_read_rejects_inserted_real_word():
     source=words('The clear sample remains readable today.')
-    result=adjudicate('The clear sample never remains readable today.'.split(),source,source)
+    result=adjudicate('The clear sample never remains readable today.'.split(),source,source,
+        absence_proof=lambda left,right:True)
     assert result['tokens']==[w['text'] for w in source]
     assert result['decisions'][0]['chosen']==[]
     assert result['decisions'][0]['status']=='RESOLVED'
@@ -290,3 +291,79 @@ def test_model_formatting_tags_are_not_published_as_printed_words(tmp_path):
     assert '&lt;i&gt;' not in ''.join(page['body'])
     assert answer['blocks'][0]['text']=='Please read <i>the clear sample</i> today.'
     assert '<i>the' in report['blocks'][0]['original_model_tokens']
+
+
+def test_unproved_model_deletion_keeps_source_words_and_a_word_level_warning():
+    text='The clear sample carries Brindle beside the window today.'
+    result=adjudicate('The clear sample carries beside the window today.'.split(),words(text),words(text,30))
+    assert result['tokens']==text.split()
+    assert result['word_notes'][4]['status']=='UNRESOLVED'
+    assert result['word_notes'][4]['chosen']==['Brindle']
+    assert result['boxes'][4]==words(text)[4]['bbox']
+
+
+def test_missing_ocr_word_cannot_prove_an_insertion_across_disjoint_source_crops():
+    text='The clear sample carries Brindle beside the window today.'
+    source=words(text)
+    witness=[w for w in source if w['text']!='Brindle']
+    result=adjudicate(text.split(),witness,witness)
+    assert result['tokens']==text.split()
+    assert result['word_notes'][4]['status']=='UNRESOLVED'
+
+
+def test_blank_evidence_checks_intervening_ink_and_same_crop():
+    import pymupdf
+    from cps.services.reflow.source_display import SourceDisplay
+    from cps.services.reflow.pixel_adjudication import blank_between
+    with pymupdf.open() as doc:
+        page=doc.new_page(width=300,height=100)
+        page.insert_text((80,40),'Brindle',fontsize=12)
+        display=SourceDisplay(doc,0)
+        left=dict(bbox=[30,25,60,45]);right=dict(bbox=[140,25,170,45])
+        assert not blank_between(display,left,right,[[30,25,60,45],[140,25,170,45]])
+        assert not blank_between(display,left,right,[[30,25,170,45]])
+        assert not blank_between(display,dict(bbox=[30,60,60,80]),dict(bbox=[140,60,170,80]),[[30,60,60,80],[140,60,170,80]])
+        assert blank_between(display,dict(bbox=[30,60,60,80]),dict(bbox=[140,60,170,80]),[[30,60,170,80]])
+
+
+def test_word_correction_note_explains_evidence_and_keeps_its_source_owner(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,text_quality
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    text='We carried the rare Brindlc sample beside the quiet window today.'
+    original=words(text)
+    monkeypatch.setattr(pa,'read_crop',lambda *args:[dict(w,text='Brindle' if w['text']=='Brindlc' else w['text'])for w in original])
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open() as doc:
+        doc.new_page(width=400,height=400)
+        page,report=vp.compile_page({'blocks':[block(text.replace('Brindlc','Brindle'),role='footnote',marker='2',bbox=(0,0,1000,1000))]},
+            original,SourceDisplay(doc,0),0,Package(),{},pixel_words=original,note_context={'cache':tmp_path/'cache'})
+    assert any('Brindlc → Brindle.' in aside for aside in page['asides'])
+    report['source']='vision'
+    assert vp._compiled_text_quality([page],{0:report},[0])['passed']
+    parts=text_quality.publication_parts(page)
+    correction=next(p for p in parts if 'Brindlc → Brindle.' in p['text'])
+    assert correction['owners']==[dict(page=0,block='b1')]
+    assert 'An independent upright crop supports this correction.' in correction['text']
+
+
+def test_fallback_adjudication_retains_the_first_reader_alternative(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    text='Please read the clear small wooden bridge beside the quiet stream before opening the box today.'
+    witness=words(text)
+    baseline=witness[:3]+witness[11:]
+    monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open() as doc:
+        doc.new_page(width=600,height=400)
+        page,report=vp.compile_page({'blocks':[block(text,role='footnote',marker='2',bbox=(0,0,1000,1000))]},
+            baseline,SourceDisplay(doc,0),0,Package(),{},pixel_words=baseline,note_context={'cache':tmp_path/'cache'})
+    assert report['blocks'][0]['published_tokens']==text.split()
+    decisions=report['blocks'][0]['adjudication']
+    assert any(d['model']==text.split()[3:11] and d['chosen']==d['model'] and d['status']=='RESOLVED'for d in decisions)

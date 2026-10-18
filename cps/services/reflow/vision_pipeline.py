@@ -2045,8 +2045,13 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             [vision_reading.normalized(w['text']) for w in optical_local],autojunk=False).get_matching_blocks())
                         if overlap/max(1,len(optical_local))<.6:baseline=optical_local
                     if baseline and witness:
-                        adjudication=pixel_adjudication.adjudicate(result['tokens'],
-                            baseline,witness,uncertain=result['marked'])
+                        first_tokens=re.findall(r'<n:[^>]+>|\S+',
+                            re.sub(r'(<n:[^>]+>)',r' \1 ',block['text']))
+                        pending=(range(len(first_tokens)) if result['fallback'] or bid in forced_uncertain
+                                 else result['marked'])
+                        adjudication=pixel_adjudication.adjudicate(first_tokens,
+                            baseline,witness,uncertain=pending,
+                            absence_proof=lambda left,right:pixel_adjudication.blank_between(display,left,right,territories))
                         conflicts=pixel_adjudication.audit_agreement(adjudication['tokens'],baseline,witness)
                         for i,decision in conflicts.items():
                             adjudication['marked'].add(i)
@@ -2290,9 +2295,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     elif decision:
                         if decision['source']==decision['chosen'] and decision.get('model',decision['source'])==decision['chosen']:
                             explanation=escape(' '.join(decision['chosen']))+'. Consult the original printed word in the image.'
-                        else:explanation=source_quote
+                        else:explanation=source_quote+(' An independent upright crop supports this correction.' if decision['status']=='RESOLVED' else ' An independent upright crop could not settle this difference.')+' Compare the original printed word in the image.'
                     else:explanation=escape(' '.join(result['tokens'][i] for i in endings[index]))+'. '+source_quote
-                    extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
+                    extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
                     piece+=f'<a id="{ref}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'
                 if local_ocr and index in result['marked']:
                     piece='<span class="uncertain" title="Unverified local OCR reading">'+piece+'</span>'
@@ -2676,7 +2681,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
         # their bounding union must never own the intervening paragraphs.
         import statistics
         height=statistics.median(max(1,w['bbox'][3]-w['bbox'][1]) for w in optical)
-        components=[]
+        components=[];bridged_instances=set()
         for anchor in anchors:
             if components:
                 previous=optical[components[-1][-1][0]]['bbox'];current=optical[anchor[0]]['bbox']
@@ -2685,6 +2690,18 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                 if block['role']=='footnote':
                     transition=(abs((previous[1]+previous[3]-current[1]-current[3])/2)>height*.55
                                 or current[0]<previous[0]-3 or current[0]-previous[2]>4*height)
+                    if (transition and current[0]>previous[2]
+                            and min(previous[3],current[3])-max(previous[1],current[1])>height*.5):
+                        # A misspelled model word between two anchors is still
+                        # original ink. Fill only a continuous, unclaimed row;
+                        # a blank column gutter cannot bridge separate notes.
+                        inside=sorted([i for i in available if optical[i]['bbox'][0]>=previous[2]
+                            and optical[i]['bbox'][2]<=current[0]
+                            and min(optical[i]['bbox'][3],previous[3])-max(optical[i]['bbox'][1],previous[1])>height*.5],
+                            key=lambda i:optical[i]['bbox'][0])
+                        chain=[previous]+[optical[i]['bbox'] for i in inside]+[current]
+                        if inside and all(b[0]-a[2]<=height*1.5 for a,b in zip(chain,chain[1:])):
+                            transition=False;bridged_instances.update(inside)
                 else:
                     art_gap=(block['role']=='body' and current[1]-previous[3]>3*height and any(
                         box[0]<max(envelope[2],current[2]) and box[2]>min(envelope[0],current[0])
@@ -2731,7 +2748,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             reject('Disjoint printed reading requires source region ownership')
         if regions is not None:regions[block['id']]=territories
         if block['role'] in ('body','footnote') and regions is not None:
-            for i,j in anchors:
+            for i in {i for i,j in anchors}|bridged_instances:
                 reserved[i]=block['id']
                 regions.setdefault('_instances',{})[_source_instance(optical[i])]=block['id']
         rect=vision_reading.union(territories);r=display.rect
@@ -3778,7 +3795,8 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 chosen=decision['chosen'][0] if decision['status']=='RESOLVED' else tokens[index]
                 explanation=(escape(tokens[index])+' → '+escape(chosen)+'.' if chosen!=tokens[index]
                              else escape(chosen)+'. Consult the original printed word in the image.')
-                page['asides'].append(f'<aside id="{ident}" class="footnote vision-disclosure" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{origin}">Return</a></aside>')
+                explanation+=' An independent upright crop supports this correction.' if decision['status']=='RESOLVED' else ' An independent upright crop could not settle this difference.'
+                page['asides'].append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{page["pno"]}" data-reflow-owner-block="{escape(record["id"],quote=True)}" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{origin}">Return</a></aside>')
                 a,z=ranges[index]
                 edits.append((a,z,(escape(chosen) if chosen!=tokens[index] else fragment[a:z])+f'<a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'))
                 tokens[index]=chosen
