@@ -363,6 +363,10 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
     for territory in territories:
         local=[]
         for word in owned_words(items,territory):
+            # Rounding admission must not pull a following row into an earlier
+            # partial-row territory owned by this same block.
+            if not strictly_inside(word,territory) and any(
+                    strictly_inside(word,box) for box in territories if box is not territory):continue
             claim=(regions or {}).get('_instances',{}).get(_source_instance(word))
             if claim is not None and claim!=block['id']:continue
             strict=any(strictly_inside(word,box) for box in territories)
@@ -2575,8 +2579,9 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
         hint=block_rect(note,display)
         candidate=[lex(w) for w in re.sub(r'<n:[^>]+>',' ',note['text']).split()]
         available=[i for i in range(len(optical)) if i not in reserved]
-        from .source_geometry import labelled_note_anchors
-        labelled=labelled_note_anchors(optical,available,candidate,note['marker'])
+        from .source_geometry import labelled_note_anchors,local_note_openings
+        openings=local_note_openings(optical,available,note['marker'],hint)
+        labelled=labelled_note_anchors(optical,available,candidate,note['marker'],openings=openings or None)
         anchors=labelled['anchors'] if labelled else _note_pixel_anchors(optical,available,candidate,hint)
         if labelled:note_openings[note['id']]=labelled['marker_bbox']
         local=[(i,j) for i,j in anchors if owned_words([optical[i]],hint)]
@@ -2616,7 +2621,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
         x=block['bbox'];valid=all(0<=v<=1000 for v in x) and x[0]<x[2] and x[1]<x[3]
         if block['role'] in ('figure','table') and valid:continue
         candidate=[lex(w) for w in re.sub(r'<n:[^>]+>',' ',block['text']).split()]
-        available=[i for i in range(len(optical)) if block['role'] not in ('body','caption','footnote') or reserved.get(i,block['id'])==block['id']]
+        available=[i for i in range(len(optical)) if block['role'] not in ('body','caption','footnote','heading') or reserved.get(i,block['id'])==block['id']]
         if valid and block['role']=='other' and re.fullmatch(r'[A-Za-z0-9°○]{1,3}',block['text'].strip()):
             hint=block_rect(block,display);r=display.rect
             # A shifted short margin hint can find its real glyph in the same
@@ -2627,6 +2632,20 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                 available=[i for i in available if optical[i]['bbox'][3]<r.height*.13]
         local_indices=[i for i in available if owned_words([optical[i]],block_rect(block,display))] if valid else []
         matched=_geometry_anchors(optical,local_indices,candidate,body=valid and block['role']=='body',wrap_pool=available)
+        if valid and block['role']=='heading' and 2<=len(candidate)<=4 and matched:
+            # A short run-in title may have one damaged OCR word. Its exact
+            # neighbours locate one continuous physical row after BODY claims
+            # have been excluded. Reserve that ink without certifying spelling.
+            anchor_boxes=[optical[i]['bbox'] for i,j in matched]
+            middle=statistics.median((box[1]+box[3])/2 for box in anchor_boxes)
+            height=statistics.median(max(1,box[3]-box[1]) for box in anchor_boxes)
+            row=sorted((i for i in local_indices if
+                abs(sum(optical[i]['bbox'][1::2])/2-middle)<=height*.55),
+                key=lambda i:optical[i]['bbox'][0])
+            if (len(row)==len(candidate) and sum(source[i]==key for i,key in zip(row,candidate))>=len(candidate)-1
+                    and all(optical[b]['bbox'][0]-optical[a]['bbox'][2]<=2*height for a,b in zip(row,row[1:]))):
+                matched=list(zip(row,range(len(candidate))))
+        seed_caption_complete=False
         if block['role']=='caption' and valid and len({j for i,j in matched})<len(candidate):
             # Caption hints can be displaced by a few printed rows. Recover
             # exact nearby instances, with BODY reservations already removed;
@@ -2656,6 +2675,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             seed_proof=_caption_punctuation_anchors(optical,seed_indices,block['text'])
             if seed_proof and {j for i,j in seed_proof}=={j for j,key in enumerate(candidate) if key}:
                 matched=seed_proof
+                seed_caption_complete=True
                 repairs.append(dict(block=block['id'],method='unique_complete_caption_in_adjacent_source_seed',
                     source_word_indices=list(dict.fromkeys(i for i,j in seed_proof))))
             if not punctuated and not seed_proof:
@@ -2666,17 +2686,41 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                     first=min(j for i,j in suffix)
                     matched=sorted(set([(i,j) for i,j in matched if j<first]+suffix),
                         key=lambda pair:(pair[1],optical[pair[0]]['bbox'][0]))
-        labelled=None
+        labelled=None;local_openings=[]
         if block['role']=='footnote' and valid:
-            from .source_geometry import labelled_note_anchors
-            labelled=labelled_note_anchors(optical,available,candidate,block['marker'])
-            matched=labelled['anchors'] if labelled else _note_pixel_anchors(optical,available,candidate,block_rect(block,display))
+            from .source_geometry import labelled_note_anchors,local_note_openings
+            hint=block_rect(block,display)
+            local_openings=local_note_openings(optical,available,block['marker'],hint)
+            labelled=labelled_note_anchors(optical,available,candidate,block['marker'],openings=local_openings or None)
+            matched=labelled['anchors'] if labelled else _note_pixel_anchors(optical,local_indices if local_openings else available,candidate,hint)
             if labelled:note_openings[block['id']]=labelled['marker_bbox']
         from .source_geometry import unique_anchors
-        proof_pool=(local_indices if valid and block['role'] in ('running_head','folio') else available)
-        corroborated=unique_anchors(optical,proof_pool,candidate) if not labelled else []
+        proof_pool=(local_indices if valid and block['role'] in ('running_head','folio','heading','caption') else available)
+        # A printed note opening owns its local footer even when its reading is
+        # damaged. A pagewide prose match cannot move that note onto BODY ink.
+        if local_openings:proof_pool=local_indices
+        corroborated=unique_anchors(optical,proof_pool,candidate) if not labelled and not seed_caption_complete else []
         if corroborated:
-            matched=corroborated
+            # Compact exact proof must retain an independently located divided
+            # edge atom. The existing matcher proves that partial word beside
+            # its exact same-row neighbour; it is not a distant text match.
+            partial=[]
+            if block['role']=='body':
+                for index,position in matched:
+                    if position not in (0,len(candidate)-1):continue
+                    raw=optical[index]['text'];atom=lex(raw);whole=candidate[position]
+                    if len(atom)<2 or atom==whole or not whole.isalpha():continue
+                    leading=position==0
+                    if not (whole.endswith(atom) if leading else
+                            raw.endswith(tuple(assemble.HYPHENS)) and whole.startswith(atom)):continue
+                    neighbors=[i for i,j in corroborated if j==position+(1 if leading else -1)]
+                    if len(neighbors)!=1:continue
+                    box=optical[index]['bbox'];near=optical[neighbors[0]]['bbox']
+                    height=max(1,box[3]-box[1],near[3]-near[1])
+                    gap=near[0]-box[2] if leading else box[0]-near[2]
+                    if abs((box[1]+box[3]-near[1]-near[3])/2)<=height*.55 and 0<=gap<=2*height:
+                        partial.append((index,position))
+            matched=sorted(set(corroborated+partial),key=lambda pair:pair[1])
         if not corroborated and block['role']=='body' and hasattr(display,'doc'):
             from .source_geometry import native_pixel_anchors
             if not hasattr(display,'_placement_words'):
@@ -2868,7 +2912,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
         if len(territories)>1 and regions is None:
             reject('Disjoint printed reading requires source region ownership')
         if regions is not None:regions[block['id']]=territories
-        if block['role'] in ('body','footnote') and regions is not None:
+        if block['role'] in ('body','footnote','heading') and regions is not None:
             for i in {i for i,j in anchors}|bridged_instances:
                 reserved[i]=block['id']
                 regions.setdefault('_instances',{})[_source_instance(optical[i])]=block['id']

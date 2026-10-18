@@ -149,3 +149,35 @@ def test_running_head_cannot_relocate_to_matching_body_words():
     assert answer['blocks'][0]['bbox']==header['bbox']
     assert not any(vp.owned_words([w],r)for w in optical if w['bbox'][1]==200
                    for r in regions.get('head',[]))
+
+
+@pytest.mark.parametrize('side',['first','last'])
+def test_compact_proof_keeps_a_locally_proved_divided_word_atom(side):
+    source=('dow beside the quiet window after a careful journey today.' if side=='first'
+            else 'Careful travelers pause near the quiet window before the mea-')
+    model=source.replace('dow','meadow',1) if side=='first' else source[:-4]+'meadow'
+    optical=[word(t,30+i*35,200)for i,t in enumerate(source.split())]
+    regions=bind(model,'body',[40,260,950,330],optical)
+    assert regions==[[30,200,373,208]],'compact exact matches retain their independently proved partial edge atom'
+
+
+def test_complete_caption_seed_proof_survives_a_partial_local_hint(monkeypatch):
+    monkeypatch.setattr(vp,'_reserve_object_instances',lambda *args:None)
+    text='The clear sample retains eight ordinary printed words.'
+    optical=[word(t,40+i*35,200)for i,t in enumerate(text.split())]
+    art=dict(id='art',text='A synthetic illustration',role='figure',bbox=[60,250,800,330],marker='',
+        low_confidence=[],continues_previous=False,continues_next=False)
+    cap=dict(art,id='cap',text=text,role='caption',bbox=[60,270,420,300])
+    regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    vp.bind_geometry({'blocks':[art,cap]},optical,display,regions,{})
+    assert regions['cap']==[[40,200,313,208]],'partial hint proof cannot replace the complete adjacent-object source instance'
+
+
+def test_partial_row_rounding_does_not_steal_the_following_owned_row():
+    optical=[dict(text='small',bbox=[385,94,428,108]),dict(text='tools',bbox=[430,94,473,108])]
+    optical += [dict(text=t,bbox=[20+i*45,103,63+i*45,115])for i,t in enumerate('before each careful journey through distant villages and familiar gardens beside'.split())]
+    block=dict(id='row',text='small tools before each careful journey through distant villages and familiar gardens beside',role='body',
+        bbox=[0,0,1000,1000],marker='',low_confidence=[],continues_previous=False,continues_next=False)
+    regions={'row':[[385,94,473,108],[20,103,513,115]]}
+    actual=vp._owned_block_words(block,{'blocks':[block]},optical,SimpleNamespace(rect=pymupdf.Rect(0,0,500,720)),regions,ordered=True)
+    assert [w['text']for w in actual]==block['text'].split()

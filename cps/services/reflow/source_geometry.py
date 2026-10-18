@@ -109,7 +109,29 @@ def unique_anchors(optical, available, candidate, *, minimum=5, complete_short=T
     return list(winners[0]) if len(winners) == 1 else []
 
 
-def labelled_note_anchors(optical, available, candidate, marker):
+def local_note_openings(optical, available, marker, hint):
+    """Return physical opening labels in the hint, excluding inline numerals."""
+    import re
+    label=lambda word:word['text'].strip().strip('().[] ')
+    marker=marker.strip().strip('().[] ')
+    if not re.fullmatch(r'\d{1,4}|[*†‡]',marker):return []
+    available=list(available);result=[]
+    height=max(1,statistics.median(optical[i]['bbox'][3]-optical[i]['bbox'][1]
+                                  for i in available)) if available else 1
+    center=lambda box:(box[1]+box[3])/2
+    for index in available:
+        box=optical[index]['bbox']
+        if label(optical[index])!=marker or not (hint[0]-3<=(box[0]+box[2])/2<=hint[2]+3
+                and hint[1]-3<=center(box)<=hint[3]+3):continue
+        row=[optical[i]['bbox'] for i in available if i!=index
+             and abs(center(optical[i]['bbox'])-center(box))<=height*.75]
+        following=[b for b in row if 0<=b[0]-box[2]<=height*4]
+        preceding=[b for b in row if 0<=box[0]-b[2]<=height*4]
+        if following and not preceding:result.append(index)
+    return result
+
+
+def labelled_note_anchors(optical, available, candidate, marker, *, openings=None):
     """Locate repeated note wording only through its own printed opening label.
 
     A hint's proximity cannot choose between repeated citations. A literal
@@ -128,6 +150,7 @@ def labelled_note_anchors(optical, available, candidate, marker):
     center = lambda box: (box[1] + box[3]) / 2
     proofs = []
     for index in available:
+        if openings is not None and index not in openings:continue
         label = optical[index]
         if label_text(label) != marker:
             continue

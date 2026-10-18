@@ -114,3 +114,15 @@ def test_note_continuation_can_return_to_the_printed_label_margin():
     assert proof is not None
     assert [optical[i]['text']for i,j in proof['anchors']]==' '.join(rows).split()
     assert all(i<following for i,j in proof['anchors'])
+
+
+def test_local_printed_note_opening_cannot_relocate_to_a_distant_equal_label():
+    distant=words('7',520)
+    local=[dict(text='7',bbox=[40,620,45,627])]
+    local += [dict(text=t,bbox=[60+i*35,620,90+i*35,628])for i,t in enumerate(
+        'Other authored details stay distinct beside this sample.'.split())]
+    block=dict(note('local','7'),bbox=[60,850,900,900])
+    regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    bound,_=vp.bind_geometry({'blocks':[block]},distant+local,display,regions,{})
+    assert not regions.get('local') or min(r[1]for r in regions['local'])>=612
+    assert bound['blocks'][0]['bbox'][1]>=850,'a matching distant label cannot overrule the printed local opening'
