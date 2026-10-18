@@ -4037,8 +4037,9 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
     for position,record in enumerate(records):
         if record.get('role') not in ('body','heading','caption'):continue
         territories=record.get('source_regions')
-        if not territories:continue
         with unit_recovery.guard(page['pno'],'native_pixel_adjudication',block=record['id']):
+            if not territories:
+                raise ValueError('Native live text has no uniquely bound source occurrence')
             source=_pixel_line_order([w for w in physical if any(owned_words([w],box) for box in territories)])
             tokens=_seam_text(page['body'][position]).split()
             record['published_tokens']=tokens

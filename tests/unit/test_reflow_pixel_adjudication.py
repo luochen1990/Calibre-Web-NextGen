@@ -836,3 +836,29 @@ def test_unknown_reference_slot_is_not_an_ordinary_lexical_word(recognized):
     assert [w['text']for w in lexical]==['minerals,’','and']
     assert source[1]['text']==recognized,'reservation must not edit the original occurrence inventory'
     assert proof['lexical_literal_suffix']=='‡'
+
+
+def test_native_live_text_without_a_source_occurrence_cannot_skip_pixel_audit(tmp_path):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=300,height=400)
+        page.insert_text((30,60),'A clear sample remains readable.')
+        native=dict(pno=0,body=['<p>A clear sample remains readable.</p>'],asides=[])
+        records=[dict(id='native-0',role='body',source_regions=[])]
+        with pytest.raises(ValueError,match='Native live text has no uniquely bound source occurrence'):
+            vp._audit_native_pixels(doc,native,records,tmp_path,object(),{})
+
+
+def test_agreeing_layer_and_reader_do_not_override_two_own_pixel_readings():
+    from cps.services.reflow.pixel_adjudication import adjudicate
+    original=words('The clear sample crosses quiet fie1ds before sunset today.')
+    pixels=[dict(w,text='fields' if w['text']=='fie1ds' else w['text'])for w in original]
+    result=adjudicate([w['text']for w in original],original,pixels,corroboration=[dict(w)for w in pixels])
+    assert result['tokens']=='The clear sample crosses quiet fields before sunset today.'.split()
+    assert 5 in result['marked']
+    assert result['word_notes'][5]['source']==['fie1ds'] and result['word_notes'][5]['chosen']==['fields']
+    assert result['word_notes'][5]['status']=='RESOLVED'
+    remote=[dict(w,bbox=[w['bbox'][0],200,w['bbox'][2],212])for w in pixels]
+    uncertain=adjudicate([w['text']for w in original],original,pixels,corroboration=remote)
+    assert uncertain['tokens']==[w['text']for w in original]

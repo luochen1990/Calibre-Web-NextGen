@@ -118,7 +118,20 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             else:operations.append(('replace',a+i,a+k,b+j,b+l))
     for kind,a,z,b,y in operations:
         if kind=='equal':
-            chosen.extend((t, source[j]['bbox'], None) for t,j in zip(proposed[b:y],range(a,z)))
+            for token,index in zip(proposed[b:y],range(a,z)):
+                own=[word for word in witness if _same_occurrence(source[index],word)]
+                word=own[0] if len(own)==1 else None
+                second=([other for other in corroboration if _same_occurrence(word,other)
+                    and _key(word['text'])==_key(other['text'])] if word else [])
+                corrected=bool(word and word.get('confidence',0)>=90 and len(second)==1
+                    and _key(word['text'])!=_key(token)
+                    and _key(word['text']).rstrip('.,;:!?')!=_key(token).rstrip('.,;:!?')
+                    and not _accent_conflict(word['text'],token))
+                if corrected:
+                    record=dict(source=[token],model=[token],chosen=[word['text']],status='RESOLVED',
+                        method='two_own_pixel_readings',source_range=[index,index+1])
+                    decisions.append(record);chosen.append((word['text'],word['bbox'],record))
+                else:chosen.append((token,source[index]['bbox'],None))
             continue
         alternatives=[('source',original[a:z],source_tokens[a:z]),
                       ('model',candidate[b:y],proposed[b:y])]
