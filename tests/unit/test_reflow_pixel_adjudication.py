@@ -230,3 +230,63 @@ def test_native_factory_joined_wrap_still_receives_an_independent_pixel_read(tmp
         assert seen==[regions]
         assert published['body']==['<p>The sample remains clear today.</p>']
         assert records[0]['published_tokens']=='The sample remains clear today.'.split()
+
+
+def test_punctuation_mark_does_not_reclassify_a_source_note_as_garbled(tmp_path):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    text='Brindle Wembury, Clatterford Pemberley, 9-10.'
+    source=words(text)
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open() as doc:
+        doc.new_page(width=300,height=400)
+        page,report=vp.compile_page({'blocks':[block(text.replace('9-10','9–10'),
+            role='footnote',marker='3',bbox=(0,0,1000,1000))]},source,SourceDisplay(doc,0),0,Package(),{},pixel_words=source)
+    assert 'Brindle Wembury, Clatterford Pemberley,' in page['asides'][0]
+    assert report['marks']==1
+    assert '9–10.' in page['asides'][0]
+
+
+def test_local_numeral_correction_preserves_original_occurrence_and_uncertainty(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    text='Please read section 11 before opening the box.'
+    original=words(text)
+    witness=[dict(w,text='III' if w['text']=='11' else w['text'])for w in original]
+    monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open() as doc:
+        doc.new_page(width=300,height=400)
+        page,report=vp.compile_page({'blocks':[block(text,role='footnote',marker='2',bbox=(0,0,1000,1000))]},
+            [],SourceDisplay(doc,0),0,Package(),{},pixel_words=original,local_ocr=True,
+            local_ocr_units=[dict(id='b1',words=original,source_word_indices=list(range(len(original))))],
+            note_context={'cache':tmp_path/'cache'})
+    assert report['blocks'][0]['published_tokens'][3]=='III'
+    assert report['local_ocr_units'][0]['words'][3]['text']=='11'
+    assert 'class="uncertain"' in page['asides'][0]
+    assert any('11 → III.' in aside for aside in page['asides'][1:])
+    assert any(d['status']=='RESOLVED'for d in report['blocks'][0]['adjudication'])
+
+
+def test_model_formatting_tags_are_not_published_as_printed_words(tmp_path):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    original=words('Please read the clear sample today.')
+    answer={'blocks':[block('Please read <i>the clear sample</i> today.',bbox=(0,0,1000,1000))]}
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open() as doc:
+        doc.new_page(width=300,height=400)
+        page,report=vp.compile_page(answer,original,SourceDisplay(doc,0),0,Package(),{},pixel_words=original)
+    assert report['blocks'][0]['published_tokens']=='Please read the clear sample today.'.split()
+    assert '&lt;i&gt;' not in ''.join(page['body'])
+    assert answer['blocks'][0]['text']=='Please read <i>the clear sample</i> today.'
+    assert '<i>the' in report['blocks'][0]['original_model_tokens']

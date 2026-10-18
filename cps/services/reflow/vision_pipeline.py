@@ -1883,6 +1883,11 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             f'<img src="{source}" alt="Complete original source page"/></aside>')
     for block in answer['blocks']:
         try:
+            original_model_tokens=block['text'].split()
+            # Reader emphasis is metadata, never a printed angle-bracket word.
+            # Accept only the closed formatting vocabulary, retaining all inner
+            # words and the original response in the audit record.
+            block=dict(block,text=re.sub(r'</?(?:i|b|em|strong)>','',block['text']))
             bid=block['id'];role=block['role'];box=block_rect(block,display)
             # A rejected note's validation stub owns no live words or note link.
             # Its admitted original unit is inserted as source context below.
@@ -2073,13 +2078,30 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 with unit_recovery.guard(pno,'local_pixel_adjudication',block=bid):
                     witness=pixel_adjudication.read_crop(display,territories,
                         Path(note_context['cache'])/'adjudication')
-                    conflicts=pixel_adjudication.audit_agreement(result['tokens'],
-                        source_unit['words'] if local_ocr_units is not None else optical_local,witness)
-                    result['adjudication']=list(conflicts.values())
+                    source_occurrences=(source_unit['words'] if local_ocr_units is not None else optical_local)
+                    refined=pixel_adjudication.refine_fallback(result['tokens'],witness,
+                        text_quality.english_lexicon(),source=source_occurrences)
+                    # Original occurrence inventories are immutable. Only a
+                    # positively corroborated one-for-one repair can replace a
+                    # local token without changing those source owners.
+                    repairs=(refined if refined and len(refined['tokens'])==len(result['tokens'])
+                        and all(len(d['source'])==len(d['chosen']) for d in refined['decisions']
+                                if d['status']=='RESOLVED') else None)
+                    if repairs:
+                        result['tokens']=repairs['tokens']
+                        result['word_notes']=repairs['word_notes']
+                        result['adjudication']=repairs['decisions']
+                        for i,decision in repairs['word_notes'].items():
+                            if decision['status']=='RESOLVED' and i in repairs['boxes']:
+                                evidence_boxes[i]=repairs['boxes'][i]
+                        if local_ocr_units is not None:
+                            source_unit['published_words']=list(result['tokens'])
+                    conflicts=pixel_adjudication.audit_agreement(result['tokens'],source_occurrences,witness)
+                    result.setdefault('adjudication',[]).extend(conflicts.values())
                     # Two settings of one local recognizer do not establish
                     # independent certainty. Preserve all local OCR uncertainty
                     # and its exact recognized source occurrence inventory.
-                    result['word_notes']=conflicts
+                    for i,decision in conflicts.items():result.setdefault('word_notes',{}).setdefault(i,decision)
             compiled_reading=' '.join(result['tokens'])
             lost_scripts=(text_quality.reading_script_mismatches(block['text'],compiled_reading)
                           if result['fallback'] else text_quality.script_mismatches(block['text'],compiled_reading))
@@ -2099,12 +2121,23 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         and chosen_count<.25*model_count)
             if result['fallback'] and contracted:
                 raise _DisclosureQualityRejection('Unreliable contracted fallback requires original source disclosure')
+            # A punctuation-only model variant does not turn an unchanged
+            # source citation into a new short purported reading. Keep its
+            # ordinary page-quality check and each actual chosen span's short
+            # check; lexical substitutions and fallbacks retain the stronger
+            # complete-reading check.
+            source_reading=' '.join(w['text'] for w in (local or optical_local))
+            lexical_change=(re.findall(r'\w+',compiled_reading)!=re.findall(r'\w+',source_reading))
+            complete_check=(text_quality.inspect_disclosure if result['fallback'] or lexical_change
+                            else text_quality.inspect)
             if ((result['fallback'] or result['marked'])
-                    and text_quality.inspect_disclosure(compiled_reading)['needs_read']):
+                    and complete_check(compiled_reading)['needs_read']):
                 raise _DisclosureQualityRejection('Unreliable chosen reading requires original source disclosure')
             groups=[]
             for index in sorted(i for i in result['marked'] if not result['tokens'][i].startswith('<n:')):
-                if not adjudication and groups and index==groups[-1][-1]+1:groups[-1].append(index)
+                resolved_local={i for i,d in (result.get('word_notes') or {}).items() if d['status']=='RESOLVED'} if local_ocr else set()
+                if (not adjudication and groups and index==groups[-1][-1]+1
+                        and index not in resolved_local and groups[-1][-1] not in resolved_local):groups[-1].append(index)
                 else:groups.append([index])
             endings={g[-1]:g for g in groups}
             # Reject each chosen span before emitting markers or source images.
@@ -2246,13 +2279,14 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         source_quote='Source reading: '+escape(' '.join(owned_word['text'] for owned_word in local if any(owned_word['bbox']==evidence_boxes.get(i) for i in endings[index])))+'.'
                     decision=(result.get('word_notes') or {}).get(index)
                     if decision:
-                        label=('Pixel-verified correction' if decision['status']=='RESOLVED'
-                               else 'Unresolved source reading')
+                        label=(('Unverified local OCR reading; pixel-supported correction' if decision['status']=='RESOLVED'
+                                else 'Unverified local OCR reading') if local_ocr else
+                               'Pixel-verified correction' if decision['status']=='RESOLVED' else 'Unresolved source reading')
                         before=(decision.get('model',[]) if decision['source']==decision['chosen']
                                 and decision.get('model',[])!=decision['chosen'] else decision['source'])
                         source_quote=(escape(' '.join(before)) or '[no word]')+' → '+(escape(' '.join(decision['chosen'])) or '[no word]')+'.'
                     if local_ocr:
-                        explanation='This local OCR transcription has not been independently verified. Consult the original printed reading in the image.'
+                        explanation=((source_quote+' ') if decision and decision['status']=='RESOLVED' else '')+'This local OCR transcription has not been independently verified. Consult the original printed reading in the image. '+f'<a href="#v4-local-ocr-source-{pno}">View complete original page</a>.'
                     elif decision:
                         if decision['source']==decision['chosen'] and decision.get('model',decision['source'])==decision['chosen']:
                             explanation=escape(' '.join(decision['chosen']))+'. Consult the original printed word in the image.'
@@ -2333,7 +2367,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     for i,j in punctuation_proof],
                 published_tokens=result['tokens'],
                 marked=sorted(result['marked']),fallback=result['fallback'],guard=result['guard'],
-                adjudication=result.get('adjudication',[]),verified_unchanged=adjudication.get('verified_unchanged',[]) if adjudication else [],original_model_tokens=block['text'].split(),
+                adjudication=result.get('adjudication',[]),verified_unchanged=adjudication.get('verified_unchanged',[]) if adjudication else [],original_model_tokens=original_model_tokens,
                 layer_words=[w['text'] for w in local],dropped_layer_words=result['dropped_layer_words'],
                 continues_previous=block['continues_previous'],continues_next=block['continues_next']))
             if role=='caption' and punctuation_proof and printed_head is not None and printed_tail is not None:
