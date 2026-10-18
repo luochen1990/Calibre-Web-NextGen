@@ -184,13 +184,33 @@ def labelled_note_anchors(optical, available, candidate, marker, *, openings=Non
                     abs(center(optical[i]['bbox'])-center(box))<=height*.75 else box[0]) and
                 optical[i]['bbox'][2] <= right + height * 4]
         anchors = unique_anchors(optical, pool, candidate, minimum=4)
+        placement_only = False
+        mismatched = []
+        if not anchors and 3 <= len(candidate) <= 5:
+            # Short damaged citations can have fewer lexical anchors than a
+            # paragraph. Their complete labelled physical row may locate the
+            # slots, while mismatched spellings still require a pixel read.
+            opening = [i for i in row if optical[i]['bbox'][2] <= right]
+            preceding = [i for i in available if i != index and
+                abs(center(optical[i]['bbox']) - center(box)) <= height * .75 and
+                0 <= box[0] - optical[i]['bbox'][2] <= height * 4]
+            matches = [j for j, i in enumerate(opening)
+                       if j < len(candidate) and _key(optical[i]['text']) == _key(candidate[j])]
+            distinctive = any(any(c.isdigit() for c in candidate[j]) or
+                              len(_key(candidate[j])) >= 6 for j in matches)
+            if (not preceding and len(opening) == len(candidate) and
+                    len(matches) >= 2 and len(matches) / len(candidate) >= .6 and distinctive):
+                anchors = list(zip(opening, range(len(candidate))))
+                placement_only = True
+                mismatched = [j for j in range(len(candidate)) if j not in matches]
         if not anchors:
             continue
         first = min(anchors, key=lambda pair: pair[1])
         if first[1] > 2 or abs(center(optical[first[0]]['bbox']) - center(box)) > height * .75:
             continue
         proofs.append(dict(anchors=anchors, marker_bbox=list(box),
-                           first_word_bbox=list(optical[row[0]]['bbox'])))
+                           first_word_bbox=list(optical[row[0]]['bbox']),
+                           placement_only=placement_only, mismatched_positions=mismatched))
     return proofs[0] if len(proofs) == 1 else None
 
 

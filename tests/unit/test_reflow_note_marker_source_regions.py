@@ -193,3 +193,22 @@ def test_complete_nearby_note_keeps_the_opening_above_a_tight_tail_hint():
     assert {j for i,j in proof}==set(range(len(block['text'].split())))
     vp.bind_geometry({'blocks':[block]},optical,display,regions,{})
     assert all(regions.get('_instances',{}).get(vp._source_instance(w))=='nearby' for w in optical)
+
+
+@pytest.mark.parametrize('source,chosen',[
+    ('Brindlc Manual 1.2 trans. Vailc.','Brindle Manual 1.2 trans. Vaile.'),
+    ('Brindlc Compendium 8.','Brindle Compendium 8.')])
+def test_short_damaged_note_uses_its_unique_labelled_row_as_placement_only(source,chosen):
+    from cps.services.reflow.source_geometry import labelled_note_anchors
+    optical=[dict(text='7',bbox=[40,520,45,527])]
+    optical += [dict(text=t,bbox=[60+i*42,520,98+i*42,528])for i,t in enumerate(source.split())]
+    from cps.services.reflow.source_geometry import _key
+    candidate=[_key(t)for t in chosen.split()]
+    proof=labelled_note_anchors(optical,range(len(optical)),candidate,'7')
+    assert proof and proof['placement_only']
+    assert [optical[i]['text']for i,j in proof['anchors']]==source.split()
+    assert proof['mismatched_positions']==[i for i,(a,b)in enumerate(zip(source.split(),chosen.split()))if _key(a)!=_key(b)]
+    repeated=optical+[dict(w,bbox=[w['bbox'][0],560,w['bbox'][2],w['bbox'][3]+40])for w in optical]
+    assert labelled_note_anchors(repeated,range(len(repeated)),candidate,'7')is None
+    inline=[dict(text='ordinary',bbox=[5,520,37,528])]+optical
+    assert labelled_note_anchors(inline,range(len(inline)),candidate,'7')is None
