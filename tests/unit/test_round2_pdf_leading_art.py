@@ -34,11 +34,15 @@ def test_cross_pdf_source_sentence_floats_only_proven_leading_art(tmp_path,monke
     pixels=[previous,current];numbers=None
     if case=='nonconsecutive':pixels=[previous,optical('An unrelated intermediate page.',20,100),current];numbers=[0,2]
     body,documents,result=convert(tmp_path,monkeypatch,[answer(*left_blocks),answer(*right_blocks)],pixels,[[] for _ in pixels],page_numbers=numbers)
-    if case in ('ordinary_false_flags','explicit_flags','footer','hyphen'):
-        expected=left+right if case=='hyphen' else left+' '+right
+    if case in ('ordinary_false_flags','explicit_flags','footer','hyphen','missing_head'):
+        expected=left+right if case=='hyphen' else left+' '+printed_right
         assert expected in body,'Exact source-backed sentence remained split by next-PDF leading artwork'
         assert left not in body and right not in body,'Separate source fragments survived the approved join'
         assert result['page_joins']==1
+        if case=='missing_head':
+            record=next(b for b in result['pages'][1]['blocks'] if b['id']=='b2')
+            assert record['published_tokens'][0]=='careful' and 0 in record['marked']
+            assert any(d['status']=='RESOLVED' and d['model']==['patient'] and d['chosen']==['careful'] for d in record['adjudication'])
     else:
         assert left in body and right in body,'Flags alone or unsupported source geometry moved structural content across a PDF boundary'
         assert result['page_joins']==0

@@ -1696,7 +1696,8 @@ def _lexical_marker_view(tokens,source,proofs):
         proved=(proof.get('status')=='PROVED' and
             re.fullmatch(r'\d{1,4}|[*†‡§¶]',proof.get('label') or ''))
         opaque=(proof.get('status')=='UNPROVED' and proof.get('reason') in opaque_reasons
-            and proof.get('anchor_before_bbox') and proof.get('anchor_after_bbox'))
+            and proof.get('anchor_before_bbox') and (proof.get('anchor_after_bbox') or
+                box[2]-box[0]<=2*max(1,proof['anchor_before_bbox'][3]-proof['anchor_before_bbox'][1])))
         # An attached symbolic alternative and two exact lexical endpoints
         # reserve a bounded unknown glyph for the dedicated marker verifier.
         # English OCR must not turn that provisional reference into a word.
@@ -1722,14 +1723,38 @@ def _lexical_marker_view(tokens,source,proofs):
             if tokens[index-1].endswith(symbol_value):lexical[index-1]=tokens[index-1][:-1]
             opaque=True
         if not (proved or opaque):continue
+        if index:proof['lexical_preceding_token']=lexical[index-1]
         slots.append((proof,bool(proved)))
         # This field is supplied only by the existing sole-instance proof.
         # Never infer model suffix removal from a shared label alone.
         prior=proof.get('deduplicated_literal_token')
         if proved and prior is not None and prior==index-1 and prior>=0:
             lexical[prior]=proof['literal_display_text']
+    # A missing occurrence binding cannot turn independently raised, marker-only
+    # ink into prose. Reserve the physical atom without assigning its identity
+    # to any placeholder. Ordinary full-height baseline numbers stay lexical.
+    raised=[]
+    if proofs:
+        for word in source:
+            if not re.fullmatch(r'[0-9*†‡§¶]+',word['text']):continue
+            box=word['bbox'];height=max(.1,box[3]-box[1])
+            key=lambda text:re.sub(r'[^a-z]','',vision_reading.normalized(text).casefold())
+            before={key(tokens[i-1])for i in proofs if i>0}
+            symbolic=(re.fullmatch(r'[*†‡§¶]',word['text']) and any(
+                key(w['text']) in before and key(w['text']) and
+                0<=box[0]-w['bbox'][2]<=3*max(height,w['bbox'][3]-w['bbox'][1]) and
+                min(box[3],w['bbox'][3])>max(box[1],w['bbox'][1])for w in source))
+            if symbolic:
+                raised.append(word);continue
+            neighbours=[w for w in source if re.search(r'[A-Za-z]',w['text'])
+                and 0<=min(abs(w['bbox'][0]-box[2]),abs(box[0]-w['bbox'][2]))<=3*max(height,w['bbox'][3]-w['bbox'][1])
+                and w['bbox'][1]-height<=box[1]<=w['bbox'][3]]
+            if any(height<.8*(w['bbox'][3]-w['bbox'][1]) and
+                   box[3]<w['bbox'][3]-.15*(w['bbox'][3]-w['bbox'][1]) for w in neighbours):
+                raised.append(word)
     result=[]
     for word in source:
+        if any(word is w for w in raised):continue
         text=word['text'];bounds=word['bbox'];replacement=text
         for proof,proved in slots:
             box=proof['source_bbox']
@@ -1738,6 +1763,14 @@ def _lexical_marker_view(tokens,source,proofs):
             if small<=0 or overlap<small*.5:continue
             if proved and text==proof['label']:
                 replacement='';break
+            preceding=proof.get('lexical_preceding_token')
+            if (preceding and text.startswith(preceding) and text!=preceding and
+                    re.fullmatch(r'''[0-9*†‡§¶'’`]+''',text[len(preceding):]) and
+                    box[0]>=bounds[2]-max(1,bounds[3]-bounds[1])*1.5):
+                # An independently bounded reference may be fused to the word
+                # as an apostrophe by OCR. Remove only that extra nonlexical
+                # suffix; preserve all punctuation already in the reading.
+                replacement=preceding;break
             if not proved:
                 # An unknown identity cannot remove lexical letters or a
                 # broad cardinal token. Keep it opaque only inside its actual
@@ -1749,6 +1782,13 @@ def _lexical_marker_view(tokens,source,proofs):
                         box[0]-height*.5<=bounds[0] and bounds[2]<=box[2]+height*.5 and
                         box[1]-height*.5<=bounds[1] and bounds[3]<=box[3]+height*.5):
                     replacement='';break
+                # A symbolic suffix at this bounded slot is nonlexical even
+                # when its identity is not proved. Preserve adjacent punctuation
+                # and letters; the final marker path still discloses the glyph.
+                suffix=re.search(r'''([*†‡§¶+])([.,;:)\]”’"']*)$''',text)
+                if (suffix and re.search(r'[A-Za-z]',text[:suffix.start()]) and
+                        box[0]>=bounds[2]-max(1,bounds[3]-bounds[1])*1.5):
+                    replacement=text[:suffix.start()]+suffix[2];break
                 continue
             suffix=re.search(re.escape(proof['label'])+r'''([.,;:)\]”’"']*)$''',text)
             if (suffix and re.search(r'[A-Za-z]',text[:suffix.start()]) and
@@ -2181,9 +2221,14 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 result['marked']=set(range(len(result['tokens'])))
                 result['fallback']=True
                 result['guard'].append({'kind':'omitted_pixel_line_recovery'})
+            proposed=re.findall(r'<n:[^>]+>|\S+',re.sub(r'(<n:[^>]+>)',r' \1 ',block['text']))
+            lexical=lambda tokens:[t for t in tokens if not t.startswith('<n:')]
+            admitted=[lexical(proposed),[w['text'] for w in local],[w['text'] for w in optical_local]]
+            if lexical(result['tokens']) not in admitted:
+                raise _DisclosureQualityRejection('Aligned reading has no admitted source or reader inventory')
             # Decide lexical disagreements against an independently recognized
             # upright crop before rendering any live text or disclosure note.
-            adjudication=None
+            adjudication=None;witness=None
             if note_context and note_context.get('cache') and not local_ocr:
                 from . import pixel_adjudication
                 with unit_recovery.guard(pno,'pixel_adjudication',block=bid):
@@ -2197,8 +2242,10 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             [vision_reading.normalized(w['text']) for w in optical_local],autojunk=False).get_matching_blocks())
                         if overlap/max(1,len(optical_local))<.6:baseline=optical_local
                     if baseline and witness:
-                        first_tokens=re.findall(r'<n:[^>]+>|\S+',
-                            re.sub(r'(<n:[^>]+>)',r' \1 ',block['text']))
+                        # Only the admitted alignment inventories reach this
+                        # stage. Retain the first reader as an alternative, but
+                        # require positive pixels to revive rejected words.
+                        first_tokens=list(proposed)
                         # Existing local physical proof reserves reference ink
                         # before lexical conservation can turn it into body words.
                         # This early pass cannot dispatch a marker request. Final
@@ -2222,7 +2269,12 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             # rejected by the source-conservation alignment guard.
                             unresolved_source=bool(result['fallback']),
                             absence_proof=lambda left,right:pixel_adjudication.blank_between(display,left,right,territories))
-                        conflicts=pixel_adjudication.audit_agreement(adjudication['tokens'],baseline,witness)
+                        def printed_space(left,right):
+                            a,b=left['bbox'],right['bbox'];h=min(a[3]-a[1],b[3]-b[1])
+                            return (b[0]-a[2]>=h*.15 and
+                                pixel_adjudication.blank_between(display,left,right,territories))
+                        conflicts=pixel_adjudication.audit_agreement(adjudication['tokens'],baseline,witness,
+                            boundary_proof=printed_space)
                         for i,decision in conflicts.items():
                             adjudication['marked'].add(i)
                             adjudication['word_notes'].setdefault(i,decision)
@@ -2301,6 +2353,15 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     # independent certainty. Preserve all local OCR uncertainty
                     # and its exact recognized source occurrence inventory.
                     for i,decision in conflicts.items():result.setdefault('word_notes',{}).setdefault(i,decision)
+            if getattr(witness,'failure',None):
+                # Keep the already admitted reading and its own source owners.
+                # Unavailable secondary recognition must not widen a primary
+                # optical/marker failure into healthy sibling units.
+                result['word_notes']={i:dict(source=[t],model=[t],chosen=[t],status='UNRESOLVED',
+                    method='independent_crop_unavailable') for i,t in enumerate(result['tokens'])
+                    if i in result['marked'] and not t.startswith('<n:')}
+                result['adjudication']=list(result['word_notes'].values())
+                result['guard'].append(dict(kind='independent_crop_unavailable',reason=witness.failure))
             compiled_reading=' '.join(result['tokens'])
             lost_scripts=(text_quality.reading_script_mismatches(block['text'],compiled_reading)
                           if result['fallback'] else text_quality.script_mismatches(block['text'],compiled_reading))
@@ -2335,7 +2396,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             groups=[]
             for index in sorted(i for i in result['marked'] if not result['tokens'][i].startswith('<n:')):
                 resolved_local={i for i,d in (result.get('word_notes') or {}).items() if d['status']=='RESOLVED'} if local_ocr else set()
-                if (not adjudication and groups and index==groups[-1][-1]+1
+                if ((local_ocr or not result.get('adjudication')) and groups and index==groups[-1][-1]+1
                         and index not in resolved_local and groups[-1][-1] not in resolved_local):groups[-1].append(index)
                 else:groups.append([index])
             endings={g[-1]:g for g in groups}
@@ -2705,6 +2766,29 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
     # matching that paragraph. Tight, independently coherent BODY instances
     # remain protected from displaced note hints.
     note_openings={}
+    # A model can duplicate a separately owned BODY prefix in a note. Its
+    # complete source-backed body owner and the remaining note's own printed
+    # opening prove the partition; no text is transferred to another note.
+    for note in answer['blocks']:
+        if note['role']!='footnote':continue
+        proposed=note['text'].split()
+        for body in answer['blocks']:
+            prefix=body['text'].split()
+            if (body['role']!='body' or body['id'] not in owners or len(prefix)<5 or
+                    len(proposed)-len(prefix)<5 or
+                    [lex(t)for t in proposed[:len(prefix)]]!=[lex(t)for t in prefix]):continue
+            from .source_geometry import labelled_note_anchors,local_note_openings
+            available=[i for i in range(len(optical))if i not in reserved]
+            candidate=[lex(t)for t in proposed[len(prefix):]]
+            hint=block_rect(note,display)
+            opening=local_note_openings(optical,available,note['marker'],hint)
+            proof=labelled_note_anchors(optical,available,candidate,note['marker'],openings=opening)
+            if not proof or {j for i,j in proof['anchors']}!=set(range(len(candidate))):continue
+            note['text']=' '.join(proposed[len(prefix):])
+            note['low_confidence']=[i-len(prefix)for i in note['low_confidence']if i>=len(prefix)]
+            repairs.append(dict(block=note['id'],method='separate_owned_body_prefix_excluded',
+                body_owner=body['id'],excluded_token_count=len(prefix)))
+            break
     for note in answer['blocks']:
         x=note['bbox']
         if note['role']!='footnote' or not (all(0<=v<=1000 for v in x) and x[0]<x[2] and x[1]<x[3]):continue
@@ -2844,6 +2928,12 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
         # damaged. A pagewide prose match cannot move that note onto BODY ink.
         if local_openings:proof_pool=local_indices
         corroborated=unique_anchors(optical,proof_pool,candidate) if not labelled and not seed_caption_complete and not complete_note else []
+        if (corroborated and valid and block['role']=='body' and candidate and
+                {j for i,j in matched if source[i]==candidate[j]}==set(range(len(candidate)))):
+            # Complete exact ink inside the original hint may wrap around an
+            # illustration. A shorter compact-window proof cannot erase its
+            # independently matched rows merely because artwork separates them.
+            corroborated=matched
         if corroborated:
             # Compact exact proof must retain an independently located divided
             # edge atom. The existing matcher proves that partial word beside
@@ -3238,7 +3328,8 @@ def _continuation_decision(left,right,blocks,tail,head):
     if divided:
         a,b=divided['source_tail'],divided['source_head']
         proof_left=dict(left,printed_tail=a['text'],printed_tail_box=a['bbox'])
-        proof_right=dict(right,printed_head=b['text'],printed_head_box=b['bbox'])
+        proof_right=dict(right,printed_head=b['text'],printed_head_box=b['bbox'],
+                         completed_division_source_proved=True)
         return _continuation_decision(proof_left,proof_right,blocks,
             ' '.join(tail_text.split()[:-1]+[a['text']]),
             ' '.join([b['text']]+head_text.split()[1:]))
@@ -3271,6 +3362,23 @@ def _continuation_decision(left,right,blocks,tail,head):
             and lexical_reference(tail_text.split()[-1])==lexical_reference(left.get('printed_tail') or '')
             and lexical_reference(head_text.split()[0])==lexical_reference(right.get('printed_head') or '')):
         return decision('split','distinct_reference_entry_after_range')
+    if tail_text.endswith(tuple(assemble.HYPHENS)) and not right.get('completed_division_source_proved'):
+        head_corrections=[d for d in right.get('adjudication',[]) if d.get('status')=='RESOLVED'
+            and d.get('model_range',[None])[0]==0 and d.get('source')!=d.get('model')]
+        a,b=left.get('physical_tail') or {},right.get('physical_head') or {}
+        prefix=re.fullmatch(r"([A-Za-z'’]+)["+assemble.HYPHENS+r']',a.get('text',''))
+        lexical=lambda word:vision_reading.normalized(word).casefold()
+        def restored_printed_division(change):
+            # The reader may complete the next atom with this exact printed
+            # prefix. Restoring its source suffix does not destroy that proof.
+            return bool(prefix and a.get('bbox') and b.get('bbox')
+                and change.get('source')==change.get('chosen')==[b.get('text')]
+                and len(change.get('model',[]))==1
+                and lexical(prefix[1]+b['text'])==lexical(change['model'][0]))
+        if any(not restored_printed_division(change) for change in head_corrections):
+            # Correcting letters at the next opening proves that word, not a
+            # compound with an unrelated hyphenated tail on the previous page.
+            return decision('split','corrected_head_without_compound_proof')
     variant=right.get('disputed_head_prefix')
     word_edge=bool(variant and head_text.split()[0]==variant['published']
         and re.search(r'[A-Za-z]{2,}[-­‐‑]$',tail_text)
@@ -4024,7 +4132,7 @@ def _native_seam_blocks(doc,book,pno,page):
         value=compact(word['text'])
         if not value:continue
         starts[len(source)]=index;source+=value;ends[len(source)]=index+1
-    def complete_words(text):
+    def complete_occurrences(text):
         target=compact(text)
         if not target:return []
         found=[];offset=source.find(target)
@@ -4034,7 +4142,7 @@ def _native_seam_blocks(doc,book,pno,page):
                 words=physical[starts[offset]:ends[end]]
                 if len(words)>1:found.append(words)
             offset=source.find(target,offset+1)
-        return found[0] if len(found)==1 else []
+        return found
     # A typed native note atom has a literal rendered symbol, whereas its
     # inventory uses a bracketed semantic token. Compare the actual factory
     # rendering, never strip brackets from source text or guess an owner.
@@ -4076,7 +4184,9 @@ def _native_seam_blocks(doc,book,pno,page):
                     fragment_sha256=hashlib.sha256(fragment.encode()).hexdigest(),continues_previous=False,continues_next=False,
                     source_regions=[],first_line_x=None,printed_head=None,printed_tail=None)
         element=candidates[0] if len(candidates)==1 else None
-        owned=complete_words(text)
+        occurrences=complete_occurrences(text)
+        owned=occurrences[0] if len(occurrences)==1 else []
+        record['native_occurrence_count']=len(occurrences)
         binding='unique_complete_source_text' if owned else 'native_element_box'
         if not owned and element is not None:owned=owned_words(physical,element.bbox)
         if owned:
@@ -4126,7 +4236,32 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
         territories=record.get('source_regions')
         with unit_recovery.guard(page['pno'],'native_pixel_adjudication',block=record['id']):
             if not territories:
-                raise ValueError('Native live text has no uniquely bound source occurrence')
+                if 'native_occurrence_count' not in record or unit_recovery.current() is None:
+                    raise ValueError('Native live text has no uniquely bound source occurrence')
+                from .unit_source import source_unit
+                reason=('Native reading cannot be audited at a unique printed occurrence; inspect the original source'
+                    if record['native_occurrence_count'] else
+                    'Native text has no printed occurrence; only its original source is published')
+                fragment,asides,unit=source_unit(display,page['pno'],record['id'],record['role'],package,images,reason)
+                if record['native_occurrence_count']:
+                    # The complete literal inventory exists in the original,
+                    # but it cannot earn a guessed block/crop identity. Keep
+                    # that inventory with an explicitly unplaced page context.
+                    original=page['body'][position]
+                    tokens=_seam_text(original).split()
+                    page['body'][position]=re.sub(r'(<(?:p|h[1-6])\b[^>]*>)(.*)(</(?:p|h[1-6])>)',
+                        lambda m:m[1]+'<span class="uncertain" title="Unplaced native reading; inspect original source">'+m[2]+'</span>'+m[3],
+                        original,flags=re.S)+fragment
+                    record.update(published_tokens=tokens,marked=list(range(len(tokens))),
+                        adjudication=[dict(source=[],model=[],chosen=[],status='UNRESOLVED',
+                            method='unplaced_native_reading',mapping='unplaced_within_span')])
+                else:
+                    page['body'][position]=fragment
+                    record['published_tokens']=[]
+                page['asides'].extend(asides)
+                record.update(degraded_source_context=True,unplaced_source_context=unit,
+                    pixel_adjudication_status='UNPLACED_SOURCE_CONTEXT')
+                continue
             source=_pixel_line_order([w for w in physical if any(owned_words([w],box) for box in territories)])
             tokens=_seam_text(page['body'][position]).split()
             record['published_tokens']=tokens
@@ -4166,6 +4301,23 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
             ranges=pixel_adjudication.fragment_word_ranges(fragment,tokens)
             if ranges is None:
                 raise ValueError('Native pixel conflict has no unique published occurrence')
+            # A verified typed reference is not a lexical suffix. OCR may
+            # recognize its raised number as punctuation, but cannot rewrite
+            # that separately owned action through a prose-word correction.
+            for index,decision in list(conflicts.items()):
+                a,z=ranges[index];raw=fragment[a:z]
+                action=re.search(r'<a\b[^>]*class="noteref"[^>]*>.*?</a>',raw,re.S)
+                alternative=decision.get('alternative') or decision.get('chosen') or []
+                if action and len(alternative)==1:
+                    prefix=_seam_text(raw[:action.start()])
+                    suffix=_seam_text(raw[action.end():])
+                    value=alternative[0]
+                    tail=value[len(prefix):] if prefix and value.startswith(prefix) else None
+                    if (tail is not None and not any(c.isalpha()for c in tail) and
+                            not any(c.isalnum()for c in suffix)):
+                        del conflicts[index]
+            record['adjudication']=list(conflicts.values())
+            if not conflicts:continue
             edits=[]
             for index,decision in conflicts.items():
                 a,z=ranges[index]
@@ -5790,6 +5942,8 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                         reader.cache.parent/'pixel-guard-cache',package,images)
                     native_report['native_note_adjudication']=_audit_native_note_pixels(doc,book,native_pages[n],
                         reader.cache.parent/'pixel-guard-cache',package,images)
+                    native_report['degraded_units'].extend(b['unplaced_source_context']
+                        for b in native_report['blocks'] if b.get('unplaced_source_context'))
                     audited=native_report['blocks']+native_report['native_note_adjudication']
                     native_report['marks']=sum(len(b.get('marked',[])) for b in audited)
                     native_report['words']=sum(len(b.get('published_tokens',[])) for b in audited)

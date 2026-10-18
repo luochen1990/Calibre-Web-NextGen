@@ -1014,3 +1014,46 @@ def test_partial_printed_hyphen_atom_cannot_certify_truncating_a_complete_word()
     assert result['tokens']==proposed
     assert result['word_notes'][4]['status']=='UNRESOLVED'
     assert not any(d['status']=='RESOLVED'for d in result['decisions'])
+
+
+def test_unavailable_secondary_engine_returns_explicit_failure_without_dispatch(tmp_path,monkeypatch):
+    from cps.services.reflow import pixel_adjudication as pa
+    import shutil,subprocess
+    monkeypatch.setattr(shutil,'which',lambda name:str(tmp_path/'missing-recognizer'))
+    def forbidden(*args,**kwargs):
+        raise AssertionError('Unavailable executable must not be dispatched')
+    monkeypatch.setattr(subprocess,'run',forbidden)
+    result=pa.read_crop(None,[[0,0,10,10]],tmp_path)
+    assert result==[]
+    assert result.failure=='RuntimeError: Independent OCR executable is unavailable'
+
+
+def test_projection_keeps_generated_control_tails_at_their_original_siblings():
+    from tests.unit.test_round4_defects import plain
+    from xml.etree import ElementTree as ET
+    node=ET.fromstring('<p xmlns="http://www.w3.org/1999/xhtml"><span>as<a>†</a> a</span><a>†</a> <span>quiet harbor.</span></p>')
+    assert plain(node)=='as a quiet harbor.'
+
+
+def test_rejected_first_read_cannot_remove_original_terminal_punctuation():
+    original=words('The quiet river.')
+    proposed='The quiet river'.split()
+    result=adjudicate(proposed,original,words('The quiet river'),unresolved_source=True)
+    assert result['tokens']==['The','quiet','river.']
+    assert result['word_notes'][2]['status']=='UNRESOLVED'
+    assert result['word_notes'][2]['model']==['river']
+
+
+def test_fused_recognition_needs_pixel_space_proof_to_clear_unchanged_words():
+    from cps.services.reflow.pixel_adjudication import audit_agreement
+    original=words('A distinct sample remains readable.')
+    merged=dict(original[0],text='Adistinct',bbox=[10,20,25,30])
+    witness=[merged,*original[2:]]
+    tokens=[w['text']for w in original]
+    assert set(audit_agreement(tokens,original,witness))=={0,1}
+    observed=[]
+    def blank(a,b):
+        observed.append((a['text'],b['text']));return True
+    assert audit_agreement(tokens,original,witness,boundary_proof=blank)=={}
+    assert observed==[('A','distinct')]
+    assert set(audit_agreement(tokens,original,witness,boundary_proof=lambda *args:False))=={0,1}

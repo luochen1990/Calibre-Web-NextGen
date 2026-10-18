@@ -195,6 +195,31 @@ def scanned_doc(count=1):
     return doc
 
 
+def scanned_note_doc(prefix, suffix, note, following=None, diagram=False, marker="1"):
+    """Rasterize the literal synthetic ink required by positive note tests."""
+    doc=pymupdf.open();doc._synthetic_optical=[]
+    with pymupdf.open() as ink:
+        p=ink.new_page(width=300,height=400)
+        p.insert_text((24,80),prefix,fontsize=10)
+        x=24+pymupdf.get_text_length(prefix,fontsize=10)
+        p.insert_text((x+1,75),marker,fontsize=6)
+        if suffix:p.insert_text((x+7,80),suffix,fontsize=10)
+        p.insert_text((24,300),marker+' '+note,fontsize=9)
+        if diagram:
+            p.draw_rect(pymupdf.Rect(18,330,55,350),color=(0,0,0))
+            p.draw_line((18,330),(55,350),color=(0,0,0))
+        doc._synthetic_optical.append([dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in p.get_text('words',sort=True)])
+        target=doc.new_page(width=300,height=400)
+        target.insert_image(target.rect,stream=p.get_pixmap(matrix=pymupdf.Matrix(3,3)).tobytes('png'))
+        if following:
+            p=ink.new_page(width=300,height=400)
+            p.insert_text((24,80),following,fontsize=10)
+            doc._synthetic_optical.append([dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in p.get_text('words',sort=True)])
+            target=doc.new_page(width=300,height=400)
+            target.insert_image(target.rect,stream=p.get_pixmap(matrix=pymupdf.Matrix(3,3)).tobytes('png'))
+    return doc
+
+
 class SyntheticReader:
     def __init__(self, *readings):
         from pathlib import Path
@@ -234,14 +259,18 @@ def assert_links_resolve(docs):
 
 
 @real_ocr
-def test_final_epub_note_and_disclosure_links_resolve_without_body_crops(tmp_path):
-    doc = scanned_doc()
+def test_final_epub_note_and_disclosure_links_resolve_without_body_crops(tmp_path,monkeypatch):
+    doc = scanned_note_doc('The narrow',' path crosses a bridge.','A short printed note.',diagram=True,marker='*')
+    from cps.services.reflow import vision_pixels
+    import copy
+    monkeypatch.setattr(vision_pixels,'words',lambda display,cache:copy.deepcopy(doc._synthetic_optical[display.pno]))
     reader = SyntheticReader(answer(
-        block('The narrow<n:n1> path reaches a bridge.', low=[1]),
-        block('A short printed note.', ident='n1', role='footnote', marker='1', bbox=(50, 650, 950, 800)),
+        block('The narrow<n:n1> path reaches a bridge.', low=[4]),
+        block('A short printed note.', ident='n1', role='footnote', marker='*', bbox=(50, 650, 950, 800)),
         block('SYNTHETIC RUNNING HEAD', ident='rh', role='running_head', bbox=(50, 10, 950, 40)),
         block('7', ident='folio', role='folio', bbox=(450, 900, 550, 950)),
         block('A genuine diagram', ident='fig', role='figure', bbox=(50, 820, 200, 880))))
+    reader.read_marker=lambda image:dict(label='*',uncertain=False,cached=True,new_cost_usd=0)
     out = tmp_path / 'notes.epub'
     result = vision_pipeline.convert(doc, str(out), reader)
     doc.close()
@@ -1219,11 +1248,13 @@ def test_descriptive_image_confidence_still_requires_a_string_array(tmp_path, ro
 @real_ocr
 def test_printed_note_reference_is_transparent_to_literal_hyphen_continuation(tmp_path):
     from cps.services.reflow import reading_flow
-    doc = scanned_doc(2)
+    doc = scanned_note_doc('The quiet bridge-','','A short original note.',
+                           following='side leads into the meadow.')
     reader = SyntheticReader(answer(
         block('The quiet bridge-<n:n1>', next=True),
         block('A short original note.', ident='n1', role='footnote', marker='1', bbox=(50, 700, 950, 850))),
         answer(block('side leads into the meadow.', previous=True)))
+    reader.read_marker=lambda image:dict(label='1',uncertain=False,cached=True,new_cost_usd=0)
     out = tmp_path / 'printed-note-hyphen.epub'
     try:
         result = vision_pipeline.convert(doc, str(out), reader)
@@ -1242,3 +1273,18 @@ def test_printed_note_reference_is_transparent_to_literal_hyphen_continuation(tm
     assert any(a.get('href', '').endswith('#' + refs[0].get('id')) for root in docs.values() for a in root.findall('.//x:a', NS))
     assert all('source-reading-annotation' not in ET.tostring(root, encoding='unicode') and 'reading-return-reading-' not in ET.tostring(root, encoding='unicode') for root in docs.values())
     assert body[0].findall('.//x:img', NS) == []
+
+
+@real_ocr
+def test_blank_original_cannot_manufacture_a_printed_note(tmp_path):
+    doc=scanned_doc()
+    reader=SyntheticReader(answer(
+        block('The quiet sample<n:n1> remains readable.'),
+        block('A short invented note.',ident='n1',role='footnote',marker='1',bbox=(50,700,950,850))))
+    out=tmp_path/'unprinted-note.epub'
+    try:result=vision_pipeline.convert(doc,str(out),reader)
+    finally:doc.close()
+    docs=documents(out);assert_links_resolve(docs)
+    assert not [a for root in docs.values()for a in root.findall('.//x:a',NS)if a.get('class')=='noteref']
+    assert all('A short invented note.'not in ''.join(root.itertext())for root in docs.values())
+    assert any(u.get('block')=='n1'for u in result['degraded_units'])

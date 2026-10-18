@@ -169,7 +169,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 # Missing terminal punctuation is not a changed lexical word.
                 # Preserve the first reading without manufacturing endpoint
                 # proof from a source token that does not print that suffix.
-                chosen.append((proposed[b],source[a]['bbox'],None))
+                if unresolved_source and source_word!=model_word:
+                    record=dict(source=[source_tokens[a]],model=[proposed[b]],chosen=[source_tokens[a]],
+                        status='UNRESOLVED',method='retained_source_terminal_punctuation',
+                        source_range=[a,z],model_range=[b,y])
+                    decisions.append(record);chosen.append((source_tokens[a],source[a]['bbox'],record))
+                else:chosen.append((proposed[b],source[a]['bbox'],None))
                 continue
         alternatives=[('source',original[a:z],source_tokens[a:z]),
                       ('model',candidate[b:y],proposed[b:y])]
@@ -330,7 +335,22 @@ def _cached_engine_identity(engine):
     return digest.digest()
 
 
+class CropWitness(list):
+    """An unavailable second recognition does not invalidate other evidence."""
+    failure = None
+
+
 def read_crop(display, regions, cache):
+    import subprocess
+    try:
+        return _read_crop(display, regions, cache)
+    except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        result = CropWitness()
+        result.failure = f'{type(error).__name__}: {error}'
+        return result
+
+
+def _read_crop(display, regions, cache):
     """Recognize upright source crops with bounded pixels and a separate layout.
 
     The full-page recognizer uses 3x/automatic page layout. This witness uses
@@ -349,6 +369,8 @@ def read_crop(display, regions, cache):
     from pathlib import Path
     engine=shutil.which('tesseract')
     if not engine:raise RuntimeError('Pixel adjudication requires local OCR')
+    if not os.path.isfile(engine) or not os.access(engine,os.X_OK):
+        raise RuntimeError('Independent OCR executable is unavailable')
     root=Path(cache);root.mkdir(parents=True,exist_ok=True);output=[]
     for region in regions:
         from . import extract
@@ -442,7 +464,7 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
     return dict(tokens=output,boxes=bounds,marked=set(notes),word_notes=notes,decisions=decisions)
 
 
-def audit_agreement(tokens, source, witness):
+def audit_agreement(tokens, source, witness, boundary_proof=None):
     """Flag pixel conflicts even where a layer and the first reading agree.
 
     A recognizer's different spelling is evidence of a conflict, not authority
@@ -451,8 +473,20 @@ def audit_agreement(tokens, source, witness):
     """
     visible=[(i,token)for i,token in enumerate(tokens) if not token.startswith('<n:')]
     if len(visible)!=len(source):return {}
+    # Recognition may fuse adjacent printed words. Exact letters plus an
+    # independently observed blank between every original occurrence can prove
+    # the existing spaces. Geometry alone and a dictionary never waive a clash.
+    segmented=set()
+    if boundary_proof is not None:
+        for other in witness:
+            owned=[(j,w)for j,w in enumerate(source)if _same_occurrence(w,other)]
+            if not 2<=len(owned)<=3 or other.get('confidence',0)<85:continue
+            if ''.join(_key(w['text'])for j,w in owned)!=_key(other['text']):continue
+            if all(boundary_proof(a,b)for (_,a),(_,b)in zip(owned,owned[1:])):
+                segmented.update(j for j,w in owned)
     notes={}
-    for (i,token),word in zip(visible,source):
+    for j,((i,token),word) in enumerate(zip(visible,source)):
+        if j in segmented:continue
         overlapping=[w for w in witness if _same_occurrence(word,w)]
         if len(overlapping)!=1:continue
         other=overlapping[0]

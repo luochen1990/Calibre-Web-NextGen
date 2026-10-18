@@ -140,8 +140,14 @@ def plain(node):
         for child in list(parent):
             if child.tag.endswith('}a'):
                 tail = child.tail or ''
+                siblings = list(parent)
+                at = siblings.index(child)
+                if at:
+                    previous = siblings[at - 1]
+                    previous.tail = (previous.tail or '') + tail
+                else:
+                    parent.text = (parent.text or '') + tail
                 parent.remove(child)
-                parent.text = (parent.text or '') + tail
     return re.sub(r'\s+', ' ', ''.join(node.itertext())).strip()
 
 

@@ -272,7 +272,8 @@ def test_whole_block_source_fallback_cannot_absorb_an_already_owned_printed_note
     body,documents,_=convert(tmp_path,monkeypatch,readings,[pixels])
     assert body==[body_source],f'Fallback must not consume already owned footnote words: {body!r}'
     refs=[a for root in documents.values() for a in root.findall('.//x:a',NS) if a.get('class')=='noteref']
-    assert len(refs)==1 and any(note in ''.join(a.itertext()) for root in documents.values() for a in root.findall('.//x:aside',NS))
+    from tests.unit.test_round4_defects import plain
+    assert len(refs)==1 and any(note in plain(a) for root in documents.values() for a in root.findall('.//x:aside',NS))
 
 
 @pytest.mark.parametrize('hyphen',['-','\u00ad','\u2010','\u2011'])
