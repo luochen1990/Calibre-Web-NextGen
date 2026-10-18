@@ -58,7 +58,7 @@ def _word_note(record, index, span_id):
         span_id=span_id,source_range=record.get('source_range'),model_range=record.get('model_range'))
 
 
-def adjudicate(model, source, witness, uncertain=(), absence_proof=None):
+def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=()):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
     Empty alternatives require both adjacent anchors, so a missing edge cannot
@@ -73,7 +73,25 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None):
     pixels=[_key(w['text']) for w in witness]
     changes=[];chosen=[];decisions=[];pending=set(uncertain)
     matcher=SequenceMatcher(None, original, candidate, autojunk=False)
+    placement=lambda t:''.join(c for c in unicodedata.normalize('NFKD',t.casefold())
+                               if c.isalnum())
+    operations=[]
     for kind,a,z,b,y in matcher.get_opcodes():
+        if kind!='replace' or max(z-a,y-b)>32:
+            operations.append((kind,a,z,b,y));continue
+        folded=SequenceMatcher(None,[placement(t) for t in original[a:z]],
+            [placement(t) for t in candidate[b:y]],autojunk=False)
+        for tag,i,k,j,l in folded.get_opcodes():
+            # Similarity proposes correspondence, never the printed word.
+            # The independent physical occurrence must still prove a choice.
+            paired=(k-i==l-j and (tag=='equal' or all(
+                SequenceMatcher(None,placement(original[a+n]),placement(candidate[b+m])).ratio()>=.65
+                for n,m in zip(range(i,k),range(j,l)))))
+            if paired:
+                operations.extend(('replace',a+n,a+n+1,b+m,b+m+1)
+                                  for n,m in zip(range(i,k),range(j,l)))
+            else:operations.append(('replace',a+i,a+k,b+j,b+l))
+    for kind,a,z,b,y in operations:
         if kind=='equal':
             chosen.extend((t, source[j]['bbox'], None) for t,j in zip(proposed[b:y],range(a,z)))
             continue
@@ -83,7 +101,37 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None):
         # alternatives need both; they cannot be proved at a cropped edge.
         left=original[max(0,a-2):a];right=original[z:z+2]
         supported=[]
-        for name,seq,literal in alternatives:
+        direct=[];boundary=None
+        if z-a==y-b==1 and not any(len(_matches(pixels,left+seq+right))>1
+                                   for name,seq,literal in alternatives):
+            own=[w for w in witness if _same_occurrence(source[a],w)]
+            if len(own)==1 and own[0].get('confidence',0)>=90:
+                word=own[0];key=_key(word['text'])
+                second=[w for w in corroboration if _same_occurrence(word,w) and _key(w['text'])==key]
+                nearby=source[max(0,a-2):a]+source[z:z+2]
+                anchored=any(len([w for w in witness if _same_occurrence(n,w)
+                    and _key(n['text'])==_key(w['text']) and w.get('confidence',0)>=85])==1 for n in nearby)
+                alternative=key in (original[a],candidate[b])
+                similar=max(SequenceMatcher(None,placement(key),placement(t)).ratio()
+                            for t in (original[a],candidate[b]))>=.65
+                if (anchored or len(second)==1) and (alternative or len(second)==1 and similar):
+                    direct=[('pixels',[word['text']],[word])]
+        if 1<z-a<=3 and y-b==1 and ''.join(placement(t) for t in original[a:z])==placement(candidate[b]):
+            owned=[[w for w in witness if _same_occurrence(s,w)] for s in source[a:z]]
+            if all(len(row)==1 for row in owned):
+                evidence=[row[0] for row in owned]
+                distinct=len({id(w) for w in evidence})==len(evidence)
+                literal=all(placement(w['text'])==placement(s['text'])
+                            and w.get('confidence',0)>=90 for s,w in zip(source[a:z],evidence))
+                neighbors=source[max(0,a-2):a]+source[z:z+2]
+                anchored=any(len([w for w in witness if _same_occurrence(n,w)
+                    and _key(n['text'])==_key(w['text']) and w.get('confidence',0)>=85])==1 for n in neighbors)
+                if distinct and literal and anchored:
+                    choice=('source',source_tokens[a:z],evidence)
+                    if all(_key(s['text'])==_key(w['text']) for s,w in zip(source[a:z],evidence)):
+                        direct=[choice]
+                    else:boundary=choice
+        for name,seq,literal in ([] if direct else alternatives):
             if not (left or right) or not seq and not (left and right):continue
             locations=_matches(pixels,left+seq+right)
             if len(locations)!=1:continue
@@ -96,12 +144,13 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None):
             evidence=witness[start:start+len(seq)]
             if any(w.get('confidence',0)<85 for w in witness[locations[0]:locations[0]+len(left+seq+right)]):continue
             supported.append((name,literal,evidence))
+        supported=direct or supported
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
-            ('source',source_tokens[a:z],[]) if not proposed[b:y] else ('model',proposed[b:y],[]))
+            boundary if boundary else ('source',source_tokens[a:z],[]) if not proposed[b:y] else ('model',proposed[b:y],[]))
         record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=list(literal),
                     status='RESOLVED' if resolved else 'UNRESOLVED',
-                    method='independent_upright_crop' if resolved else 'pixel_read_inconclusive',
+                    method='independent_upright_crop' if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
                     source_range=[a,z],model_range=[b,y])
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else

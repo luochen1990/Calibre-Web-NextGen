@@ -2056,7 +2056,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         pending=(range(len(first_tokens)) if result['fallback'] or bid in forced_uncertain
                                  else result['marked'])
                         adjudication=pixel_adjudication.adjudicate(first_tokens,
-                            baseline,witness,uncertain=pending,
+                            baseline,witness,uncertain=pending,corroboration=optical_local,
                             absence_proof=lambda left,right:pixel_adjudication.blank_between(display,left,right,territories))
                         conflicts=pixel_adjudication.audit_agreement(adjudication['tokens'],baseline,witness)
                         for i,decision in conflicts.items():
@@ -3787,8 +3787,9 @@ def _native_seam_blocks(doc,book,pno,page):
 
 def _audit_native_pixels(doc,page,records,cache,package,images):
     """Inspect native live words against their own independent pixel crop."""
-    from . import pixel_adjudication
+    from . import pixel_adjudication,vision_pixels
     display=SourceDisplay(doc,page['pno'])
+    optical=None
     physical=[dict(text=w[4],bbox=list(display.reading_rect(w[:4])))
               for w in doc[page['pno']].get_text('words')]
     for position,record in enumerate(records):
@@ -3811,6 +3812,16 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                     raise ValueError('Pixel conflict in transformed native text has no unique published word binding')
                 continue
             refined=pixel_adjudication.refine_fallback(tokens,witness,text_quality.english_lexicon(),source=source)
+            if (refined and any(d['status']=='UNRESOLVED' and
+                    len(d['source'])==len(d['chosen'])==1 for d in refined['decisions'])
+                    and any(w.get('confidence',0)>=90 for w in witness)):
+                # Unknown spellings need a second pixel view at this same
+                # occurrence. Cache the independent page segmentation once;
+                # a dictionary preference cannot stand in for visible ink.
+                if optical is None:optical=vision_pixels.words(display,cache)
+                corroboration=[w for w in optical if any(owned_words([w],box) for box in territories)]
+                refined=pixel_adjudication.refine_fallback(tokens,witness,
+                    text_quality.english_lexicon(),source=source,corroboration=corroboration)
             # Native fragments retain their structure and word inventory. Only
             # one-for-one, independently corroborated spelling edits fit here.
             repairs={i:d for i,d in (refined or {}).get('word_notes',{}).items()

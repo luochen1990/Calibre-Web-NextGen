@@ -478,3 +478,67 @@ def test_local_two_view_name_repair_is_live_but_keeps_original_words_and_uncerta
     assert report['local_ocr_units'][0]['words'][4]['text']=='Brindlc'
     assert 'class="uncertain"' in page['asides'][0]
     assert any('Brindlc → Brindle.' in aside for aside in page['asides'][1:])
+
+
+def test_one_word_pixel_choice_survives_a_neighbouring_punctuation_conflict():
+    source=words('The clear sample carries Brindle beside the window today.')
+    witness=[dict(w,text='beside,' if w['text']=='beside' else w['text'])for w in source]
+    result=adjudicate('The clear sample carries Brindlc beside the window today.'.split(),source,witness)
+    assert result['tokens'][4]=='Brindle'
+    assert result['word_notes'][4]['status']=='RESOLVED'
+    assert result['word_notes'][4]['chosen']==['Brindle']
+    assert 4 in result['marked']
+
+
+def test_one_confident_word_is_settled_without_certifying_its_damaged_neighbour():
+    source=words('Please read Brindle Calleton beside the quiet window today.')
+    witness=[dict(w,confidence=30 if w['text']=='Calleton' else 99)for w in source]
+    result=adjudicate('Please read Brindlc Calletqn beside the quiet window today.'.split(),source,witness)
+    assert result['tokens'][2:4]==['Brindle','Calletqn']
+    assert result['word_notes'][2]['status']=='RESOLVED'
+    assert result['word_notes'][3]['status']=='UNRESOLVED'
+
+
+def test_two_pixel_views_can_settle_a_third_spelling_at_the_original_occurrence():
+    source=words('Please read Brindlc beside the quiet window today.')
+    witness=[dict(w,text='Brindle' if w['text']=='Brindlc' else w['text'])for w in source]
+    model='Please read Brindlq beside the quiet window today.'.split()
+    unproved=adjudicate(model,source,witness)
+    result=adjudicate(model,source,witness,corroboration=witness)
+    assert unproved['tokens'][2]=='Brindlq'
+    assert result['tokens'][2]=='Brindle'
+    assert result['word_notes'][2]['status']=='RESOLVED'
+    assert result['word_notes'][2]['source']==['Brindlc']
+    assert result['word_notes'][2]['model']==['Brindlq']
+
+
+def test_pixel_word_boundary_survives_an_adjacent_unresolved_punctuation_read():
+    source=words('Please read clear bridge beside the quiet window today.')
+    witness=[dict(w,text='beside,' if w['text']=='beside' else w['text'])for w in source]
+    result=adjudicate('Please read clearbridge beside the quiet window today.'.split(),source,witness)
+    assert result['tokens'][2:4]==['clear','bridge']
+    assert all(i in result['marked'] for i in (2,3))
+    assert any(d['status']=='RESOLVED' and d['chosen']==['clear','bridge']for d in result['decisions'])
+
+
+def test_native_unknown_spelling_uses_two_pixel_reads_and_remains_marked(tmp_path,monkeypatch):
+    import pymupdf,zipfile
+    from types import SimpleNamespace
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,vision_pixels
+    text='The clear sample from Brindlc remains beside the quiet window today.'
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=500,height=500)
+        page.insert_text((30,70),text,fontsize=10)
+        original=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        witness=[dict(w,text='Brindle' if w['text']=='Brindlc'else w['text'])for w in original]
+        monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+        monkeypatch.setattr(vision_pixels,'words',lambda *args:witness)
+        output=tmp_path/'native.epub'
+        result=vp.convert(doc,str(output),SimpleNamespace(cache=tmp_path/'cache'/'readings',key=None))
+    assert result['pages'][0]['source']=='native'
+    assert any(d['status']=='RESOLVED' and d['chosen']==['Brindle']
+               for b in result['pages'][0]['blocks']for d in b.get('adjudication',[]))
+    with zipfile.ZipFile(output)as z:
+        html=''.join(z.read(n).decode()for n in z.namelist()if n.endswith('.xhtml'))
+    assert 'Brindlc → Brindle.' in html
+    assert 'Pixel-verified correction:' in html
