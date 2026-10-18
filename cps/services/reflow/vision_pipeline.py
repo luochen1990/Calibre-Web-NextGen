@@ -2470,6 +2470,10 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                         key=lambda pair:(pair[1],optical[pair[0]]['bbox'][0]))
         if block['role']=='footnote' and valid:
             matched=_note_pixel_anchors(optical,available,candidate,block_rect(block,display))
+        from .source_geometry import unique_anchors
+        corroborated=unique_anchors(optical,available,candidate)
+        if corroborated and len({j for _,j in corroborated})>=len({j for _,j in matched}):
+            matched=corroborated
         borrowed=(block['role']=='body' and block['id'] not in owners and any(
             max(n for a,b,n in SequenceMatcher(None,[source[i] for i in range(len(optical))
                 if reserved.get(i)==owner],candidate,autojunk=False).get_matching_blocks())>=vision_reading.UNALIGNED_RUN
