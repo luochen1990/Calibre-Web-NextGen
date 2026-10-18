@@ -542,3 +542,47 @@ def test_native_unknown_spelling_uses_two_pixel_reads_and_remains_marked(tmp_pat
         html=''.join(z.read(n).decode()for n in z.namelist()if n.endswith('.xhtml'))
     assert 'Brindlc → Brindle.' in html
     assert 'Pixel-verified correction:' in html
+
+
+@pytest.mark.parametrize('break_char',['\u00ad','-'])
+def test_pixel_word_boundary_does_not_split_a_printed_wrap(break_char):
+    source=words('Please read clear'+break_char+' bridge beside the quiet window today.')
+    witness=[dict(w,text=w['text'].rstrip('\u00ad-'))for w in source]
+    result=adjudicate('Please read clearbridge beside the quiet window today.'.split(),source,witness)
+    assert result['tokens'][2]=='clearbridge'
+    assert result['tokens'][3]=='beside'
+
+
+@pytest.mark.parametrize('accented',['cafélane','cafe\u0301lane'])
+def test_pixel_word_boundary_keeps_the_original_model_diacritics(accented):
+    source=words('Please read cafe lane beside the quiet window today.')
+    result=adjudicate(['Please','read',accented,'beside','the','quiet','window','today.'],source,source)
+    assert result['tokens'][2:4]==[accented[:-4],'lane']
+    assert all(i in result['marked']for i in (2,3))
+    assert any(d['status']=='UNRESOLVED'for d in result['decisions'])
+
+
+@pytest.mark.parametrize('pixel',['cafe','cafè'])
+def test_latin_pixel_alternative_cannot_certify_a_different_accent(pixel):
+    source=words('Please read cafe beside the quiet window today.')
+    witness=[dict(w,text=pixel if w['text']=='cafe'else w['text'])for w in source]
+    result=adjudicate('Please read café beside the quiet window today.'.split(),source,witness,corroboration=witness)
+    assert result['tokens'][2]=='café'
+    assert result['word_notes'][2]['status']=='UNRESOLVED'
+
+
+def test_pixel_word_boundary_requires_one_physical_row():
+    source=words('Please read clear bridge beside the quiet window today.')
+    source[3]['bbox']=[0,40,18,52]
+    result=adjudicate('Please read clearbridge beside the quiet window today.'.split(),source,source)
+    assert result['tokens'][2]=='clearbridge'
+    assert result['tokens'][3]=='beside'
+
+
+def test_local_two_pixel_views_cannot_certify_accent_absence():
+    from cps.services.reflow.pixel_adjudication import refine_fallback
+    source=words('Please read café beside the quiet window today.')
+    witness=[dict(w,text='cafe'if w['text']=='café'else w['text'])for w in source]
+    result=refine_fallback([w['text']for w in source],witness,{'read','cafe'},source=source,corroboration=witness)
+    assert result['tokens'][2]=='café'
+    assert result['word_notes'][2]['status']=='UNRESOLVED'

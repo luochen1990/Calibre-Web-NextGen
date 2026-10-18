@@ -14,6 +14,31 @@ def _key(value):
         str.maketrans({'“': '"', '”': '"', '‘': "'", '’': "'"}))
 
 
+def _accent_conflict(left,right):
+    """An English pixel read cannot prove a different diacritic on equal letters."""
+    def letters(value):
+        return ''.join(c for c in unicodedata.normalize('NFD',value.casefold())
+                       if c.isalnum() or unicodedata.combining(c))
+    a,b=letters(left),letters(right)
+    bare=lambda value:''.join(c for c in value if not unicodedata.combining(c))
+    return a!=b and bare(a)==bare(b)
+
+
+def _boundary_parts(model,source):
+    """Insert proved spaces while preserving every original model codepoint."""
+    parts=[];start=cursor=0
+    for word in source[:-1]:
+        count=sum(c.isalnum() for c in unicodedata.normalize('NFKD',word))
+        seen=0
+        while cursor<len(model) and seen<count:
+            seen+=sum(c.isalnum() for c in unicodedata.normalize('NFKD',model[cursor]))
+            cursor+=1
+        while cursor<len(model) and unicodedata.combining(model[cursor]):cursor+=1
+        parts.append(model[start:cursor]);start=cursor
+    parts.append(model[start:])
+    return parts
+
+
 def _matches(words, sequence):
     if not sequence:return []
     return [i for i in range(len(words)-len(sequence)+1)
@@ -127,10 +152,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 anchored=any(len([w for w in witness if _same_occurrence(n,w)
                     and _key(n['text'])==_key(w['text']) and w.get('confidence',0)>=85])==1 for n in neighbors)
                 if distinct and literal and anchored:
-                    choice=('source',source_tokens[a:z],evidence)
-                    if all(_key(s['text'])==_key(w['text']) for s,w in zip(source[a:z],evidence)):
-                        direct=[choice]
-                    else:boundary=choice
+                    parts=_boundary_parts(proposed[b],source_tokens[a:z])
+                    boundary=('boundary',parts,evidence)
+                    if parts==source_tokens[a:z] and all(_key(s['text'])==_key(w['text']) for s,w in zip(source[a:z],evidence)):
+                        direct=[('source',parts,evidence)]
         for name,seq,literal in ([] if direct else alternatives):
             if not (left or right) or not seq and not (left and right):continue
             locations=_matches(pixels,left+seq+right)
@@ -145,6 +170,19 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             if any(w.get('confidence',0)<85 for w in witness[locations[0]:locations[0]+len(left+seq+right)]):continue
             supported.append((name,literal,evidence))
         supported=direct or supported
+        # A changed accent is not certified by an English recognizer's missing
+        # or different mark. Preserve the first reader's codepoints and disclose
+        # the unresolved choice, even when the bare letter sequence agrees.
+        supported=[choice for choice in supported if not _accent_conflict(
+            ''.join(choice[1]),''.join(proposed[b:y]))]
+        different_rows=any(abs((left_word['bbox'][1]+left_word['bbox'][3]
+                                     -right_word['bbox'][1]-right_word['bbox'][3])/2)>
+            min(left_word['bbox'][3]-left_word['bbox'][1],right_word['bbox'][3]-right_word['bbox'][1])*.75+2
+            for left_word,right_word in zip(source[a:z],source[a+1:z]))
+        wrapped=(z-a>1 and y-b==1 and (different_rows or
+                 any(t.endswith(('-', '\u00ad')) for t in source_tokens[a:z-1]))
+                 and ''.join(placement(t) for t in source_tokens[a:z])==placement(proposed[b]))
+        if wrapped:supported=[];boundary=None
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
             boundary if boundary else ('source',source_tokens[a:z],[]) if not proposed[b:y] else ('model',proposed[b:y],[]))
@@ -334,6 +372,7 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
             for word in evidence)
         resolved=bool(positive and ((unique and anchored and (lexical or numeral))
                                    or case_only or two_views))
+        if _accent_conflict(''.join(tokens[a:z]),''.join(w['text'] for w in evidence)):resolved=False
         chosen=[w['text'] for w in evidence] if resolved else tokens[a:z]
         record=dict(source=tokens[a:z],model=tokens[a:z],chosen=chosen,
             status='RESOLVED' if resolved else 'UNRESOLVED',
