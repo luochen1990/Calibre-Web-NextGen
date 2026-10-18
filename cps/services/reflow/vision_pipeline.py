@@ -2044,8 +2044,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     witness=pixel_adjudication.read_crop(display,territories,
                         Path(note_context['cache'])/'adjudication')
                     from difflib import SequenceMatcher
-                    baseline=local or optical_local
-                    if local and optical_local:
+                    baseline=(optical_local if independent_optical_fallback else local or optical_local)
+                    if local and optical_local and not independent_optical_fallback:
                         overlap=sum(n for _,_,n in SequenceMatcher(None,
                             [vision_reading.normalized(w['text']) for w in local],
                             [vision_reading.normalized(w['text']) for w in optical_local],autojunk=False).get_matching_blocks())
@@ -2057,6 +2057,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                                  else result['marked'])
                         adjudication=pixel_adjudication.adjudicate(first_tokens,
                             baseline,witness,uncertain=pending,corroboration=optical_local,
+                            # Inconclusive OCR cannot revive a model passage already
+                            # rejected by the source-conservation alignment guard.
+                            unresolved_source=bool(result['fallback']),
                             absence_proof=lambda left,right:pixel_adjudication.blank_between(display,left,right,territories))
                         conflicts=pixel_adjudication.audit_agreement(adjudication['tokens'],baseline,witness)
                         for i,decision in conflicts.items():

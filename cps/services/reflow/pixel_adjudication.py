@@ -83,7 +83,7 @@ def _word_note(record, index, span_id):
         span_id=span_id,source_range=record.get('source_range'),model_range=record.get('model_range'))
 
 
-def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=()):
+def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
     Empty alternatives require both adjacent anchors, so a missing edge cannot
@@ -185,7 +185,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         if wrapped:supported=[];boundary=None
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
-            boundary if boundary else ('source',source_tokens[a:z],[]) if not proposed[b:y] else ('model',proposed[b:y],[]))
+            boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or not proposed[b:y] else ('model',proposed[b:y],[]))
         record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=list(literal),
                     status='RESOLVED' if resolved else 'UNRESOLVED',
                     method='independent_upright_crop' if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',

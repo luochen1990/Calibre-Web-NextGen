@@ -672,3 +672,26 @@ def test_native_note_word_equal_to_label_binds_only_its_lexical_copy(tmp_path,mo
     spans=[node for node in tree.iter()if node.get('data-source-block')=='native-note-0']
     assert len(spans)==1 and ''.join(spans[0].itertext())=='1'
     assert json.loads(spans[0].get('data-source-regions'))==[witness[1]['bbox']]
+
+
+def test_inconclusive_second_read_cannot_restore_rejected_model_paragraph(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    text='The genuine printed paragraph follows quiet rivers past ordinary villages before sunset.'
+    invented='Imaginary violet machines announce impossible discoveries beneath a fictional palace every evening.'
+    source=words(text)
+    monkeypatch.setattr(pa,'read_crop',lambda *args:words(text,30))
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open() as doc:
+        doc.new_page(width=600,height=400)
+        page,report=vp.compile_page({'blocks':[block(invented,bbox=(0,0,1000,1000))]},
+            source,SourceDisplay(doc,0),0,Package(),{},pixel_words=source,note_context={'cache':tmp_path/'cache','labels':{},'owners':{},'catalogue':{},'refs':{}})
+    record=report['blocks'][0]
+    assert record['published_tokens']==text.split()
+    assert record['original_model_tokens']==invented.split()
+    assert any(d['status']=='UNRESOLVED' and d['chosen']==d['source'] and d['model']
+               for d in record['adjudication'])
+    assert record['marked']
