@@ -2091,7 +2091,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         Path(note_context['cache'])/'adjudication')
                     source_occurrences=(source_unit['words'] if local_ocr_units is not None else optical_local)
                     refined=pixel_adjudication.refine_fallback(result['tokens'],witness,
-                        text_quality.english_lexicon(),source=source_occurrences)
+                        text_quality.english_lexicon(),source=source_occurrences,corroboration=optical_local)
                     # Original occurrence inventories are immutable. Only a
                     # positively corroborated one-for-one repair can replace a
                     # local token without changing those source owners.

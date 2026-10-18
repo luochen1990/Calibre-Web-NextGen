@@ -236,7 +236,7 @@ def read_crop(display, regions, cache):
     return output
 
 
-def refine_fallback(tokens, witness, lexicon, source=()):
+def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
     """Resolve a damaged-layer fallback with positive, contextual pixel ink.
 
     Lexical support is secondary to a unique crop occurrence. It can support an
@@ -248,7 +248,9 @@ def refine_fallback(tokens, witness, lexicon, source=()):
     keys=[_key(t) for t in tokens];pixels=[_key(w['text']) for w in witness]
     matcher=SequenceMatcher(None,keys,pixels,autojunk=False)
     source_map={j:source[i] for a,b,n in SequenceMatcher(None,[_key(w['text']) for w in source],keys,autojunk=False).get_matching_blocks() for i,j in zip(range(a,a+n),range(b,b+n))}
-    if sum(n for _,_,n in matcher.get_matching_blocks())/max(1,len(keys))<.75:return None
+    folded=SequenceMatcher(None,[t.casefold() for t in keys],
+                           [t.casefold() for t in pixels],autojunk=False)
+    if sum(n for _,_,n in folded.get_matching_blocks())/max(1,len(keys))<.75:return None
     known=lambda token:re.sub(r"[^\w'’]",'',token).casefold() in lexicon
     output=[];notes={};bounds={};decisions=[]
     for kind,a,z,b,y in matcher.get_opcodes():
@@ -270,11 +272,24 @@ def refine_fallback(tokens, witness, lexicon, source=()):
         numeral=(len(tokens[a:z])==len(evidence)==1 and
                  re.fullmatch(r'[IVXLCDM]+|[0-9]+',tokens[a]) and
                  re.fullmatch(r'[IVXLCDM]+|[0-9]+',evidence[0]['text']))
-        resolved=bool(positive and unique and anchored and (lexical or numeral))
+        owned_span=(len(tokens[a:z])==len(evidence) and bool(evidence) and all(
+            i in source_map and _same_occurrence(source_map[i],word)
+            for i,word in zip(range(a,z),evidence)))
+        # Case changes preserve the lexical word. An unfamiliar spelling needs
+        # two pixel readings at this occurrence, never a dictionary preference
+        # or another copy elsewhere. Local OCR remains explicitly unverified.
+        case_only=owned_span and all(_key(t).casefold()==_key(w['text']).casefold()
+                                     for t,w in zip(tokens[a:z],evidence))
+        two_views=owned_span and all(len([other for other in corroboration
+            if _same_occurrence(word,other) and _key(other['text'])==_key(word['text'])])==1
+            for word in evidence)
+        resolved=bool(positive and ((unique and anchored and (lexical or numeral))
+                                   or case_only or two_views))
         chosen=[w['text'] for w in evidence] if resolved else tokens[a:z]
         record=dict(source=tokens[a:z],model=tokens[a:z],chosen=chosen,
             status='RESOLVED' if resolved else 'UNRESOLVED',
-            method='contextual_crop_lexical_support' if resolved else 'pixel_read_inconclusive')
+            method=('two_local_pixel_readings' if two_views else 'pixel_case_agreement' if case_only
+                    else 'contextual_crop_lexical_support') if resolved else 'pixel_read_inconclusive')
         decisions.append(record)
         for i,t in enumerate(chosen):
             index=len(output);output.append(t);notes[index]=_word_note(record,i,len(decisions)-1)

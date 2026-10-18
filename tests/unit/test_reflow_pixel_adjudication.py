@@ -433,3 +433,48 @@ def test_reader_formatting_metadata_preserves_the_uncertain_word_index():
             [],SourceDisplay(doc,0),0,Package(),{},pixel_words=original)
     assert report['blocks'][0]['published_tokens']==[w['text']for w in original]
     assert report['blocks'][0]['marked']==[1]
+
+
+def test_local_heading_case_and_name_can_follow_two_same_occurrence_pixel_reads():
+    from cps.services.reflow.pixel_adjudication import refine_fallback
+    original=words('The cLeAr sAmPlE FROM Brindlc')
+    witness=words('THE CLEAR SAMPLE FROM Brindle')
+    result=refine_fallback([w['text'] for w in original],witness,
+        {'the','clear','sample','from'},source=original,corroboration=witness)
+    assert result['tokens']==[w['text'] for w in witness]
+    assert all(d['status']=='RESOLVED' for d in result['decisions'])
+    assert result['marked']
+
+
+def test_local_unknown_name_cannot_follow_a_different_occurrence_pixel_read():
+    from cps.services.reflow.pixel_adjudication import refine_fallback
+    original=words('The clear sample from Brindlc remains here today.')
+    witness=words('The clear sample from Brindle remains here today.')
+    remote=[dict(w,bbox=[x+400 for x in w['bbox']]) for w in witness]
+    result=refine_fallback([w['text'] for w in original],witness,
+        {'the','clear','sample','from','remains','here','today'},source=original,corroboration=remote)
+    assert result['tokens']==[w['text'] for w in original]
+    assert any(d['status']=='UNRESOLVED' for d in result['decisions'])
+
+
+def test_local_two_view_name_repair_is_live_but_keeps_original_words_and_uncertainty(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    text='The clear sample from Brindlc remains here today.'
+    original=words(text)
+    witness=[dict(w,text='Brindle' if w['text']=='Brindlc' else w['text'])for w in original]
+    monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open() as doc:
+        doc.new_page(width=400,height=400)
+        page,report=vp.compile_page({'blocks':[block(text,role='footnote',marker='2',bbox=(0,0,1000,1000))]},
+            [],SourceDisplay(doc,0),0,Package(),{},pixel_words=witness,local_ocr=True,
+            local_ocr_units=[dict(id='b1',words=original,source_word_indices=list(range(len(original))))],
+            note_context={'cache':tmp_path/'cache'})
+    assert report['blocks'][0]['published_tokens'][4]=='Brindle'
+    assert report['local_ocr_units'][0]['words'][4]['text']=='Brindlc'
+    assert 'class="uncertain"' in page['asides'][0]
+    assert any('Brindlc → Brindle.' in aside for aside in page['asides'][1:])
