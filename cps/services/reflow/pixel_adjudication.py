@@ -365,8 +365,11 @@ def read_crop(display, regions, cache):
                 # Tiny printed letters need enough samples to distinguish their
                 # strokes. Both frames remain bounded by four million pixels.
                 base=min(8,max(4,24/min(heights))) if heights else 4
-                return [_read_crop(display,alternate_regions(regions),cache,language='LatinRaw',scale=scale,tessdata=directory)
-                        for scale in (base,base*1.25)]
+                frames=[regions]
+                contextual=alternate_regions(regions)
+                if contextual!=[list(r)for r in regions]:frames.append(contextual)
+                return [_read_crop(display,frame,cache,language='LatinRaw',scale=scale,tessdata=directory)
+                        for frame in frames for scale in (base,base*1.25)]
             except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
         result.alternates=alternatives
         result.mark_absence=lambda word:below_dot_absent(display,word)
@@ -633,16 +636,24 @@ def _verified_latin_directory(roots):
 
 
 def _alternate_choice(source,index,witness,model_word):
+    reader=getattr(witness,'alternates',None)
+    if reader is None:return None
+    views=reader();choices={}
+    for start in range(0,len(views),2):
+        choice=_alternate_pair_choice(source,index,witness,model_word,views[start:start+2])
+        if choice:choices[_key(choice['text'])]=choice
+    # Two incompatible confident frame pairs cannot settle one printed word.
+    return next(iter(choices.values()))if len(choices)==1 else None
+
+
+def _alternate_pair_choice(source,index,witness,model_word,views):
     """Require two confident optical reads and a uniquely anchored occurrence.
 
     The script network includes macron vowels but no combining under-dot. Its
     omission cannot certify removing that mark from a first reading. English
     OCR is still never allowed to certify accent presence or absence.
     """
-    reader=getattr(witness,'alternates',None)
-    if reader is None:return None
     if sum(c.isalnum()for c in source[index]['text'])<2:return None
-    views=reader()
     if len(views)!=2:return None
     own=[[w for w in view if _complete_word_occurrence(source[index],w)]for view in views]
     if not all(len(row)==1 and row[0].get('confidence',0)>=85 for row in own):return None
@@ -676,7 +687,7 @@ def disclose_alternate_conflicts(result, boxes, witness, allow_clear=True):
         and not result['tokens'][i].startswith('<n:')
         and (result.get('word_notes')or{}).get(i,{}).get('status')!='RESOLVED']
     if not pending:return
-    views=reader()
+    views=reader()[:2]
     if len(views)!=2:return
     for index in pending:
         original=dict(bbox=boxes[index])

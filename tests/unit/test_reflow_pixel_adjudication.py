@@ -1269,3 +1269,18 @@ def test_exact_alternate_pixels_settle_a_spurious_agreeing_reading_conflict():
     assert result['marked']==set()
     assert result['word_notes']=={}
     assert result['verified_unchanged']==[2]
+
+
+def test_one_coherent_frame_pair_can_settle_a_number_but_conflicting_pairs_cannot():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read section 4.2.17; before opening the box.')
+    bad=words('Please read section 4.2-17; before opening the box.',40)
+    witness=pa.CropWitness(bad)
+    witness.alternates=lambda:[source,source,bad,bad]
+    result=adjudicate([w['text']for w in bad],source,witness)
+    assert result['tokens']==[w['text']for w in source]
+    assert result['word_notes'][3]['status']=='RESOLVED'
+    conflict=words('Please read section 4.2-17; before opening the box.')
+    witness.alternates=lambda:[source,source,conflict,conflict]
+    result=adjudicate([w['text']for w in bad],source,witness)
+    assert result['word_notes'][3]['status']=='UNRESOLVED'
