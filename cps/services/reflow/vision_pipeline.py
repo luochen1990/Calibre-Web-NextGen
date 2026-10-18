@@ -1702,12 +1702,10 @@ def _lexical_marker_view(tokens,source,proofs):
         before=proof.get('anchor_before_bbox');after=proof.get('anchor_after_bbox')
         symbol=re.search(r'([*†‡])$',tokens[index-1]) if index else None
         symbol_value=symbol[1] if symbol else proof.get('lexical_literal_suffix')
-        if not proved and symbol_value:
-            # An unplaced symbolic alternative must survive for final reference
-            # disclosure even when it cannot reserve any original source ink.
-            proof['lexical_literal_suffix']=symbol_value
-            proof['lexical_placeholder']=tokens[index]
-            if tokens[index-1].endswith(symbol_value):lexical[index-1]=tokens[index-1][:-1]
+        # Keep an unplaced literal in all lexical views. Removing it only from
+        # the model makes independent OCR reintroduce the same ink as a word
+        # correction, after which restoration would print the symbol twice.
+        # Only a bounded original slot can reserve and later restore it.
         provisional=bool(not proved and symbol_value and before and after and
             before[2]-.5<=box[0] and box[2]<=after[0]+.5 and
             0<box[2]-box[0]<=max(1,before[3]-before[1])*3 and

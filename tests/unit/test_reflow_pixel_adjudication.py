@@ -875,6 +875,23 @@ def test_unknown_reference_slot_is_not_an_ordinary_lexical_word(recognized):
     assert proof['lexical_literal_suffix']=='‡'
 
 
+def test_unplaced_terminal_symbol_is_not_removed_then_reintroduced_as_a_word():
+    import copy
+    from cps.services.reflow import vision_pipeline as vp
+    tokens=['Clear','specimens*','<n:note>']
+    source=[dict(text='Clear',bbox=[10,20,35,32]),
+            dict(text='specimens*',bbox=[38,20,95,32])]
+    original=copy.deepcopy(source)
+    proof=dict(status='UNPROVED',source_bbox=[38,20,98,32],
+        reason='complete_original_marker_group_not_proved',
+        anchor_before_bbox=source[-1]['bbox'],anchor_after_bbox=None)
+    model,lexical=vp._lexical_marker_view(tokens,source,{2:proof})
+    assert model==tokens
+    assert lexical==source==original
+    assert 'lexical_literal_suffix' not in proof
+    assert 'lexical_placeholder' not in proof
+
+
 def test_native_live_text_without_a_source_occurrence_cannot_skip_pixel_audit(tmp_path):
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp
