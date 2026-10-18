@@ -4650,7 +4650,7 @@ def _source_paragraph_boundaries(answer,optical,display,regions,body_owners):
     return answer,repairs
 
 
-def _omission_coverage(answer,display,regions):
+def _omission_coverage(answer,display,regions,optical=None):
     """Record exactly the footprints used to consider each live unit covered."""
     coverage={b['id']:regions.get(b['id'],[block_rect(b,display)]) for b in answer['blocks']}
     controller=unit_recovery.current()
@@ -4664,6 +4664,33 @@ def _omission_coverage(answer,display,regions):
             # Independently owned body remains live. A previously admitted
             # narrower note footprint is preserved by register_regions.
             coverage[block['id']]=[list(display.rect)]
+    if controller and optical:
+        from .source_geometry import local_note_openings
+        # Unreferenced rejected notes have no validation stub in `answer`.
+        # Their retained source image must not also become a recovered BODY
+        # row. Reserve only an actual unique opening and its continuous row,
+        # never an unproved rectangle or a distant matching prose occurrence.
+        for block in controller.source_answer(display.pno)['blocks']:
+            bid=block['id'];bounds=block['bbox']
+            if (bid not in blocked or bid in coverage or block['role']!='footnote'
+                    or not all(0<=v<=1000 for v in bounds)
+                    or not(bounds[0]<bounds[2] and bounds[1]<bounds[3])):continue
+            hint=block_rect(block,display)
+            available=[i for i,w in enumerate(optical)
+                if (regions.get('_instances',{}).get(_source_instance(w),bid)==bid)]
+            openings=local_note_openings(optical,available,block['marker'],hint)
+            if len(openings)!=1:continue
+            opening=optical[openings[0]];box=opening['bbox'];height=max(1,box[3]-box[1])
+            row=sorted((optical[i]for i in available if i!=openings[0]
+                and hint[0]-3<=optical[i]['bbox'][0] and optical[i]['bbox'][2]<=hint[2]+3
+                and optical[i]['bbox'][0]>=box[2]
+                and abs(sum(optical[i]['bbox'][1::2])-sum(box[1::2]))<=height*1.5),
+                key=lambda w:w['bbox'][0])
+            chain=[opening]
+            for word in row:
+                if word['bbox'][0]-chain[-1]['bbox'][2]>height*4:break
+                chain.append(word)
+            if len(chain)>=3:coverage[bid]=[vision_reading.union([w['bbox']for w in chain])]
     return coverage
 
 
@@ -5470,7 +5497,7 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
         optical=saved['optical']
         controller.source_repairs[n]=lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache')
         controller.register_regions(n,saved['regions'],
-            _omission_coverage(saved['answer'],display,saved['regions']))
+            _omission_coverage(saved['answer'],display,saved['regions'],saved['optical']))
         receipts=saved.pop('boundary_receipts')
         return dict(display=display,**saved),receipts
     with unit_recovery.guard(n,'primary_source_render'):
@@ -5508,7 +5535,7 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
             with unit_recovery.guard(n,'note_boundaries',block=opening['block']):
                 raise ValueError('Interior printed note opening requires a verified source partition')
     if controller:
-        controller.register_regions(n,regions,_omission_coverage(answer,display,regions))
+        controller.register_regions(n,regions,_omission_coverage(answer,display,regions,optical))
         controller.admit_answer(n,answer)
     with unit_recovery.guard(n,'reading_text_quality'):
         units=[(b['id'],b['text']) for b in answer['blocks'] if b['role'] not in ('figure','table')]
@@ -5694,14 +5721,14 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                     # Keep those identities before the stricter paragraph
                     # partition can reject one, without publishing its text.
                     controller.register_regions(n,s['regions'],
-                        _omission_coverage(s['answer'],s['display'],s['regions']))
+                        _omission_coverage(s['answer'],s['display'],s['regions'],s['optical']))
                     controller.admit_answer(n,s['answer'])
                     s['answer']=controller.filter_answer(n,s['answer'])
                 s['answer'],s['paragraph_repairs']=_source_paragraph_boundaries(
                     s['answer'],s['optical'],s['display'],s['regions'],s['body_owners'])
                 if controller:
                     controller.register_regions(n,s['regions'],
-                        _omission_coverage(s['answer'],s['display'],s['regions']))
+                        _omission_coverage(s['answer'],s['display'],s['regions'],s['optical']))
                     controller.admit_answer(n,s['answer'])
                     s['answer']=controller.filter_answer(n,s['answer'])
         if unproved_art_cases:
