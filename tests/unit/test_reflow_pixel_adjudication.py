@@ -695,3 +695,119 @@ def test_inconclusive_second_read_cannot_restore_rejected_model_paragraph(tmp_pa
     assert any(d['status']=='UNRESOLVED' and d['chosen']==d['source'] and d['model']
                for d in record['adjudication'])
     assert record['marked']
+
+
+def test_marker_lexical_view_reserves_only_the_proved_physical_occurrence():
+    import copy
+    from cps.services.reflow import vision_pipeline as vp
+    source=[dict(text='Clear',bbox=[10,20,40,32]),
+            dict(text='7',bbox=[41,17,45,23]),
+            dict(text='words',bbox=[47,20,77,32]),
+            dict(text='7',bbox=[150,20,155,32])]
+    before=copy.deepcopy(source)
+    tokens=['Clear','<n:first>','words','7']
+    proofs={1:dict(status='PROVED',label='7',source_bbox=[41,17,45,23])}
+    model,lexical=vp._lexical_marker_view(tokens,source,proofs)
+    assert model==tokens and [w['text']for w in lexical]==['Clear','words','7']
+    assert lexical[-1]['bbox']==[150,20,155,32]
+    assert source==before
+    # A genuinely separate printed slot remains a separate reference.
+    tokens=['Clear','<n:first>','words','<n:second>']
+    proofs[3]=dict(status='PROVED',label='7',source_bbox=[150,20,155,32])
+    model,lexical=vp._lexical_marker_view(tokens,source,proofs)
+    assert model==tokens and [w['text']for w in lexical]==['Clear','words']
+
+
+def test_marker_lexical_view_strips_only_an_exact_proved_raised_suffix():
+    import copy
+    from cps.services.reflow import vision_pipeline as vp
+    source=[dict(text='Clear7,',bbox=[10,20,50,32]),
+            dict(text='words',bbox=[55,20,85,32]),
+            dict(text='Clear7,',bbox=[150,20,190,32])]
+    before=copy.deepcopy(source)
+    tokens=['Clear7,','<n:first>','words','Clear7,']
+    proof=dict(status='PROVED',label='7',source_bbox=[45,17,49,24],
+               deduplicated_literal_token=0,literal_display_text='Clear,')
+    model,lexical=vp._lexical_marker_view(tokens,source,{1:proof})
+    assert model==['Clear,','<n:first>','words','Clear7,']
+    assert [w['text']for w in lexical]==['Clear,','words','Clear7,']
+    assert lexical[0]['bbox']==source[0]['bbox']
+    assert tokens==['Clear7,','<n:first>','words','Clear7,'] and source==before
+
+
+def test_unbound_or_numeric_role_unproved_markers_are_never_stripped():
+    from cps.services.reflow import vision_pipeline as vp
+    source=[dict(text='Clear',bbox=[10,20,40,32]),
+            dict(text='7',bbox=[41,20,45,32]),dict(text='words',bbox=[47,20,77,32])]
+    tokens=['Clear','<n:first>','words']
+    for reason in ['numeric_original_marker_role_unproved','original_marker_slot_not_uniquely_bound']:
+        proof=dict(status='UNPROVED',source_bbox=[41,20,45,32],reason=reason,
+                   anchor_before_bbox=source[0]['bbox'],anchor_after_bbox=source[2]['bbox'])
+        assert vp._lexical_marker_view(tokens,source,{1:proof})==(tokens,source)
+    # An unbounded entire-block rectangle cannot reserve a source number.
+    proof=dict(status='UNPROVED',source_bbox=[0,0,100,100],
+               reason='multiple_original_glyphs_for_one_placeholder')
+    assert vp._lexical_marker_view(tokens,source,{1:proof})==(tokens,source)
+
+
+def test_bounded_unknown_marker_identity_remains_opaque_without_claiming_a_label():
+    from cps.services.reflow import vision_pipeline as vp
+    source=[dict(text='Clear',bbox=[10,20,40,32]),
+            dict(text='3*',bbox=[41,17,48,23]),dict(text='words',bbox=[50,20,80,32]),
+            dict(text='3',bbox=[150,20,155,32])]
+    tokens=['Clear','<n:first>','words','3']
+    proof=dict(status='UNPROVED',source_bbox=[41,17,48,23],
+               reason='multiple_original_glyphs_for_one_placeholder',
+               anchor_before_bbox=source[0]['bbox'],anchor_after_bbox=source[2]['bbox'])
+    model,lexical=vp._lexical_marker_view(tokens,source,{1:proof})
+    assert model==tokens and [w['text']for w in lexical]==['Clear','words','3']
+    assert proof['status']=='UNPROVED' and 'label'not in proof
+    # A letter-looking unknown reading is not safe to classify as marker text.
+    assert vp._lexical_marker_view(tokens,[dict(source[1],text='B')],{1:proof})[1][0]['text']=='B'
+
+
+@pytest.mark.parametrize('kind',['bare','suffix','opaque'])
+def test_compile_reserves_proved_marker_before_word_conservation(tmp_path,monkeypatch,kind):
+    import copy,pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    text='The clear sample remains readable near the ordinary village before sunset today.'
+    source=words(text)
+    glyph=[58,16,62,24];suffix=kind=='suffix'
+    if suffix:source[2]=dict(source[2],text='sample7',bbox=[40,20,63,32])
+    else:source.insert(3,dict(text='3*'if kind=='opaque'else'7',bbox=glyph,confidence=99))
+    original=copy.deepcopy(source)
+    proposed=text.replace('sample','sample7<n:n1>'if suffix else 'sample<n:n1>')
+    expected=text.replace('sample','sample <n:n1>').split()
+    calls=[];dispatches=[]
+    def proof(tokens,optical,display,box,context,pno,literal=None):
+        calls.append((context.get('marker_reader'),copy.deepcopy(optical)))
+        i=tokens.index('<n:n1>')
+        result=(dict(status='UNPROVED',source_bbox=glyph,reason='multiple_original_glyphs_for_one_placeholder',
+                     anchor_before_bbox=original[2]['bbox'],anchor_after_bbox=original[4]['bbox'])
+                if kind=='opaque'else dict(status='PROVED',label='7',source_bbox=glyph))
+        if tokens[i-1]=='sample7':result.update(deduplicated_literal_token=i-1,literal_display_text='sample')
+        return {i:result}
+    def dispatch(*args):dispatches.append(args);raise AssertionError('No added marker dispatch is allowed')
+    monkeypatch.setattr(vp,'_placeholder_display_evidence',proof)
+    monkeypatch.setattr(vp,'_literal_note_refs',lambda *args,**kwargs:{})
+    monkeypatch.setattr(pa,'read_crop',lambda *args:copy.deepcopy(source))
+    context=dict(cache=tmp_path/'cache',labels={'7':[(0,'n1')]},owners={},
+                 catalogue={(0,'n1'):{'target':'v4-note-0-n1','label':'99'}},refs={},marker_reader=dispatch)
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open()as doc:
+        doc.new_page(width=600,height=400)
+        page,report=vp.compile_page({'blocks':[block(proposed,bbox=(0,0,1000,700)),block('',ident='n1',role='footnote',marker='99',bbox=(0,900,1000,1000))]},
+            source,SourceDisplay(doc,0),0,Package(),{},pixel_words=source,note_context=context)
+    assert report['blocks'][0]['published_tokens']==expected
+    assert source==original and calls[-1][1]==original
+    assert len(calls)==2 and calls[0][0]is None and calls[1][0]is dispatch
+    assert not dispatches
+    if kind=='opaque':
+        assert report['note_marker_disclosures'] and report['note_marker_disclosures'][0]['status']=='DEGRADED_SOURCE_CONTEXT'
+        assert 'class="source-disclosure-ref"'in page['body'][0]
+    else:
+        assert 'class="noteref"'in page['body'][0] and '<sup>7</sup>'in page['body'][0]
+    assert not any(d.get('source')==['7']for d in report['blocks'][0]['adjudication'])

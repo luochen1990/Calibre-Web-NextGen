@@ -1614,6 +1614,63 @@ def _original_marker_slot_components(display, lexical_box, following_box, candid
     return dict(bbox=ink,horizontal_components=len(groups))
 
 
+def _lexical_marker_view(tokens,source,proofs):
+    """Reserve proved reference occurrences without editing source inventories.
+
+    A placeholder's bounded raised slot is not an ordinary word. Identity may
+    remain uncertain: only marker-only recognizer tokens in an independently
+    anchored original slot can be reserved opaquely. Final reference rendering
+    still uses the complete original inventory and its normal verification.
+    """
+    lexical=list(tokens)
+    slots=[]
+    opaque_reasons={'multiple_original_glyphs_for_one_placeholder',
+        'original_character_optical_marker_conflict',
+        'original_character_without_independent_optical_corroboration',
+        'complete_original_marker_group_not_proved','original_marker_verification_unusable'}
+    for index,proof in proofs.items():
+        if not (0<=index<len(tokens) and re.fullmatch(r'<n:[^>]+>',tokens[index])):continue
+        box=proof.get('source_bbox')
+        if not box or len(box)!=4 or not (box[0]<box[2] and box[1]<box[3]):continue
+        proved=(proof.get('status')=='PROVED' and
+            re.fullmatch(r'\d{1,4}|[*†‡§¶]',proof.get('label') or ''))
+        opaque=(proof.get('status')=='UNPROVED' and proof.get('reason') in opaque_reasons
+            and proof.get('anchor_before_bbox') and proof.get('anchor_after_bbox'))
+        if not (proved or opaque):continue
+        slots.append((proof,bool(proved)))
+        # This field is supplied only by the existing sole-instance proof.
+        # Never infer model suffix removal from a shared label alone.
+        prior=proof.get('deduplicated_literal_token')
+        if proved and prior is not None and prior==index-1 and prior>=0:
+            lexical[prior]=proof['literal_display_text']
+    result=[]
+    for word in source:
+        text=word['text'];bounds=word['bbox'];replacement=text
+        for proof,proved in slots:
+            box=proof['source_bbox']
+            overlap=max(0,min(bounds[2],box[2])-max(bounds[0],box[0]))*max(0,min(bounds[3],box[3])-max(bounds[1],box[1]))
+            small=min((bounds[2]-bounds[0])*(bounds[3]-bounds[1]),(box[2]-box[0])*(box[3]-box[1]))
+            if small<=0 or overlap<small*.5:continue
+            if proved and text==proof['label']:
+                replacement='';break
+            if not proved:
+                # An unknown identity cannot remove lexical letters or a
+                # broad cardinal token. Keep it opaque only inside its actual
+                # bounded raised original slot; numeric-role failures stay live.
+                height=max(1,proof['anchor_before_bbox'][3]-proof['anchor_before_bbox'][1])
+                if (re.fullmatch(r'[0-9*†‡§¶]+',text) and
+                        box[0]-height*.5<=bounds[0] and bounds[2]<=box[2]+height*.5 and
+                        box[1]-height*.5<=bounds[1] and bounds[3]<=box[3]+height*.5):
+                    replacement='';break
+                continue
+            suffix=re.search(re.escape(proof['label'])+r'''([.,;:)\]”’"']*)$''',text)
+            if (suffix and re.search(r'[A-Za-z]',text[:suffix.start()]) and
+                    box[0]>=bounds[2]-max(1,bounds[3]-bounds[1])*1.5):
+                replacement=text[:suffix.start()]+suffix[1];break
+        if replacement:result.append(word if replacement==text else dict(word,text=replacement))
+    return lexical,result
+
+
 def _placeholder_display_evidence(tokens,optical,display,box,context,pno,literal=None):
     """Bind display glyphs to original slots, independently of note owners.
 
@@ -2053,10 +2110,25 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     if baseline and witness:
                         first_tokens=re.findall(r'<n:[^>]+>|\S+',
                             re.sub(r'(<n:[^>]+>)',r' \1 ',block['text']))
+                        # Existing local physical proof reserves reference ink
+                        # before lexical conservation can turn it into body words.
+                        # This early pass cannot dispatch a marker request. Final
+                        # rendering keeps the complete original inventories and
+                        # performs its usual verified/disclosed reference binding.
+                        marker_corroboration=optical_local
+                        if role in ('body','other','caption') and any(
+                                re.fullmatch(r'<n:[^>]+>',t) for t in first_tokens):
+                            local_context=dict(note_context,marker_reader=None)
+                            with unit_recovery.guard(pno,'page_compilation',block=bid):
+                                physical=_placeholder_display_evidence(first_tokens,
+                                    optical_local,display,box,local_context,pno)
+                            first_tokens,baseline=_lexical_marker_view(first_tokens,baseline,physical)
+                            _,witness=_lexical_marker_view(first_tokens,witness,physical)
+                            _,marker_corroboration=_lexical_marker_view(first_tokens,optical_local,physical)
                         pending=(range(len(first_tokens)) if result['fallback'] or bid in forced_uncertain
                                  else result['marked'])
                         adjudication=pixel_adjudication.adjudicate(first_tokens,
-                            baseline,witness,uncertain=pending,corroboration=optical_local,
+                            baseline,witness,uncertain=pending,corroboration=marker_corroboration,
                             # Inconclusive OCR cannot revive a model passage already
                             # rejected by the source-conservation alignment guard.
                             unresolved_source=bool(result['fallback']),
