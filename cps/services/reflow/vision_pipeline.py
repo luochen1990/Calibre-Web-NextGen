@@ -2632,7 +2632,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                 if block['role']!='footnote':matched=_geometry_anchors(optical,local_indices,candidate)
                 globally_relocated=block['role']=='body'
         anchors=matched
-        if globally_relocated:
+        if block['role']=='body':
             # A repeated list number elsewhere on the page cannot bridge a
             # displaced hint to its real paragraph. A numeric boundary needs
             # adjacent printed ink; otherwise keep its reading uncertain and
@@ -2641,14 +2641,18 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                 if not candidate or not re.fullmatch(r'[0-9]{1,4}',candidate[position]):continue
                 edges=[(i,j) for i,j in anchors if j==position]
                 rest=[(i,j) for i,j in anchors if j!=position]
-                if len(edges)!=1 or not rest:continue
-                index,_=edges[0]
-                neighbor=min(rest,key=lambda pair:abs(pair[1]-position))[0]
-                box=optical[index]['bbox'];near=optical[neighbor]['bbox']
-                height=max(1,box[3]-box[1],near[3]-near[1])
-                gap=max(0,max(box[1],near[1])-min(box[3],near[3]))
-                if gap<=2.5*height:continue
-                anchors=[pair for pair in anchors if pair!=edges[0]]
+                if not rest:continue
+                if len(edges)==1:
+                    index,_=edges[0]
+                    neighbor=min(rest,key=lambda pair:abs(pair[1]-position))[0]
+                    box=optical[index]['bbox'];near=optical[neighbor]['bbox']
+                    height=max(1,box[3]-box[1],near[3]-near[1])
+                    gap=max(0,max(box[1],near[1])-min(box[3],near[3]))
+                    if gap<=2.5*height:continue
+                # A compact proof can exclude the remote numeral before this
+                # stage. Its absence is uncertainty, regardless of which binder
+                # established the remaining paragraph's physical ownership.
+                anchors=[pair for pair in anchors if pair not in edges]
                 positions=[i for i,word in enumerate(block['text'].split())
                     for token in re.sub(r'<n:[^>]+>',' ',word).split()]
                 block['low_confidence']=sorted(set(block['low_confidence']+[positions[position]]))
