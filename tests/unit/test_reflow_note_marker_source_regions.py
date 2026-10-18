@@ -126,3 +126,19 @@ def test_local_printed_note_opening_cannot_relocate_to_a_distant_equal_label():
     bound,_=vp.bind_geometry({'blocks':[block]},distant+local,display,regions,{})
     assert not regions.get('local') or min(r[1]for r in regions['local'])>=612
     assert bound['blocks'][0]['bbox'][1]>=850,'a matching distant label cannot overrule the printed local opening'
+
+
+def test_differently_recognized_note_label_retains_an_explicit_owned_occurrence():
+    block=dict(note('opening','†'),bbox=[60,850,900,900])
+    optical=words('+',620)
+    regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    vp.bind_geometry({'blocks':[block]},optical,display,regions,{})
+    proof=regions.get('_note_openings',{}).get('opening',{})
+    assert proof.get('source_bbox')==[40,620,45,627]
+    assert proof['observed_text']=='+' and proof['expected_label']=='†'
+    assert proof['identity_status']=='UNPROVED','geometry locates a label without certifying its identity'
+
+    remaining=vp._note_lexical_evidence(optical,proof)
+    assert remaining==optical[1:]
+    remote=dict(optical[0],bbox=[40,640,45,647])
+    assert vp._note_lexical_evidence([remote],proof)==[remote]

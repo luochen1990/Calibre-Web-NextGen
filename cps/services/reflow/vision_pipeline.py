@@ -409,6 +409,14 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
     return result
 
 
+
+def _note_lexical_evidence(items, opening):
+    """Exclude one bound label occurrence, without asserting its identity."""
+    if not opening:return items
+    expected=(opening['observed_text'],tuple(opening['source_bbox']))
+    return [word for word in items if _source_instance(word)!=expected]
+
+
 def _printed_wraps(tokens,optical):
     """Keep a literal printed hyphen, without inventing space at a row wrap."""
     from difflib import SequenceMatcher
@@ -2016,6 +2024,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             # after later lines. Conservation compares physical occurrences in
             # each owned territory, never that arbitrary serialization order.
             local=_owned_block_words(block,answer,words,display,regions,body_owners,ordered=True)
+            opening_proof=copy.deepcopy((regions or {}).get('_note_openings',{}).get(bid)) if role=='footnote' else None
+            local=_note_lexical_evidence(local,opening_proof)
             # A footnote label is preserved as a label, outside its lexical reading.
             if role=='footnote' and local and vision_reading.normalized(local[0]['text']).strip('.,:;()[]{}')==vision_reading.normalized(block['marker']).strip('.,:;()[]{}'):
                 local=local[1:]
@@ -2035,7 +2045,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 has_layer=bool(words),pixel_words=optical_evidence,run_limit=run_limit)
             evidence_boxes=result['boxes'];wraps=set();optical_local=[];independent_optical_fallback=False
             if pixel_words is not None:
-                optical_local=_owned_block_words(block,answer,pixel_words,display,regions,body_owners,ordered=True)
+                optical_local=_note_lexical_evidence(_owned_block_words(block,answer,pixel_words,display,regions,body_owners,ordered=True),opening_proof)
                 if role=='footnote' and optical_local and vision_reading.normalized(optical_local[0]['text']).strip('.,:;()[]{}')==vision_reading.normalized(block['marker']).strip('.,:;()[]{}'):
                     optical_local=optical_local[1:]
                 # Check optical-only dropped lines even when a sparse original layer
@@ -2429,7 +2439,30 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             tag='h2' if role=='heading' else 'p'
             html=f'<{tag}>{text}</{tag}>'
             if role=='footnote':
-                asides.append((bid,f'<aside id="v4-note-{pno}-{bid}" class="footnote" epub:type="footnote"><p>{escape(block["marker"])} {text}</p>'))
+                label_html=escape(block['marker'])
+                if opening_proof and opening_proof['identity_status']=='UNPROVED':
+                    bounds=opening_proof['source_bbox'];receipts=(note_context or {}).get('marker_receipts',{})
+                    # Reuse a verified partition/opening receipt at this exact
+                    # glyph. A geometry reservation alone never proves identity.
+                    def same_slot(receipt):
+                        box=receipt.get('source_bbox') or []
+                        return len(box)==4 and all(box[i]-1<=bounds[i] for i in (0,1)) and all(bounds[i]<=box[i]+1 for i in (2,3))
+                    verified=any(same_slot(r) and r.get('label')==block['marker'] and not r.get('uncertain',True)
+                        for r in receipts.get(pno,[]))
+                    reader=(note_context or {}).get('marker_reader')
+                    if not verified and reader:
+                        verified=_verify_note_glyph(display,bounds,reader,receipts,pno,'footnote_opening')==block['marker']
+                    if not verified:
+                        from .unit_source import source_unit
+                        _,contexts,unit=source_unit(display,pno,'opening-'+bid,'other',package,image_records,
+                            'Printed note opening label requires original source inspection',bbox=bounds)
+                        extras.extend(contexts)
+                        label_html=(f'<a id="{unit["source_reference_origin"]}" class="source-disclosure-ref" epub:type="noteref" '
+                            f'href="#{unit["source_reference"]}">{label_html}</a>')
+                        marker_disclosures.append(dict(unit,page=pno,block=bid,unit_kind='note_marker',
+                            status='DEGRADED_SOURCE_CONTEXT',opening_identity='UNPROVED'))
+                        marked+=1
+                asides.append((bid,f'<aside id="v4-note-{pno}-{bid}" class="footnote" epub:type="footnote"><p>{label_html} {text}</p>'))
             elif role=='caption':body.append(f'<p class="caption">{text}</p>')
             else:body.append(html)
             printed=owned_words(optical_local,territories[0])
@@ -2952,6 +2985,16 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
         block['bbox']=[max(0,rect[0]/r.width*1000-2),max(0,rect[1]/r.height*1000-2),
                        min(1000,rect[2]/r.width*1000+2),min(1000,rect[3]/r.height*1000+2)]
         repairs.append(block['id'])
+    if regions is not None:
+        for ident,bounds in note_openings.items():
+            originals=[w for w in optical if w['bbox']==bounds]
+            block=next(b for b in answer['blocks'] if b['id']==ident)
+            if len(originals)!=1:continue
+            observed=originals[0]['text']
+            label=lambda text:vision_reading.normalized(text).strip('.,:;()[]{}')
+            regions.setdefault('_note_openings',{})[ident]=dict(source_bbox=list(bounds),
+                observed_text=observed,expected_label=block['marker'],
+                identity_status='PROVED' if label(observed)==label(block['marker']) else 'UNPROVED')
     if regions is not None:_reserve_object_instances(answer,optical,display,regions)
     vision_reading.validate(answer)
     return answer,repairs
