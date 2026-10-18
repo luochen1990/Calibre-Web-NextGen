@@ -2939,7 +2939,10 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                 repairs.append(dict(block=block['id'],method='unplaced_numeric_boundary',
                     candidate_position=position))
         if len(anchors)+bool(labelled)<min(5,len(candidate)) or (len(anchors)/max(1,len(candidate))<.6 and not (valid and borrowed)):
-            if valid:continue
+            # A syntactically valid note hint cannot identify a repeated or
+            # unobserved occurrence. Keep it explicitly unplaced; source-unit
+            # recovery retains its original page without publishing stale text.
+            if valid and block['role']!='footnote':continue
             reject('Model block rectangle cannot be bound to printed pixels: '+block['id'])
         if block['role']=='body':
             # A tight hint can stop at the last letter. Its exact published

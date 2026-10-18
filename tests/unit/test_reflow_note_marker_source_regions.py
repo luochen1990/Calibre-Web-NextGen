@@ -123,9 +123,13 @@ def test_local_printed_note_opening_cannot_relocate_to_a_distant_equal_label():
         'Other authored details stay distinct beside this sample.'.split())]
     block=dict(note('local','7'),bbox=[60,850,900,900])
     regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
-    bound,_=vp.bind_geometry({'blocks':[block]},distant+local,display,regions,{})
+    from cps.services.reflow.source_geometry import local_note_openings
+    evidence=distant+local
+    openings=local_note_openings(evidence,range(len(evidence)),'7',vp.block_rect(block,display))
+    assert openings and all(evidence[i]['bbox'][1]>=612 for i in openings)
+    with pytest.raises(ValueError,match='cannot be bound to printed pixels'):
+        vp.bind_geometry({'blocks':[block]},evidence,display,regions,{})
     assert not regions.get('local') or min(r[1]for r in regions['local'])>=612
-    assert bound['blocks'][0]['bbox'][1]>=850,'a matching distant label cannot overrule the printed local opening'
 
 
 def test_differently_recognized_note_label_retains_an_explicit_owned_occurrence():
@@ -212,3 +216,13 @@ def test_short_damaged_note_uses_its_unique_labelled_row_as_placement_only(sourc
     assert labelled_note_anchors(repeated,range(len(repeated)),candidate,'7')is None
     inline=[dict(text='ordinary',bbox=[5,520,37,528])]+optical
     assert labelled_note_anchors(inline,range(len(inline)),candidate,'7')is None
+
+
+def test_valid_note_hint_cannot_authorize_an_unplaced_repeated_reading():
+    text='Another careful worker waits.'
+    optical=[dict(text=t,bbox=[40+32*i,y,68+32*i,y+8])
+             for y in (500,540)for i,t in enumerate(text.split())]
+    block=dict(note('unplaced','7'),text=text,bbox=[70,900,900,925])
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    with pytest.raises(ValueError,match='cannot be bound to printed pixels'):
+        vp.bind_geometry({'blocks':[block]},optical,display,{}, {})
