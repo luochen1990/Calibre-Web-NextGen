@@ -276,21 +276,7 @@ def _note_pixel_anchors(optical,available,candidate,hint,*,exact_complete=False)
             for sequence in (sides,list(reversed(sides))):
                 yield [lookup[id(w)] for side in sequence for w in _pixel_line_order(side)]
     orders.extend(gutter_orders(pool))
-    if exact_complete:
-        # A complete literal occurrence inside the supplied territory may span
-        # a proved persistent gutter. Enumerate identities rather than letting
-        # one partial row window win merely because it is compact.
-        key=lambda text:re.sub(r'[^\w]','',vision_reading.normalized(text).casefold())
-        proofs={}
-        if len(candidate)<5:return []
-        for order in [[lookup[id(w)]for w in _pixel_line_order([optical[i]for i in local])],*gutter_orders(local)]:
-            sequence=[i for i in order if key(optical[i]['text'])]
-            keys=[key(optical[i]['text'])for i in sequence]
-            for at in range(len(keys)-len(candidate)+1):
-                if keys[at:at+len(candidate)]==candidate:
-                    indices=tuple(sequence[at:at+len(candidate)])
-                    proofs[indices]=list(zip(indices,range(len(candidate))))
-        return next(iter(proofs.values())) if len(proofs)==1 else []
+    exact_orders=list(orders)
     matches=[_geometry_anchors(optical,order,candidate) for order in orders]
     score=lambda pairs:(len({j for _,j in pairs}),sum(i in local for i,j in pairs))
     best=max(matches,key=score,default=[])
@@ -303,7 +289,25 @@ def _note_pixel_anchors(optical,available,candidate,hint,*,exact_complete=False)
         top=min(w['bbox'][1] for w in anchored)-height*.5
         bottom=max(hint[3],max(w['bbox'][3] for w in anchored)+height*.5)
         band=[i for i in pool if top<=(optical[i]['bbox'][1]+optical[i]['bbox'][3])/2<=bottom]
-        matches.extend(_geometry_anchors(optical,order,candidate) for order in gutter_orders(band))
+        band_orders=list(gutter_orders(band))
+        exact_orders.extend(band_orders)
+        matches.extend(_geometry_anchors(optical,order,candidate) for order in band_orders)
+    if exact_complete:
+        # A complete literal occurrence inside the supplied territory may span
+        # a proved persistent gutter. Enumerate identities rather than letting
+        # one partial row window win merely because it is compact.
+        key=lambda text:re.sub(r'[^\w]','',vision_reading.normalized(text).casefold())
+        proofs={}
+        if len(candidate)<5:return []
+        for order in exact_orders:
+            sequence=[i for i in order if key(optical[i]['text'])]
+            keys=[key(optical[i]['text'])for i in sequence]
+            for at in range(len(keys)-len(candidate)+1):
+                if keys[at:at+len(candidate)]==candidate:
+                    indices=tuple(sequence[at:at+len(candidate)])
+                    if len(set(indices)&set(local))>=min(3,len(candidate)):
+                        proofs[indices]=list(zip(indices,range(len(candidate))))
+        return next(iter(proofs.values())) if len(proofs)==1 else []
     return max(matches,key=score,default=[])
 
 
@@ -2765,6 +2769,14 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             if len({j for i,j in extended})>len({j for i,j in matched}):matched=extended
             punctuated=_caption_punctuation_anchors(optical,nearby,block['text'])
             if len({j for i,j in punctuated})>len({j for i,j in matched}):matched=punctuated
+            # A complete nearby physical occurrence must survive a shorter
+            # local match. Uniqueness and complete coverage are required; this
+            # cannot promote a partial caption or borrow reserved BODY words.
+            from .source_geometry import unique_anchors
+            nearby_proof=unique_anchors(optical,nearby,candidate)
+            if {j for i,j in nearby_proof}=={j for j,key in enumerate(candidate) if key}:
+                matched=nearby_proof
+                seed_caption_complete=True
             # A displaced caption hint can still be proved inside the seed of
             # its adjacent source object. Admit only a complete unique original
             # text instance, with all independently owned BODY ink excluded.

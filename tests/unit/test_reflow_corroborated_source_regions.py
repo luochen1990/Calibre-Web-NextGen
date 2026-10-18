@@ -181,3 +181,16 @@ def test_partial_row_rounding_does_not_steal_the_following_owned_row():
     regions={'row':[[385,94,473,108],[20,103,513,115]]}
     actual=vp._owned_block_words(block,{'blocks':[block]},optical,SimpleNamespace(rect=pymupdf.Rect(0,0,500,720)),regions,ordered=True)
     assert [w['text']for w in actual]==block['text'].split()
+
+
+def test_complete_nearby_caption_rows_outrank_a_partial_local_hint(monkeypatch):
+    monkeypatch.setattr(vp,'_reserve_object_instances',lambda *args:None)
+    rows=['The clear sample stays beside the quiet window while careful workers record measurements.',
+          'Another careful worker records eight ordinary printed details.']
+    optical=[word(t,40+i*35,200+row*14)for row,text in enumerate(rows)
+             for i,t in enumerate(text.split())]
+    cap=dict(id='cap',text=' '.join(rows),role='caption',bbox=[60,270,950,285],marker='',
+             low_confidence=[],continues_previous=False,continues_next=False)
+    regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    vp.bind_geometry({'blocks':[cap]},optical,display,regions,{})
+    assert all(any(vp.owned_words([w],r)for r in regions.get('cap',[]))for w in optical)

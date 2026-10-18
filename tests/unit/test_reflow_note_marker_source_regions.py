@@ -176,3 +176,20 @@ def test_complete_note_placement_does_not_choose_between_repeated_occurrences():
     optical=[dict(text=t,bbox=[40+32*i,y,68+32*i,y+8])for y in (500,525)for i,t in enumerate(text.split())]
     assert vp._note_pixel_anchors(optical,range(len(optical)),text.casefold().replace('.','').split(),
         [20,480,400,550],exact_complete=True)==[]
+
+
+def test_complete_nearby_note_keeps_the_opening_above_a_tight_tail_hint():
+    rows=['Another printed source note begins beside the window.',
+          'Its continuation retains several ordinary printed details.',
+          'The careful worker records the remaining samples.']
+    optical=[dict(text='7',bbox=[24,500,29,507])]
+    for row,text in enumerate(rows):
+        optical += [dict(text=t,bbox=[40+i*35,500+row*14,71+i*35,508+row*14])
+                    for i,t in enumerate(text.split())]
+    block=dict(note('nearby','7'),text=' '.join(rows),bbox=[40,715,900,765])
+    regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    proof=vp._note_pixel_anchors(optical,range(len(optical)),
+        block['text'].casefold().replace('.','').split(),vp.block_rect(block,display),exact_complete=True)
+    assert {j for i,j in proof}==set(range(len(block['text'].split())))
+    vp.bind_geometry({'blocks':[block]},optical,display,regions,{})
+    assert all(regions.get('_instances',{}).get(vp._source_instance(w))=='nearby' for w in optical)
