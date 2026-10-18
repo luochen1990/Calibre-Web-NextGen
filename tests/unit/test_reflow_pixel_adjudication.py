@@ -392,3 +392,44 @@ def test_unplaced_multiword_edit_has_bounded_word_notes_not_repeated_paragraphs(
     assert len(notes)>=5
     assert all('small wooden sample and open' not in aside for aside in notes)
     assert any('source-word correspondence is unresolved' in aside for aside in notes)
+
+
+@pytest.mark.parametrize('kind',['word','label','label-punctuation','glyphs'])
+def test_native_emission_order_does_not_duplicate_physical_words(tmp_path,monkeypatch,kind):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    text='Please carry the clear sample beside our quiet window today.'
+    physical=[dict(w,bbox=[w['bbox'][0]+20,w['bbox'][1],w['bbox'][2]+20,w['bbox'][3]])for w in words(text)]
+    if kind=='word':native=physical[:5]+physical[6:]+physical[5:6]
+    elif kind.startswith('label'):
+        native=physical+[dict(text='2}' if kind=='label-punctuation' else '2',bbox=[2,20,10,32])]
+    else:
+        native=physical[:3]+[dict(text='cl',bbox=[80,20,86,32])]+physical[4:]+[
+            dict(text='ea',bbox=[86,20,93,32]),dict(text='r',bbox=[93,20,98,32])]
+    monkeypatch.setattr(pa,'read_crop',lambda *args:physical)
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open() as doc:
+        doc.new_page(width=600,height=400)
+        page,report=vp.compile_page({'blocks':[block(text,role='footnote',marker='2',bbox=(0,0,1000,1000))]},
+            native,SourceDisplay(doc,0),0,Package(),{},pixel_words=physical,note_context={'cache':tmp_path/'cache'})
+    assert report['blocks'][0]['published_tokens']==text.split()
+    assert page['asides'][0].count('<p>2 ')==1
+
+
+def test_reader_formatting_metadata_preserves_the_uncertain_word_index():
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    original=words('Please read the clear sample today.')
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open() as doc:
+        doc.new_page(width=400,height=400)
+        _,report=vp.compile_page({'blocks':[block('Please <i> read </i> the clear sample today.',low=[2],bbox=(0,0,1000,1000))]},
+            [],SourceDisplay(doc,0),0,Package(),{},pixel_words=original)
+    assert report['blocks'][0]['published_tokens']==[w['text']for w in original]
+    assert report['blocks'][0]['marked']==[1]

@@ -1887,7 +1887,10 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             # Reader emphasis is metadata, never a printed angle-bracket word.
             # Accept only the closed formatting vocabulary, retaining all inner
             # words and the original response in the audit record.
-            block=dict(block,text=re.sub(r'</?(?:i|b|em|strong)>','',block['text']))
+            cleaned_tokens=[re.sub(r'</?(?:i|b|em|strong)>','',token) for token in original_model_tokens]
+            positions={old:new for new,old in enumerate(i for i,token in enumerate(cleaned_tokens) if token)}
+            block=dict(block,text=re.sub(r'</?(?:i|b|em|strong)>','',block['text']),
+                low_confidence=[positions[i] for i in block['low_confidence'] if i in positions])
             bid=block['id'];role=block['role'];box=block_rect(block,display)
             # A rejected note's validation stub owns no live words or note link.
             # Its admitted original unit is inserted as source context below.
@@ -1925,9 +1928,12 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     source_bound_art=bool((regions or {}).get(bid)) and
                         (role=='figure' or vision_pixels.table_rules(display,box)),
                     continues_previous=False,continues_next=False));continue
-            local=owned(words)
+            # PDF emission order can place short glyph runs or italic words
+            # after later lines. Conservation compares physical occurrences in
+            # each owned territory, never that arbitrary serialization order.
+            local=_owned_block_words(block,answer,words,display,regions,body_owners,ordered=True)
             # A footnote label is preserved as a label, outside its lexical reading.
-            if role=='footnote' and local and vision_reading.normalized(local[0]['text']).strip('.')==vision_reading.normalized(block['marker']).strip('.'):
+            if role=='footnote' and local and vision_reading.normalized(local[0]['text']).strip('.,:;()[]{}')==vision_reading.normalized(block['marker']).strip('.,:;()[]{}'):
                 local=local[1:]
             original=' '.join(w['text'] for w in local)
             original_quality=text_quality.inspect_disclosure('\n'.join(
@@ -1946,7 +1952,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             evidence_boxes=result['boxes'];wraps=set();optical_local=[];independent_optical_fallback=False
             if pixel_words is not None:
                 optical_local=_owned_block_words(block,answer,pixel_words,display,regions,body_owners,ordered=True)
-                if role=='footnote' and optical_local and vision_reading.normalized(optical_local[0]['text']).strip('.')==vision_reading.normalized(block['marker']).strip('.'):
+                if role=='footnote' and optical_local and vision_reading.normalized(optical_local[0]['text']).strip('.,:;()[]{}')==vision_reading.normalized(block['marker']).strip('.,:;()[]{}'):
                     optical_local=optical_local[1:]
                 # Check optical-only dropped lines even when a sparse original layer
                 # agrees perfectly with the model's incomplete paragraph.
