@@ -3857,6 +3857,63 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
             record['marked']=sorted(set(record.get('marked',[]))|set(conflicts))
 
 
+def _audit_native_note_pixels(doc,book,page,cache,package,images):
+    """Audit native note text separately from its label and generated controls."""
+    from . import pixel_adjudication
+    records=[];display=SourceDisplay(doc,page['pno']);additions=[]
+    physical=[dict(text=w[4],bbox=list(display.reading_rect(w[:4])))
+              for w in doc[page['pno']].get_text('words')]
+    controller=unit_recovery.current()
+    for ordinal,note in enumerate(n for n in book.notes if n.pno==page['pno']):
+        ident='native-note-'+str(ordinal)
+        if controller and ident in controller.blocked(page['pno']):continue
+        if note.uses_source_image and not any(run[0]=='t' and run[1].strip() for run in note.glyph_runs):continue
+        with unit_recovery.guard(page['pno'],'native_note_pixel_adjudication',block=ident):
+            if note.uses_source_image:
+                raise ValueError('Mixed native glyph and live-text note requires original source disclosure')
+            literal=escape(note.text,quote=False)
+            if not literal.strip():continue
+            target='fn_p%04d_%s'%(page['pno'],note.num) if note.num is not None else None
+            candidates=[]
+            for index,fragment in enumerate(page['asides']):
+                if target is not None and 'id="'+target+'"' not in fragment:continue
+                tokens=_seam_text(fragment).split()
+                ranges=pixel_adjudication.fragment_word_ranges(fragment,tokens)
+                if ranges is None:continue
+                for start in pixel_adjudication._matches(tokens,note.text.split()):
+                    if note.num is not None and start==0:continue
+                    a,z=ranges[start][0],ranges[start+len(note.text.split())-1][1]
+                    if fragment[a:z]==literal:candidates.append((index,a,z))
+            if len(candidates)!=1:
+                raise ValueError('Native note has no unique emitted lexical fragment')
+            source_box=extract.pymupdf.Rect(note.bbox)
+            words=(_pixel_line_order(owned_words(physical,display.reading_rect(source_box)))
+                   if not source_box.is_empty else [])
+            if note.num is not None and words and vision_reading.normalized(words[0]['text']).strip('.,:;()[]{}')==str(note.num):words=words[1:]
+            territories=[vision_reading.union([w['bbox'] for w in row])for row in _pixel_lines(words)]
+            if not territories:
+                # Continued notes can originate in a moved native paragraph.
+                # Its complete unique source text can prove the footprint;
+                # a missing note rectangle cannot authorize a guessed crop.
+                bound=_native_seam_blocks(doc,book,page['pno'],dict(body=['<p>'+literal+'</p>']))[0]
+                territories=bound.get('source_regions',[])
+            if not territories:raise ValueError('Native note has no original word territory')
+            fragment='<p><span data-source-page="%d">%s</span></p>'%(page['pno'],literal)
+            proxy=dict(pno=page['pno'],body=[fragment],asides=[])
+            record=dict(id=ident,role='body',native_source=True,source_regions=territories)
+            _native_published_provenance(proxy,[record])
+            _audit_native_pixels(doc,proxy,[record],cache,package,images)
+            inner=re.fullmatch(r'<p>(.*)</p>',proxy['body'][0],re.S)
+            if inner is None:raise ValueError('Native note audit changed its lexical container')
+            index,a,z=candidates[0]
+            original=page['asides'][index]
+            page['asides'][index]=original[:a]+inner[1]+original[z:]
+            record.update(role='footnote',lane='asides',source_aside_index=index)
+            records.append(record);additions.extend(proxy['asides'])
+    page['asides'].extend(additions)
+    return records
+
+
 def _native_published_provenance(page,records):
     """Publish only the native fragment's already proved source identity.
 
@@ -5042,7 +5099,8 @@ def _compiled_text_quality(pages,records,numbers,stage='compiled_publication_tex
                         controller.check_units(owned)
                         for unit in owned:
                             if unit.get('block') is not None and unit['block'] not in {
-                                    b['id'] for b in records[unit['page']].get('blocks',[])}:
+                                    b['id'] for b in (records[unit['page']].get('blocks',[])+
+                                                     records[unit['page']].get('native_note_adjudication',[]))}:
                                 raise unit_recovery.SourceIntegrityError('Publication text has an unregistered source unit')
                     key=tuple(sorted((u['page'],u.get('block') or '') for u in owned))
                     if groups and groups[-1][0]==key:
@@ -5066,7 +5124,7 @@ def _compiled_text_quality(pages,records,numbers,stage='compiled_publication_tex
         if stage=='compiled_publication_text_quality':
             whole=set()
             for n in {unit['page'] for unit in unique}:
-                ids={b['id'] for b in records[n].get('blocks',[])
+                ids={b['id'] for b in (records[n].get('blocks',[])+records[n].get('native_note_adjudication',[]))
                      if b['role'] not in ('running_head','folio') and not b.get('degraded_source_context')}
                 bad={unit.get('block') for unit in unique if unit['page']==n}
                 if None in bad or ids and ids<=bad:whole.add(n)
@@ -5359,8 +5417,11 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                     _native_published_provenance(native_pages[n],native_report['blocks'])
                     _audit_native_pixels(doc,native_pages[n],native_report['blocks'],
                         reader.cache.parent/'pixel-guard-cache',package,images)
-                    native_report['marks']=sum(len(b.get('marked',[])) for b in native_report['blocks'])
-                    native_report['words']=sum(len(b.get('published_tokens',[])) for b in native_report['blocks'])
+                    native_report['native_note_adjudication']=_audit_native_note_pixels(doc,book,native_pages[n],
+                        reader.cache.parent/'pixel-guard-cache',package,images)
+                    audited=native_report['blocks']+native_report['native_note_adjudication']
+                    native_report['marks']=sum(len(b.get('marked',[])) for b in audited)
+                    native_report['words']=sum(len(b.get('published_tokens',[])) for b in audited)
                     if controller:
                         native_pages[n],native_report=build_epub.degrade_native_units(native_pages[n],native_report,
                             controller.blocked(n),SourceDisplay(doc,n),package,images)

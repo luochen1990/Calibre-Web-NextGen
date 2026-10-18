@@ -586,3 +586,89 @@ def test_local_two_pixel_views_cannot_certify_accent_absence():
     result=refine_fallback([w['text']for w in source],witness,{'read','cafe'},source=source,corroboration=witness)
     assert result['tokens'][2]=='café'
     assert result['word_notes'][2]['status']=='UNRESOLVED'
+
+
+def test_native_footnote_receives_its_own_independent_pixel_audit(tmp_path,monkeypatch):
+    import pymupdf,zipfile
+    from types import SimpleNamespace
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=500,height=500)
+        page.insert_text((30,70),'The clear sample remains readable beside the quiet window today.',fontsize=11)
+        page.insert_text((355,65),'1',fontsize=7)
+        page.insert_text((30,440),'1 The clear sample remalns readable beside the quiet window today.',fontsize=8)
+        original=[dict(text=w[4],bbox=list(w[:4]),confidence=88)for w in page.get_text('words')]
+        witness=[dict(w,text='remains'if w['text']=='remalns'else w['text'])for w in original]
+        monkeypatch.setattr(pa,'read_crop',lambda display,regions,cache:[w for w in witness if any(vp.owned_words([w],b)for b in regions)])
+        output=tmp_path/'native-note.epub'
+        result=vp.convert(doc,str(output),SimpleNamespace(cache=tmp_path/'cache'/'readings',key=None))
+    assert result['pages'][0]['source']=='native'
+    with zipfile.ZipFile(output)as z:
+        html=''.join(z.read(n).decode()for n in z.namelist()if n.endswith('.xhtml'))
+    assert 'class="footnote"' in html
+    assert 'Unresolved source reading: remalns.' in html
+    assert any(d.get('alternative')==['remains']for b in result['pages'][0].get('native_note_adjudication',[])for d in b.get('adjudication',[]))
+
+
+def test_native_note_quality_failure_keeps_its_registered_note_owner(monkeypatch):
+    from types import SimpleNamespace
+    from cps.services.reflow import vision_pipeline as vp,unit_recovery
+    monkeypatch.setattr(unit_recovery,'current',lambda:SimpleNamespace(check_units=lambda units:None,fragment_owners=lambda fragment:[dict(page=0,block='native-0')]))
+    good='The clear sample remains readable beside the quiet window today. '*20
+    bad=' '.join('qxv'+str(i)+'zrt'for i in range(50))
+    page=dict(pno=0,body=['<p><span data-source-page="0" data-source-block="native-0">'+good+'</span></p>'],asides=['<aside class="footnote"><p><span data-source-page="0" data-source-block="native-note-0">'+bad+'</span></p></aside>'])
+    records={0:dict(source='native',blocks=[dict(id='native-0',role='body')],native_note_adjudication=[dict(id='native-note-0',role='footnote')])}
+    with pytest.raises(unit_recovery.UnitFailure)as error:vp._compiled_text_quality([page],records,[0])
+    assert error.value.units==[dict(page=0,block='native-note-0')]
+
+
+@pytest.mark.parametrize('empty_box',[False,True])
+def test_native_continued_note_binds_unique_text_without_changing_quotes(tmp_path,monkeypatch,empty_box):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,assemble,build_epub
+    text='The reader\'s clear sample says "readable" beside the quiet window.'
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=500,height=500);page.insert_text((30,70),text,fontsize=10)
+        witness=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        box=(0,0,0,0)if empty_box else vp.vision_reading.union([w['bbox']for w in witness])
+        note=assemble.Note(num=None,text=text,pno=0,bbox=box)
+        book=assemble.Book(notes=[note],pages={0:[]})
+        fragment=build_epub._aside_html(note,{},set())
+        page_data=dict(pno=0,body=[],asides=[fragment])
+        monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+        result=vp._audit_native_note_pixels(doc,book,page_data,tmp_path/'cache',None,{})
+    assert len(result)==1 and result[0]['published_tokens']==text.split()
+    assert vp._seam_text(page_data['asides'][0])==text
+    assert 'data-source-block="native-note-0"'in page_data['asides'][0]
+
+
+def test_native_mixed_glyph_note_cannot_bypass_live_word_audit(tmp_path):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,assemble
+    with pymupdf.open()as doc:
+        doc.new_page(width=300,height=300)
+        note=assemble.Note(num=1,text='Ordinary sample A ends.',pno=0,bbox=(20,20,220,50),glyph_fallback=True,
+            glyph_runs=[('t','Ordinary sample '),('glyph','A'),('t',' ends.')])
+        with pytest.raises(ValueError,match='glyph'):
+            vp._audit_native_note_pixels(doc,assemble.Book(notes=[note]),dict(pno=0,body=[],asides=[]),tmp_path,None,{})
+
+
+def test_native_note_word_equal_to_label_binds_only_its_lexical_copy(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,assemble,build_epub
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=300,height=300);page.insert_text((30,70),'1 1',fontsize=10)
+        witness=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        note=assemble.Note(num=1,text='1',pno=0,bbox=vp.vision_reading.union([w['bbox']for w in witness]))
+        fragment=build_epub._scope_ids(build_epub._aside_html(note,{'1':'ref'}, {'1'}),0)
+        page_data=dict(pno=0,body=[],asides=[fragment])
+        monkeypatch.setattr(pa,'read_crop',lambda display,regions,cache:[w for w in witness if any(vp.owned_words([w],b)for b in regions)])
+        result=vp._audit_native_note_pixels(doc,assemble.Book(notes=[note]),page_data,tmp_path,None,{})
+    assert len(result)==1 and result[0]['published_tokens']==['1']
+    assert '<a class="note-return" href="#ref" aria-label="Return to note reference">1</a>'in page_data['asides'][0]
+    import json
+    from xml.etree import ElementTree
+    tree=ElementTree.fromstring('<root xmlns:epub="http://www.idpf.org/2007/ops">'+page_data['asides'][0]+'</root>')
+    spans=[node for node in tree.iter()if node.get('data-source-block')=='native-note-0']
+    assert len(spans)==1 and ''.join(spans[0].itertext())=='1'
+    assert json.loads(spans[0].get('data-source-regions'))==[witness[1]['bbox']]
