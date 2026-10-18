@@ -14,7 +14,7 @@ def _key(value):
                    if not unicodedata.combining(char) and (char.isalnum() or char == '_'))
 
 
-def unique_anchors(optical, available, candidate):
+def unique_anchors(optical, available, candidate, *, minimum=5):
     """Return a uniquely corroborated compact row window, or no proof.
 
     A distant common word cannot bridge unrelated entries. Adjacent printed
@@ -82,7 +82,7 @@ def unique_anchors(optical, available, candidate):
             anchors = [(sequence[i], j) for a, b, count in matcher.get_matching_blocks()
                        for i, j in zip(range(a, a + count), range(b, b + count)) if keys[j]]
             covered = {j for _, j in anchors}
-            if len(covered) < min(5, len(positions)) or len(covered) / len(positions) < .6:
+            if len(covered) < min(minimum, len(positions)) or len(covered) / len(positions) < .6:
                 continue
             # Complete short readings are required: common suffixes alone do
             # not locate an unfamiliar name or abbreviated heading.
@@ -152,7 +152,7 @@ def labelled_note_anchors(optical, available, candidate, marker):
                 center(box) - height * .75 <= center(optical[i]['bbox']) < bottom and
                 optical[i]['bbox'][0] >= box[2] and
                 optical[i]['bbox'][2] <= right + height * 4]
-        anchors = unique_anchors(optical, pool, candidate)
+        anchors = unique_anchors(optical, pool, candidate, minimum=4)
         if not anchors:
             continue
         first = min(anchors, key=lambda pair: pair[1])

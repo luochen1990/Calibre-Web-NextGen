@@ -1,0 +1,210 @@
+"""Synthetic transcription alternatives and occurrence geometry written here."""
+import pytest
+from cps.services.reflow.pixel_adjudication import adjudicate
+
+pytestmark=pytest.mark.unit
+
+
+def words(text, confidence=99):
+    return [dict(text=t,bbox=[i*20,20,i*20+18,32],confidence=confidence)
+            for i,t in enumerate(text.split())]
+
+
+def test_pixel_read_restores_short_model_deletion():
+    source=words('We carried the blue box to the open door today.')
+    result=adjudicate('We carried the open door today.'.split(),source,source)
+    assert result['tokens']==[w['text'] for w in source]
+    assert result['decisions'][0]['status']=='RESOLVED'
+    assert result['decisions'][0]['chosen']==['the','blue','box','to']
+    assert result['marked']
+
+
+def test_pixel_read_rejects_inserted_real_word():
+    source=words('The clear sample remains readable today.')
+    result=adjudicate('The clear sample never remains readable today.'.split(),source,source)
+    assert result['tokens']==[w['text'] for w in source]
+    assert result['decisions'][0]['chosen']==[]
+    assert result['decisions'][0]['status']=='RESOLVED'
+    assert result['marked']
+
+
+def test_corroborated_model_correction_stays_marked_word_by_word():
+    source=words('The clear sample remalns readable today.')
+    result=adjudicate('The clear sample remains readable today.'.split(),source,
+                      words('The clear sample remains readable today.'))
+    assert result['tokens'][3]=='remains'
+    assert result['marked']=={3}
+    assert result['word_notes'][3]['source']==['remalns']
+    assert result['word_notes'][3]['chosen']==['remains']
+    assert result['word_notes'][3]['status']=='RESOLVED'
+
+
+def test_repeat_without_unique_pixel_context_cannot_settle_edit():
+    source=words('The sample remalns readable today.')
+    witness=words('The sample remains readable today. The sample remains readable today.')
+    result=adjudicate('The sample remains readable today.'.split(),source,witness)
+    assert result['word_notes'][2]['status']=='UNRESOLVED'
+    assert result['marked']=={2}
+
+
+def test_roman_numeral_rewrite_requires_pixel_agreement():
+    source=words('Please read section III before opening the box.')
+    result=adjudicate('Please read section 111 before opening the box.'.split(),source,source)
+    assert result['tokens'][3]=='III'
+    assert result['word_notes'][3]['status']=='RESOLVED'
+
+
+def test_low_confidence_witness_cannot_certify_a_word():
+    source=words('The sample remalns readable today.')
+    result=adjudicate('The sample remains readable today.'.split(),source,
+                      words('The sample remains readable today.',30))
+    assert result['word_notes'][2]['status']=='UNRESOLVED'
+
+
+def test_real_conversion_restores_model_deleted_words(tmp_path,monkeypatch):
+    import shutil
+    if not shutil.which('tesseract'):pytest.skip('requires real OCR')
+    from tests.unit import test_round4_defects as ink
+    page=ink.InkPage()
+    printed='We carried the blue box to the open door today.'
+    page.text(printed,'body',model='We carried the open door today.')
+    _,report,docs=ink.convert_ink(tmp_path,monkeypatch,[page])
+    assert ink.body_texts(docs)==[printed]
+    decisions=report['pages'][0]['blocks'][0]['adjudication']
+    assert any(d['status']=='RESOLVED' and d['chosen']!=d['model'] for d in decisions)
+    disclosures=[n for root in docs.values() for n in root.iter()
+                 if n.get('class')=='footnote vision-disclosure']
+    assert len(disclosures)==4
+    assert any('Pixel-verified correction' in ''.join(n.itertext()) for n in disclosures)
+    assert all(printed not in ''.join(n.itertext()) for n in disclosures)
+
+
+def test_fallback_pixel_read_repairs_ocr_misspelling_and_omitted_pronoun():
+    from cps.services.reflow.pixel_adjudication import refine_fallback
+    before='After setding on the bench we read the clear sample today.'
+    printed='After settling on the bench we I read the clear sample today.'
+    lexicon=set(printed.lower().replace('.','').split())
+    result=refine_fallback(before.split(),words(printed),lexicon,source=words(printed))
+    assert result['tokens']==printed.split()
+    assert len([d for d in result['decisions'] if d['status']=='RESOLVED'])==2
+    assert result['marked']=={1,6}
+
+
+def test_dictionary_cannot_delete_a_real_word_or_rewrite_an_unfamiliar_name():
+    from cps.services.reflow.pixel_adjudication import refine_fallback
+    text='We saw Brindle under the clear bridge on Tuesday.'
+    result=refine_fallback(text.split(),words('We saw bundle under the bridge on Tuesday.'),{'bundle','the'},source=words(text))
+    assert result['tokens']==text.split()
+    assert all(d['status']=='UNRESOLVED' for d in result['decisions'])
+
+
+def test_multiple_note_references_keep_their_own_lexical_boundaries():
+    text='Clear <n:first> words <n:second> remain readable.'
+    result=adjudicate(text.split(),words('Clear words remain readable.'),
+                      words('Clear words remain readable.'))
+    assert result['tokens']==text.split()
+
+
+def test_agreeing_words_do_not_erase_unresolved_reader_uncertainty():
+    text='The clear sample remains readable today.'
+    result=adjudicate(text.split(),words(text),words(text,30),uncertain={3})
+    assert result['marked']=={3}
+    assert result['word_notes'][3]['status']=='UNRESOLVED'
+
+
+def test_unique_spelling_in_a_second_copy_cannot_settle_the_first_occurrence():
+    source=words('The sample remains clear today.')
+    witness=words('The sample rernains clear today. The sample becomes clear today.')
+    result=adjudicate('The sample becomes clear today.'.split(),source,witness)
+    assert result['word_notes'][2]['status']=='UNRESOLVED'
+    assert result['boxes'][2]==source[2]['bbox']
+
+
+def test_matching_layer_and_first_read_do_not_hide_a_pixel_conflict():
+    from cps.services.reflow.pixel_adjudication import audit_agreement
+    original=words('The sample remalns readable today.')
+    witness=words('The sample remains readable today.')
+    notes=audit_agreement([w['text'] for w in original],original,witness)
+    assert set(notes)=={2}
+    assert notes[2]['status']=='UNRESOLVED'
+    assert notes[2]['alternative']==['remains']
+
+
+def test_fragment_binding_keeps_repeated_words_in_their_own_positions():
+    from cps.services.reflow.pixel_adjudication import fragment_word_ranges
+    fragment='<p>Clear sample then another clear sample.</p>'
+    tokens='Clear sample then another clear sample.'.split()
+    ranges=fragment_word_ranges(fragment,tokens)
+    assert ranges is not None
+    assert fragment[ranges[4][0]:ranges[4][1]]=='clear'
+    assert ranges[4][0]>ranges[0][1]
+    assert fragment_word_ranges(fragment,['different']) is None
+
+
+def test_native_layer_pixel_conflict_is_visible_at_its_own_occurrence(tmp_path,monkeypatch):
+    import pymupdf
+    from types import SimpleNamespace
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from tests.unit import test_round4_defects as ink
+    text='The clear sample remalns readable beside the window today.'
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=400,height=500)
+        page.insert_text((30,70),text,fontsize=10)
+        original=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        witness=[dict(w,text='remains' if w['text']=='remalns'else w['text'],confidence=88)for w in original]
+        monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+        reader=SimpleNamespace(cache=tmp_path/'cache'/'readings',key=None)
+        output=tmp_path/'native.epub'
+        result=vp.convert(doc,str(output),reader)
+    record=result['pages'][0]
+    assert record['source']=='native'
+    decisions=[d for b in record['blocks']for d in b.get('adjudication',[])]
+    assert any(d.get('alternative')==['remains']for d in decisions)
+    import zipfile
+    with zipfile.ZipFile(output)as archive:
+        html=''.join(archive.read(n).decode()for n in archive.namelist()if n.endswith('.xhtml'))
+    assert 'Unresolved source reading: remalns.' in html
+    assert 'class="source-disclosure-ref"' in html
+    assert 'images/v4-native-d-' in html
+
+
+def test_unique_high_confidence_pixel_agreement_settles_unchanged_uncertain_word():
+    text='The clear sample remains readable today.'
+    result=adjudicate(text.split(),words(text),words(text),uncertain={3})
+    assert result['tokens']==text.split()
+    assert result['marked']==set()
+    assert result['verified_unchanged']==[3]
+
+
+def test_native_ocr_misspelling_is_corrected_only_with_contextual_pixel_support(tmp_path,monkeypatch):
+    import pymupdf,zipfile
+    from types import SimpleNamespace
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    text='The clear sample remalns readable beside the window today.'
+    with pymupdf.open() as doc:
+        page=doc.new_page(width=400,height=500)
+        page.insert_text((30,70),text,fontsize=10)
+        witness=[dict(text='remains' if w[4]=='remalns' else w[4],bbox=list(w[:4]),confidence=99)
+                 for w in page.get_text('words')]
+        monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+        output=tmp_path/'native.epub'
+        report=vp.convert(doc,str(output),SimpleNamespace(cache=tmp_path/'cache/readings',key=None))
+    with zipfile.ZipFile(output) as archive:
+        html=''.join(archive.read(n).decode()for n in archive.namelist()if n.endswith('.xhtml'))
+    assert 'sample remains' in html
+    assert 'Pixel-verified correction: remalns → remains.' in html
+    assert any(d['status']=='RESOLVED'for b in report['pages'][0]['blocks']for d in b.get('adjudication',[]))
+
+
+def test_fallback_cannot_borrow_the_clear_word_from_another_occurrence():
+    from cps.services.reflow.pixel_adjudication import refine_fallback
+    text='The sample remalns clear today.'
+    result=refine_fallback(text.split(),words('The sarnple rernains clear today. The sample remains clear today.'),
+        {'the','sample','remains','clear','today'},source=words(text))
+    assert result['tokens']==text.split()
+    assert all(d['status']=='UNRESOLVED'for d in result['decisions'])
+
+
+def test_adjacent_disjoint_row_cannot_certify_the_source_occurrence():
+    from cps.services.reflow.pixel_adjudication import _same_occurrence
+    assert not _same_occurrence(dict(bbox=[0,0,30,14]),dict(bbox=[0,16,30,22]))

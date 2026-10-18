@@ -55,3 +55,15 @@ def test_reserved_following_label_still_bounds_the_original_note():
     assert proof is not None
     assert proof['marker_bbox'] == [40, 520, 45, 527]
     assert {optical[i]['bbox'][1] for i, _ in proof['anchors']} == {520}
+
+
+def test_printed_label_and_four_words_locate_a_damaged_opening_without_certifying_it():
+    answer=dict(blocks=[dict(note('short','12'),text='Brindle brought the clear sample.')])
+    optical=[dict(text='12',bbox=[40,540,49,547])]
+    optical += [dict(text=t,bbox=[60+i*40,540,96+i*40,548])
+                for i,t in enumerate('Brindlc brought the clear sample.'.split())]
+    regions={}
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    bound,_=vp.bind_geometry(answer,optical,display,regions,{})
+    assert bound['blocks'][0]['text']=='Brindle brought the clear sample.'
+    assert regions['short']==[[40,540,256,548]]

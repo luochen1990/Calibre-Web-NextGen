@@ -2024,6 +2024,62 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 result['marked']=set(range(len(result['tokens'])))
                 result['fallback']=True
                 result['guard'].append({'kind':'omitted_pixel_line_recovery'})
+            # Decide lexical disagreements against an independently recognized
+            # upright crop before rendering any live text or disclosure note.
+            adjudication=None
+            if note_context and note_context.get('cache') and not local_ocr:
+                from . import pixel_adjudication
+                with unit_recovery.guard(pno,'pixel_adjudication',block=bid):
+                    witness=pixel_adjudication.read_crop(display,territories,
+                        Path(note_context['cache'])/'adjudication')
+                    from difflib import SequenceMatcher
+                    baseline=local or optical_local
+                    if local and optical_local:
+                        overlap=sum(n for _,_,n in SequenceMatcher(None,
+                            [vision_reading.normalized(w['text']) for w in local],
+                            [vision_reading.normalized(w['text']) for w in optical_local],autojunk=False).get_matching_blocks())
+                        if overlap/max(1,len(optical_local))<.6:baseline=optical_local
+                    if baseline and witness:
+                        adjudication=pixel_adjudication.adjudicate(result['tokens'],
+                            baseline,witness,uncertain=result['marked'])
+                        conflicts=pixel_adjudication.audit_agreement(adjudication['tokens'],baseline,witness)
+                        for i,decision in conflicts.items():
+                            adjudication['marked'].add(i)
+                            adjudication['word_notes'].setdefault(i,decision)
+                        if result['fallback'] or bid in forced_uncertain:
+                            refined=pixel_adjudication.refine_fallback(adjudication['tokens'],witness,
+                                text_quality.english_lexicon(),source=baseline)
+                            if refined is not None:
+                                from difflib import SequenceMatcher
+                                for kind,a,z,b,y in SequenceMatcher(None,adjudication['tokens'],refined['tokens'],autojunk=False).get_opcodes():
+                                    affected=([j for i,j in zip(range(a,z),range(b,y)) if i in adjudication['marked']]
+                                        if kind=='equal' else list(range(b,y)) if any(i in adjudication['marked'] for i in range(a,z)) else [])
+                                    for i in affected:
+                                        refined['marked'].add(i)
+                                        prior=adjudication['word_notes'].get(a+i-b) if kind=='equal' else None
+                                        refined['word_notes'].setdefault(i,prior or dict(source=[refined['tokens'][i]],
+                                            chosen=[refined['tokens'][i]],status='UNRESOLVED',method='reader_uncertainty'))
+                                refined['decisions']=adjudication['decisions']+refined['decisions']
+                                refined['verified_unchanged']=adjudication.get('verified_unchanged',[])
+                                adjudication=refined
+                        result.update(tokens=adjudication['tokens'],
+                            marked=adjudication['marked'],boxes=adjudication['boxes'])
+                        evidence_boxes=adjudication['boxes']
+                        result['adjudication']=adjudication['decisions']
+                        result['word_notes']=adjudication['word_notes']
+                        wraps=_printed_wraps(result['tokens'],optical_local)
+            if local_ocr and note_context and note_context.get('cache'):
+                from . import pixel_adjudication
+                with unit_recovery.guard(pno,'local_pixel_adjudication',block=bid):
+                    witness=pixel_adjudication.read_crop(display,territories,
+                        Path(note_context['cache'])/'adjudication')
+                    conflicts=pixel_adjudication.audit_agreement(result['tokens'],
+                        source_unit['words'] if local_ocr_units is not None else optical_local,witness)
+                    result['adjudication']=list(conflicts.values())
+                    # Two settings of one local recognizer do not establish
+                    # independent certainty. Preserve all local OCR uncertainty
+                    # and its exact recognized source occurrence inventory.
+                    result['word_notes']=conflicts
             compiled_reading=' '.join(result['tokens'])
             lost_scripts=(text_quality.reading_script_mismatches(block['text'],compiled_reading)
                           if result['fallback'] else text_quality.script_mismatches(block['text'],compiled_reading))
@@ -2048,7 +2104,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 raise _DisclosureQualityRejection('Unreliable chosen reading requires original source disclosure')
             groups=[]
             for index in sorted(i for i in result['marked'] if not result['tokens'][i].startswith('<n:')):
-                if groups and index==groups[-1][-1]+1:groups[-1].append(index)
+                if not adjudication and groups and index==groups[-1][-1]+1:groups[-1].append(index)
                 else:groups.append([index])
             endings={g[-1]:g for g in groups}
             # Reject each chosen span before emitting markers or source images.
@@ -2187,8 +2243,22 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         suppression=source_quote_suppressions.setdefault(bid,dict(block=bid,quality=original_quality,disclosure_count=0))
                         suppression['disclosure_count']+=1
                     else:
-                        source_quote='Source layer: '+escape(original)+'.'
-                    extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" epub:type="footnote"><p>{label}: {escape(' '.join(result['tokens'][i] for i in endings[index]))}. {source_quote}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
+                        source_quote='Source reading: '+escape(' '.join(owned_word['text'] for owned_word in local if any(owned_word['bbox']==evidence_boxes.get(i) for i in endings[index])))+'.'
+                    decision=(result.get('word_notes') or {}).get(index)
+                    if decision:
+                        label=('Pixel-verified correction' if decision['status']=='RESOLVED'
+                               else 'Unresolved source reading')
+                        before=(decision.get('model',[]) if decision['source']==decision['chosen']
+                                and decision.get('model',[])!=decision['chosen'] else decision['source'])
+                        source_quote=(escape(' '.join(before)) or '[no word]')+' → '+(escape(' '.join(decision['chosen'])) or '[no word]')+'.'
+                    if local_ocr:
+                        explanation='This local OCR transcription has not been independently verified. Consult the original printed reading in the image.'
+                    elif decision:
+                        if decision['source']==decision['chosen'] and decision.get('model',decision['source'])==decision['chosen']:
+                            explanation=escape(' '.join(decision['chosen']))+'. Consult the original printed word in the image.'
+                        else:explanation=source_quote
+                    else:explanation=escape(' '.join(result['tokens'][i] for i in endings[index]))+'. '+source_quote
+                    extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
                     piece+=f'<a id="{ref}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'
                 if local_ocr and index in result['marked']:
                     piece='<span class="uncertain" title="Unverified local OCR reading">'+piece+'</span>'
@@ -2263,6 +2333,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     for i,j in punctuation_proof],
                 published_tokens=result['tokens'],
                 marked=sorted(result['marked']),fallback=result['fallback'],guard=result['guard'],
+                adjudication=result.get('adjudication',[]),verified_unchanged=adjudication.get('verified_unchanged',[]) if adjudication else [],original_model_tokens=block['text'].split(),
                 layer_words=[w['text'] for w in local],dropped_layer_words=result['dropped_layer_words'],
                 continues_previous=block['continues_previous'],continues_next=block['continues_next']))
             if role=='caption' and punctuation_proof and printed_head is not None and printed_tail is not None:
@@ -2382,14 +2453,19 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
         hint=block_rect(note,display)
         candidate=[lex(w) for w in re.sub(r'<n:[^>]+>',' ',note['text']).split()]
         available=[i for i in range(len(optical)) if i not in reserved]
-        anchors=_note_pixel_anchors(optical,available,candidate,hint)
+        from .source_geometry import labelled_note_anchors
+        labelled=labelled_note_anchors(optical,available,candidate,note['marker'])
+        anchors=labelled['anchors'] if labelled else _note_pixel_anchors(optical,available,candidate,hint)
+        if labelled:note_openings[note['id']]=labelled['marker_bbox']
         local=[(i,j) for i,j in anchors if owned_words([optical[i]],hint)]
-        if (len({j for i,j in anchors})<min(5,len(candidate)) or
+        if (len({j for i,j in anchors})+bool(labelled)<min(5,len(candidate)) or
                 len({j for i,j in anchors})/max(1,len(candidate))<.6 or
-                len({j for i,j in local})<min(5,len(candidate))):continue
+                not labelled and len({j for i,j in local})<min(5,len(candidate))):continue
         indices={i for i,j in anchors}
         opening=min(anchors,key=lambda a:a[1])
-        if note['marker'] and opening[1]<=1:
+        if labelled:
+            indices.update(i for i in available if optical[i]['bbox']==labelled['marker_bbox'])
+        if not labelled and note['marker'] and opening[1]<=1:
             first=optical[opening[0]]['bbox']
             height=max(1,first[3]-first[1]);marker=lex(note['marker'])
             labels=[i for i in available if i not in indices and
@@ -2468,10 +2544,14 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                     first=min(j for i,j in suffix)
                     matched=sorted(set([(i,j) for i,j in matched if j<first]+suffix),
                         key=lambda pair:(pair[1],optical[pair[0]]['bbox'][0]))
+        labelled=None
         if block['role']=='footnote' and valid:
-            matched=_note_pixel_anchors(optical,available,candidate,block_rect(block,display))
+            from .source_geometry import labelled_note_anchors
+            labelled=labelled_note_anchors(optical,available,candidate,block['marker'])
+            matched=labelled['anchors'] if labelled else _note_pixel_anchors(optical,available,candidate,block_rect(block,display))
+            if labelled:note_openings[block['id']]=labelled['marker_bbox']
         from .source_geometry import unique_anchors
-        corroborated=unique_anchors(optical,available,candidate)
+        corroborated=unique_anchors(optical,available,candidate) if not labelled else []
         if corroborated and len({j for _,j in corroborated})>=len({j for _,j in matched}):
             matched=corroborated
         borrowed=(block['role']=='body' and block['id'] not in owners and any(
@@ -2516,7 +2596,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                 block['low_confidence']=sorted(set(block['low_confidence']+[positions[position]]))
                 repairs.append(dict(block=block['id'],method='unplaced_numeric_boundary',
                     candidate_position=position))
-        if len(anchors)<min(5,len(candidate)) or (len(anchors)/max(1,len(candidate))<.6 and not (valid and borrowed)):
+        if len(anchors)+bool(labelled)<min(5,len(candidate)) or (len(anchors)/max(1,len(candidate))<.6 and not (valid and borrowed)):
             if valid:continue
             reject('Model block rectangle cannot be bound to printed pixels: '+block['id'])
         if block['role']=='body':
@@ -3611,6 +3691,59 @@ def _native_seam_blocks(doc,book,pno,page):
                 printed_tail_row=rows.get(id(tail.get('_source_word',tail))) if tail is not None else None)
         result.append(record)
     return result
+
+
+def _audit_native_pixels(doc,page,records,cache,package,images):
+    """Inspect native live words against their own independent pixel crop."""
+    from . import pixel_adjudication
+    display=SourceDisplay(doc,page['pno'])
+    physical=[dict(text=w[4],bbox=list(display.reading_rect(w[:4])))
+              for w in doc[page['pno']].get_text('words')]
+    for position,record in enumerate(records):
+        if record.get('role') not in ('body','heading','caption'):continue
+        territories=record.get('source_regions')
+        if not territories:continue
+        with unit_recovery.guard(page['pno'],'native_pixel_adjudication',block=record['id']):
+            source=_pixel_line_order([w for w in physical if any(owned_words([w],box) for box in territories)])
+            tokens=_seam_text(page['body'][position]).split()
+            record['published_tokens']=tokens
+            if [w['text'] for w in source]!=tokens:
+                record['pixel_adjudication_status']='UNPLACED_SOURCE_WORDS'
+                continue
+            witness=pixel_adjudication.read_crop(display,territories,Path(cache)/'adjudication')
+            refined=pixel_adjudication.refine_fallback(tokens,witness,text_quality.english_lexicon(),source=source)
+            # Native fragments retain their structure and word inventory. Only
+            # one-for-one, independently corroborated spelling edits fit here.
+            repairs={i:d for i,d in (refined or {}).get('word_notes',{}).items()
+                     if d['status']=='RESOLVED' and len(d['source'])==len(d['chosen'])==1}
+            if refined is None or len(refined['tokens'])!=len(tokens) or any(
+                    len(d['source'])!=len(d['chosen']) for d in refined['decisions']):repairs={}
+            conflicts=pixel_adjudication.audit_agreement(tokens,source,witness)
+            conflicts.update(repairs)
+            record['adjudication']=list(conflicts.values())
+            if not conflicts:continue
+            fragment=page['body'][position]
+            ranges=pixel_adjudication.fragment_word_ranges(fragment,tokens)
+            if ranges is None:
+                raise ValueError('Native pixel conflict has no unique published occurrence')
+            edits=[]
+            for index,decision in conflicts.items():
+                ident=f"v4-native-d-{page['pno']}-{record['id']}-{index}";origin='r-'+ident
+                src='images/'+ident+'.jpg';box=source[index]['bbox']
+                clip=extract.pymupdf.Rect(box);clip.x0-=2;clip.y0-=2;clip.x1+=2;clip.y1+=2;clip &= display.rect
+                package.disclosure_image(src,display,clip)
+                images[src]=dict(page=page['pno'],bbox=list(clip),kind='vision_disclosure')
+                label='Pixel-verified correction' if decision['status']=='RESOLVED' else 'Unresolved source reading'
+                chosen=decision['chosen'][0] if decision['status']=='RESOLVED' else tokens[index]
+                explanation=(escape(tokens[index])+' → '+escape(chosen)+'.' if chosen!=tokens[index]
+                             else escape(chosen)+'. Consult the original printed word in the image.')
+                page['asides'].append(f'<aside id="{ident}" class="footnote vision-disclosure" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{origin}">Return</a></aside>')
+                a,z=ranges[index]
+                edits.append((a,z,(escape(chosen) if chosen!=tokens[index] else fragment[a:z])+f'<a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'))
+                tokens[index]=chosen
+            for a,z,value in sorted(edits,reverse=True):fragment=fragment[:a]+value+fragment[z:]
+            page['body'][position]=fragment
+            record['marked']=sorted(set(record.get('marked',[]))|set(conflicts))
 
 
 def _native_published_provenance(page,records):
@@ -5113,6 +5246,10 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                 with unit_recovery.guard(n,'native_seam_binding'):
                     native_report['blocks']=_native_seam_blocks(doc,book,n,native_pages[n])
                     _native_published_provenance(native_pages[n],native_report['blocks'])
+                    _audit_native_pixels(doc,native_pages[n],native_report['blocks'],
+                        reader.cache.parent/'pixel-guard-cache',package,images)
+                    native_report['marks']=sum(len(b.get('marked',[])) for b in native_report['blocks'])
+                    native_report['words']=sum(len(b.get('published_tokens',[])) for b in native_report['blocks'])
                     if controller:
                         native_pages[n],native_report=build_epub.degrade_native_units(native_pages[n],native_report,
                             controller.blocked(n),SourceDisplay(doc,n),package,images)
@@ -5155,7 +5292,7 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
             raise _CompilationQualityFailure(compilation_failures)
         # All physical pages, including short notes and headings, are checked.
         # Failure uses the same source-owned reread/disclosure recovery as any
-        # other rejected reading; no lexical correction is ever performed.
+        # other rejected reading; this sweep itself never changes lexical text.
         if controller:
             controller.records=records
             for page in pages:controller.register_page(page,records[page['pno']])
