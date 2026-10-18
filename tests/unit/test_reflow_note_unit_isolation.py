@@ -179,3 +179,22 @@ def test_unplaced_note_identity_has_context_coverage_without_pixel_ownership(tmp
         assert 'note' not in repairs
     assert controller.source_answer(0) == answer
     assert next(b for b in bound['blocks'] if b['id'] == 'note')['text'] == ''
+
+
+def test_unbound_note_with_later_unit_does_not_reject_the_page(tmp_path, monkeypatch):
+    from tests.unit import test_round4_defects as ink
+    page = ink.InkPage()
+    healthy = 'The clear sample remains readable beside the window.'
+    page.text(healthy, 'body', y=60, model=BODY)
+    note = page.text('7 '+NOTE, 'note', role='footnote', y=290, size=8, marker='7',
+                     model='Unlocated purple fabric covers a distant wooden panel.')
+    note['bbox'] = [900, 900, 800, 950]
+    later = 'The second printed note retains its separate original words.'
+    page.text('8 '+later, 'later', role='footnote', y=340, size=7, marker='8', model=later)
+    _, report, docs = ink.convert_ink(tmp_path, monkeypatch, [page])
+    record = report['pages'][0]
+    assert record['source'] == 'vision'
+    assert {u['block'] for u in record['degraded_units']} == {'note'}
+    assert any('cannot be bound to printed pixels' in u['reason'] for u in record['degraded_units'])
+    assert ' '.join(ink.body_texts(docs)).count(healthy) == 1
+    assert not any(e.get('class') == 'source-original' for root in docs.values() for e in root.iter())

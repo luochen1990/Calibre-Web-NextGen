@@ -116,3 +116,34 @@ def test_public_original_punctuation_disagreement_is_visible_source_not_guessed_
     assert all(case['page'] == 0 for case in report['degraded_units'])
     assert any(case.get('stage') == 'source_word_coverage' and 'punctuation disagrees' in case.get('reason', '') for case in report['degraded_units'])
     assert c.source_returns(docs)
+
+
+def test_new_recovered_paragraph_failure_retains_its_geometry_and_healthy_text(tmp_path, monkeypatch):
+    page, paragraphs = c.fixture()
+    page.blocks.clear()
+    healthy = 'The final clear sample remains readable beside the window.'
+    page.text(healthy, 'healthy', y=240, size=8)
+    cover = vp.cover_missing_lines
+    recovered_ids = set()
+
+    def unproved_recovered_response(*args, **kwargs):
+        answer, recovered = cover(*args, **kwargs)
+        for block in answer['blocks']:
+            if block['id'] not in recovered:
+                continue
+            recovered_ids.add(block['id'])
+            block['role'] = 'body'
+            tokens = block['text'].split()
+            cut = len(paragraphs[0].split())
+            block['text'] += ' ' + ' '.join(tokens[cut-3:cut+3])
+        return answer, recovered
+
+    monkeypatch.setattr(vp, 'cover_missing_lines', unproved_recovered_response)
+    _, report, docs = h.convert_ink(tmp_path, monkeypatch, [page])
+    record = report['pages'][0]
+    assert record['source'] == 'vision'
+    assert recovered_ids and {u['block'] for u in record['degraded_units']} == recovered_ids
+    assert all('ambiguous response ownership' in u['reason'] for u in record['degraded_units'])
+    assert ' '.join(h.body_texts(docs)).count(healthy) == 1
+    assert c.source_returns(docs)
+    assert not any(e.get('class') == 'source-original' for root in docs.values() for e in root.iter())

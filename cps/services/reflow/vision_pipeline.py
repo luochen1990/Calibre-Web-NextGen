@@ -2331,6 +2331,11 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
     from difflib import SequenceMatcher
     import statistics
     answer=copy.deepcopy(answer);repairs=[]
+    def reject(message):
+        # The current response unit owns this error. A previous loop's note
+        # object must not turn an unplaced block into a page-wide rejection.
+        with unit_recovery.guard(display.pno,'geometry',block=block['id']):
+            raise ValueError(message)
     def lex(word):return re.sub(r'[^\w]', '', vision_reading.normalized(word).casefold())
     source=[lex(w['text']) for w in optical]
     referenced={n for b in answer['blocks'] for n in re.findall(r'<n:([^>]+)>',b['text'])}
@@ -2507,7 +2512,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                     candidate_position=position))
         if len(anchors)<min(5,len(candidate)) or (len(anchors)/max(1,len(candidate))<.6 and not (valid and borrowed)):
             if valid:continue
-            raise ValueError('Model block rectangle cannot be bound to printed pixels: '+block['id'])
+            reject('Model block rectangle cannot be bound to printed pixels: '+block['id'])
         if block['role']=='body':
             # A tight hint can stop at the last letter. Its exact published
             # suffix still owns adjacent punctuation before artwork barriers
@@ -2577,7 +2582,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             segment=candidate[component[0][1]:component[-1][1]+1]
             sm=SequenceMatcher(None,[lex(w['text']) for w in local],segment,autojunk=False)
             if not valid and any(max(a2-a1,b2-b1)>=vision_reading.UNALIGNED_RUN for tag,a1,a2,b1,b2 in sm.get_opcodes() if tag!='equal'):
-                raise ValueError('Ambiguous printed region for model block: '+block['id'])
+                reject('Ambiguous printed region for model block: '+block['id'])
             if block['role']=='footnote' and block['marker'] and component is components[0]:
                 # Include the independently printed opening label, if adjacent.
                 labels=[w['bbox'] for w in optical if lex(w['text'])==lex(block['marker'])
@@ -2603,7 +2608,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                     for row in _pixel_lines([optical[i] for i,j in component]))
             else:territories.append(rect)
         if len(territories)>1 and regions is None:
-            raise ValueError('Disjoint printed reading requires source region ownership')
+            reject('Disjoint printed reading requires source region ownership')
         if regions is not None:regions[block['id']]=territories
         if block['role'] in ('body','footnote') and regions is not None:
             for i,j in anchors:
@@ -3893,6 +3898,9 @@ def _source_paragraph_boundaries(answer,optical,display,regions,body_owners):
     """
     import statistics
     answer=copy.deepcopy(answer);published=[];repairs=[]
+    def reject(message):
+        with unit_recovery.guard(display.pno,'source_word_coverage',block=block['id']):
+            raise ValueError(message)
     identities={b['id'] for b in answer['blocks']}
     norm=lambda value:vision_reading.normalized(value).casefold()
     word_key=lambda value:re.sub(r'[^\w]','',norm(value))
@@ -3968,7 +3976,7 @@ def _source_paragraph_boundaries(answer,optical,display,regions,body_owners):
             candidates=[i for i in range(3,len(values)-2) if values[i-3:i+3]==sequence]
             source_candidates=[i for i in range(3,len(keys)-2) if keys[i-3:i+3]==sequence]
             if len(candidates)!=1 or source_candidates!=[position]:
-                raise ValueError('Original paragraph start has ambiguous response ownership')
+                reject('Original paragraph start has ambiguous response ownership')
             boundary=visible[candidates[0]][0]
             left=next((re.sub(r'<n:[^>]+>','',token)for token in reversed(tokens[:boundary])
                        if re.sub(r'<n:[^>]+>','',token)), '')
@@ -3976,12 +3984,12 @@ def _source_paragraph_boundaries(answer,optical,display,regions,body_owners):
             model_marker=norm(re.sub(r'<n:[^>]+>','',tokens[boundary]))
             if (ordinal and model_marker!=norm(lexical_current[0]['text']) or
                     not ordinal and not re.search(r'[.!?…]$',model_terminal)):
-                raise ValueError('Original paragraph punctuation disagrees with response')
+                reject('Original paragraph punctuation disagrees with response')
             cuts.append((boundary,row_index))
         if not cuts:
             published.append(block);continue
         if len({a for a,b in cuts})!=len(cuts) or cuts!=sorted(cuts):
-            raise ValueError('Original paragraph starts have no ordered response partition')
+            reject('Original paragraph starts have no ordered response partition')
         spans=[(0,0)]+cuts+[(len(tokens),len(rows))]
         parts=[]
         for index,((begin,first),(end,last))in enumerate(zip(spans,spans[1:])):
@@ -5044,6 +5052,14 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                 if controller:s['regions']=controller.coverage_regions(n,s['regions'])
                 s['answer'],s['recovered']=cover_missing_lines(s['answer'],s['optical'],s['source_words'],
                     s['display'],s['regions'],s['body_owners'])
+                if controller:
+                    # Newly recovered units already have source footprints.
+                    # Keep those identities before the stricter paragraph
+                    # partition can reject one, without publishing its text.
+                    controller.register_regions(n,s['regions'],
+                        _omission_coverage(s['answer'],s['display'],s['regions']))
+                    controller.admit_answer(n,s['answer'])
+                    s['answer']=controller.filter_answer(n,s['answer'])
                 s['answer'],s['paragraph_repairs']=_source_paragraph_boundaries(
                     s['answer'],s['optical'],s['display'],s['regions'],s['body_owners'])
                 if controller:
