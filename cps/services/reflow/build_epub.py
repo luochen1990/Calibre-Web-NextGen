@@ -112,6 +112,7 @@ p.source-evidence-compact { text-indent: 0; margin: 0.35em 0; border-left: 0.12e
 figure { margin: 1em 0; text-align: center; page-break-inside: avoid; }
 figcaption { font-size: 0.85em; text-align: center; }
 img { max-width: 100%; }
+a.source-word-image img { height:1em; width:auto; vertical-align:baseline; }
 .source-list { list-style: none; padding-left: 1.5em; }
 .source-list li { margin: 0.25em 0; }
 .source-pages { list-style: none; padding: 0; text-align: left; }

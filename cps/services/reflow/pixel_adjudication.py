@@ -106,6 +106,9 @@ def _terminal_word_view(model, words):
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
         else:result.append(word)
+    if hasattr(words,'alternates'):
+        result=CropWitness(result);result.alternates=words.alternates
+        if hasattr(words,'mark_absence'):result.mark_absence=words.mark_absence
     return result
 
 
@@ -244,12 +247,16 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             and placement(proposed[b]).startswith(placement(source_tokens[a]))
             and len(placement(proposed[b]))>len(placement(source_tokens[a])))
         if wrapped or partial_wrap:supported=[];boundary=None
+        alternate=None
+        if len(supported)!=1 and z-a==y-b==1 and not partial_wrap:
+            alternate=_alternate_choice(source,a,witness,proposed[b])
+            if alternate:supported=[('alternate',[alternate['text']],[alternate])]
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
             boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or not proposed[b:y] else ('model',proposed[b:y],[]))
         record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=list(literal),
                     status='RESOLVED' if resolved else 'UNRESOLVED',
-                    method='independent_upright_crop' if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
+                    method=('two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
                     source_range=[a,z],model_range=[b,y])
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
@@ -342,14 +349,35 @@ class CropWitness(list):
 def read_crop(display, regions, cache):
     import subprocess
     try:
-        return _read_crop(display, regions, cache)
+        result=CropWitness(_read_crop(display, regions, cache))
+        # Recognition remains local and lazy. Ordinary settled English edits
+        # incur no extra passes. The larger alphabet is used only to adjudicate
+        # an unresolved single-word edit at its own physical occurrence.
+        from functools import lru_cache
+        @lru_cache(maxsize=1)
+        def alternatives():
+            import shutil
+            engine=shutil.which('tesseract')
+            directory=_latin_directory(engine) if engine else None
+            if not directory:return []
+            try:
+                heights=[r[3]-r[1]for r in regions if r[3]>r[1]]
+                # Tiny printed letters need enough samples to distinguish their
+                # strokes. Both frames remain bounded by four million pixels.
+                base=min(8,max(4,24/min(heights))) if heights else 4
+                return [_read_crop(display,alternate_regions(regions),cache,language='LatinRaw',scale=scale,tessdata=directory)
+                        for scale in (base,base*1.25)]
+            except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
+        result.alternates=alternatives
+        result.mark_absence=lambda word:below_dot_absent(display,word)
+        return result
     except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         result = CropWitness()
         result.failure = f'{type(error).__name__}: {error}'
         return result
 
 
-def _read_crop(display, regions, cache):
+def _read_crop(display, regions, cache, language='eng', scale=4, tessdata=None):
     """Recognize upright source crops with bounded pixels and a separate layout.
 
     The full-page recognizer uses 3x/automatic page layout. This witness uses
@@ -375,15 +403,26 @@ def _read_crop(display, regions, cache):
         from . import extract
         box=extract.pymupdf.Rect(region)
         box.x0-=2;box.y0-=2;box.x1+=2;box.y1+=2;box &= display.rect
-        pix=display.pixmap(box,scale=4,max_pixels=4_000_000)
-        image=pix.tobytes('png');identity=hashlib.sha256(b'upright-block-eng-psm6-v2\0'+_engine_identity(engine)+image).hexdigest()
+        pix=display.pixmap(box,scale=scale,max_pixels=4_000_000)
+        image=pix.tobytes('png');border=0
+        if language=='LatinRaw':
+            from PIL import Image,ImageOps
+            border=16
+            picture=ImageOps.expand(Image.open(io.BytesIO(image)).convert('RGB'),border=border,fill='white')
+            encoded=io.BytesIO();picture.save(encoded,format='PNG');image=encoded.getvalue()
+        model_identity=(_latin_digest() if language=='LatinRaw' else b'')
+        identity=hashlib.sha256(f'upright-block-{language}-psm6-scale{scale}-v3\0'.encode()+model_identity+_engine_identity(engine)+image).hexdigest()
         target=root/(identity+'.json')
         with (root/(identity+'.lock')).open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX)
             if target.exists():rows=json.loads(target.read_text())
             else:
-                result=subprocess.run([engine,'stdin','stdout','-l','eng','--psm','6','tsv'],
-                    input=image,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=45)
+                command=[engine,'stdin','stdout','-l',language,'--psm','6']
+                if tessdata:command+=['--tessdata-dir',str(tessdata)]
+                command+=['-c','tessedit_create_tsv=1']
+                result=subprocess.run(command,
+                    input=image,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=45,
+                    env=dict(os.environ,OMP_THREAD_LIMIT='1'))
                 if result.returncode:raise RuntimeError('Independent crop recognition failed')
                 rows=[]
                 for row in csv.DictReader(io.StringIO(result.stdout.decode('utf-8')),
@@ -391,7 +430,7 @@ def _read_crop(display, regions, cache):
                     if row['level']!='5' or not row['text'].strip():continue
                     x,y,w,h=[int(row[k]) for k in ('left','top','width','height')]
                     rows.append(dict(text=row['text'],confidence=float(row['conf']),
-                        bbox=[x/pix.width,y/pix.height,(x+w)/pix.width,(y+h)/pix.height]))
+                        bbox=[(x-border)/pix.width,(y-border)/pix.height,(x+w-border)/pix.width,(y+h-border)/pix.height]))
                 temp=target.with_suffix('.'+str(os.getpid())+'.tmp')
                 temp.write_text(json.dumps(rows,ensure_ascii=False));os.replace(temp,target)
         for row in rows:
@@ -460,6 +499,7 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
         for i,t in enumerate(chosen):
             index=len(output);output.append(t);notes[index]=_word_note(record,i,len(decisions)-1)
             if resolved:bounds[index]=evidence[i]['bbox']
+            elif a+i in source_map:bounds[index]=source_map[a+i]['bbox']
     return dict(tokens=output,boxes=bounds,marked=set(notes),word_notes=notes,decisions=decisions)
 
 
@@ -560,3 +600,158 @@ def replace_formatted_word(fragment, chosen):
     for a,z,value in reversed(edits):fragment=fragment[:a]+value+fragment[z:]
     return fragment
 
+
+
+def _latin_digest():
+    return bytes.fromhex('28acb38d9613595a7ae88a427bc7481c2ee488b960ea6baa31945f5ce0248b61')
+
+
+def _latin_directory(engine):
+    """Find only the hash-verified optical data installed at image build time."""
+    import os
+    return _cached_latin_directory(engine,os.environ.get('REFLOW_LATIN_TESSDATA',''),os.environ.get('TESSDATA_PREFIX',''))
+
+
+@lru_cache(maxsize=8)
+def _cached_latin_directory(engine,alternate_root,primary_root):
+    import re,subprocess
+    listing=subprocess.run([engine,'--list-langs'],capture_output=True,timeout=5,check=True)
+    roots=[alternate_root,primary_root]
+    roots+=re.findall(r'"([^"\n]+)"',(listing.stdout+listing.stderr).decode(errors='replace'))
+    return _verified_latin_directory(tuple(roots))
+
+
+@lru_cache(maxsize=8)
+def _verified_latin_directory(roots):
+    import hashlib
+    from pathlib import Path
+    for root in roots:
+        if not root:continue
+        for path in (Path(root)/'LatinRaw.traineddata',Path(root)/'tessdata/LatinRaw.traineddata'):
+            if path.is_file() and hashlib.sha256(path.read_bytes()).digest()==_latin_digest():return path.parent
+    return None
+
+
+def _alternate_choice(source,index,witness,model_word):
+    """Require two confident optical reads and a uniquely anchored occurrence.
+
+    The script network includes macron vowels but no combining under-dot. Its
+    omission cannot certify removing that mark from a first reading. English
+    OCR is still never allowed to certify accent presence or absence.
+    """
+    reader=getattr(witness,'alternates',None)
+    if reader is None:return None
+    if sum(c.isalnum()for c in source[index]['text'])<2:return None
+    views=reader()
+    if len(views)!=2:return None
+    own=[[w for w in view if _complete_word_occurrence(source[index],w)]for view in views]
+    if not all(len(row)==1 and row[0].get('confidence',0)>=85 for row in own):return None
+    first,second=own[0][0],own[1][0]
+    if _key(first['text'])!=_key(second['text']):return None
+    bare=lambda t:''.join(c for c in unicodedata.normalize('NFKD',t.casefold())if c.isalnum())
+    if max(SequenceMatcher(None,bare(first['text']),bare(t)).ratio()
+           for t in (source[index]['text'],model_word))<.65:return None
+    marks=lambda value:{c for c in unicodedata.normalize('NFD',value)if unicodedata.combining(c)}
+    if '\u0323'in marks(model_word)-marks(first['text']):
+        proof=getattr(witness,'mark_absence',None)
+        if proof is None or not proof(first):return None
+    neighbors=source[max(0,index-2):index]+source[index+1:index+3]
+    if not any(all(len([w for w in view if _same_occurrence(n,w)
+            and _key(n['text']).casefold()==_key(w['text']).casefold()
+            and w.get('confidence',0)>=85])==1 for view in views)for n in neighbors):return None
+    return first
+
+
+def disclose_alternate_conflicts(result, boxes, witness, allow_clear=True):
+    """Retain the original ink for an already unresolved optical disagreement.
+
+    A low-confidence alternate is evidence of ambiguity, not authority to print
+    its guess. It can request a source-word image only at one physical word and
+    only when neither alternate layout supports the live claim. Their own
+    disagreement cannot select either spelling; it also requires original ink.
+    """
+    reader=getattr(witness,'alternates',None)
+    if reader is None:return
+    pending=[i for i in result['marked']if i in boxes
+        and not result['tokens'][i].startswith('<n:')
+        and (result.get('word_notes')or{}).get(i,{}).get('status')!='RESOLVED']
+    if not pending:return
+    views=reader()
+    if len(views)!=2:return
+    for index in pending:
+        original=dict(bbox=boxes[index])
+        own=[[w for w in view if _complete_word_occurrence(original,w)]for view in views]
+        if not all(len(row)==1 for row in own):continue
+        a,b=own[0][0],own[1][0]
+        token=result['tokens'][index];note=(result.get('word_notes')or{}).get(index,{})
+        if (allow_clear and all(_key(w['text'])==_key(token)and w.get('confidence',0)>=90 for w in (a,b))
+                and note.get('source')==note.get('model')==note.get('chosen')==[token]):
+            result['marked'].discard(index);result['word_notes'].pop(index)
+            result.setdefault('verified_unchanged',[]).append(index)
+            result['adjudication']=[d for d in result.get('adjudication',[])if d is not note]
+            continue
+        if any(_key(w['text'])==_key(token)for w in (a,b)):continue
+        literal=lambda t:''.join(c for c in unicodedata.normalize('NFKD',t.casefold())if c.isalnum())
+        if any(SequenceMatcher(None,literal(w['text']),literal(result['tokens'][index])).ratio()<.65 for w in (a,b)):continue
+        note=(result.setdefault('word_notes',{}).get(index)or dict(source=[result['tokens'][index]],
+            model=[result['tokens'][index]],chosen=[result['tokens'][index]],status='UNRESOLVED'))
+        note=dict(note,source_image_only=True,source_bbox=a['bbox'],method='unsettled_alternate_pixel_readings')
+        result['word_notes'][index]=note
+
+
+def below_dot_absent(display,word):
+    """Prove a missing below-baseline mark from untouched complete source ink.
+
+    This is restricted to alphabetic words with no descenders. Multiple upright
+    letter components must establish one baseline, and the entire lower strip
+    must be blank. Cropped bottoms, punctuation, noise and ambiguous baselines
+    all decline the proof rather than guessing a diacritic.
+    """
+    from . import extract,vision_pixels
+    import statistics
+    literal=''.join(c for c in unicodedata.normalize('NFD',word['text'])if not unicodedata.combining(c))
+    if any(c.casefold()in 'gjpqy'for c in literal) or any(not(c.isalpha()or c=='-')for c in literal):return False
+    a=word['bbox'];height=a[3]-a[1]
+    bounds=extract.pymupdf.Rect(a[0]-.5,a[1]-.1*height,a[2]+.5,a[3]+.5*height)
+    if any(bounds[i]<display.rect[i]for i in (0,1))or any(bounds[i]>display.rect[i]for i in (2,3)):return False
+    pix=display.pixmap(bounds,scale=8,max_pixels=300_000)
+    picture,components=vision_pixels._word_ink_components(pix)
+    if not components:return False
+    tallest=max(c[3]-c[1]for c in components)
+    tall=[c for c in components if c[3]-c[1]>=tallest*.5]
+    if len(tall)<3:return False
+    baseline=statistics.median(c[3]for c in tall)
+    if max(abs(c[3]-baseline)for c in tall)>max(2,tallest*.15):return False
+    start=int(baseline+max(1,tallest*.06))
+    if picture.height-start<tallest*.25:return False
+    return picture.crop((0,start,picture.width,picture.height)).getextrema()[0]>=180
+
+
+def alternate_regions(regions):
+    """Give coherent consecutive rows context without joining other columns.
+
+    These are recognition frames only. Every resulting decision still needs its
+    own original word geometry; a rectangle never supplies lexical ownership.
+    """
+    result=[];previous=None
+    for region in regions:
+        box=list(region)
+        if previous is not None:
+            height=max(previous[3]-previous[1],box[3]-box[1])
+            overlap=min(previous[2],box[2])-max(previous[0],box[0])
+            same_column=overlap>=.8*min(previous[2]-previous[0],box[2]-box[0])
+            consecutive=0<=box[1]-previous[3]<=height*1.5
+            if same_column and consecutive:
+                merged=result[-1];result[-1]=[min(merged[0],box[0]),min(merged[1],box[1]),max(merged[2],box[2]),max(merged[3],box[3])]
+            else:result.append(box)
+        else:result.append(box)
+        previous=box
+    return result
+
+
+
+def _complete_word_occurrence(source,word):
+    """An internal punctuation atom cannot own a larger recognized word."""
+    if not _same_occurrence(source,word):return False
+    a,b=source['bbox'],word['bbox']
+    return min(a[2],b[2])-max(a[0],b[0])>=.6*(b[2]-b[0])

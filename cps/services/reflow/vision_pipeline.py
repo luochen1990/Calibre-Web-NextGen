@@ -2300,6 +2300,10 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             if refined is not None:
                                 from difflib import SequenceMatcher
                                 for kind,a,z,b,y in SequenceMatcher(None,adjudication['tokens'],refined['tokens'],autojunk=False).get_opcodes():
+                                    if kind=='equal':
+                                        for old_index,new_index in zip(range(a,z),range(b,y)):
+                                            if old_index in adjudication['boxes']:
+                                                refined['boxes'].setdefault(new_index,adjudication['boxes'][old_index])
                                     affected=([j for i,j in zip(range(a,z),range(b,y)) if i in adjudication['marked']]
                                         if kind=='equal' else list(range(b,y)) if any(i in adjudication['marked'] for i in range(a,z)) else [])
                                     for i in affected:
@@ -2369,6 +2373,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     # independent certainty. Preserve all local OCR uncertainty
                     # and its exact recognized source occurrence inventory.
                     for i,decision in conflicts.items():result.setdefault('word_notes',{}).setdefault(i,decision)
+            if witness is not None and hasattr(witness,'alternates'):
+                pixel_adjudication.disclose_alternate_conflicts(result,evidence_boxes,witness,allow_clear=not local_ocr)
             if getattr(witness,'failure',None):
                 # Keep the already admitted reading and its own source owners.
                 # Unavailable secondary recognition must not widen a primary
@@ -2412,8 +2418,10 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             groups=[]
             for index in sorted(i for i in result['marked'] if not result['tokens'][i].startswith('<n:')):
                 resolved_local={i for i,d in (result.get('word_notes') or {}).items() if d['status']=='RESOLVED'} if local_ocr else set()
+                image_words={i for i,d in (result.get('word_notes') or {}).items() if d.get('source_image_only')}
                 if ((local_ocr or not result.get('adjudication')) and groups and index==groups[-1][-1]+1
-                        and index not in resolved_local and groups[-1][-1] not in resolved_local):groups[-1].append(index)
+                        and index not in resolved_local and groups[-1][-1] not in resolved_local
+                        and index not in image_words and groups[-1][-1] not in image_words):groups[-1].append(index)
                 else:groups.append([index])
             endings={g[-1]:g for g in groups}
             # Reject each chosen span before emitting markers or source images.
@@ -2530,8 +2538,11 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         raise _DisclosureQualityRejection('Unreliable chosen reading requires original source disclosure')
                     marked+=1;ident=f'v4-d-{pno}-{bid}-{index}';ref='r-'+ident
                     src=f'images/{ident}.jpg'
-                    boxes=[evidence_boxes[i] for i in endings[index] if i in evidence_boxes]
-                    crop=(list(display.rect) if len(territories)>1 else
+                    word_decision=(result.get('word_notes')or{}).get(index,{})
+                    boxes=([word_decision['source_bbox']] if word_decision.get('source_image_only') else
+                           [evidence_boxes[i] for i in endings[index] if i in evidence_boxes])
+                    crop=(word_decision['source_bbox'] if word_decision.get('source_image_only') else
+                          list(display.rect) if len(territories)>1 else
                           vision_reading.union(boxes) if len(boxes)==len(endings[index]) else box)
                     # Tight evidence remains in final notes, never an inline word crop.
                     clip=extract.pymupdf.Rect(crop);clip.x0-=2;clip.y0-=2;clip.x1+=2;clip.y1+=2;clip &= display.rect
@@ -2570,7 +2581,11 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             explanation=escape(' '.join(decision['chosen']))+'. Consult the original printed word in the image.'
                         else:explanation=source_quote+(' An independent upright crop supports this correction.' if decision['status']=='RESOLVED' else ' An independent upright crop could not settle this difference.')+' Compare the original printed word in the image.'
                     else:explanation=escape(' '.join(result['tokens'][i] for i in endings[index]))+'. '+source_quote
+                    if decision and decision.get('source_image_only'):
+                        explanation='The independent pixel readings do not settle this printed word. Read the original image.'
                     extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
+                    if decision and decision.get('source_image_only'):
+                        piece=f'<a class="source-word-image" href="#{ident}"><img src="{src}" alt="Unresolved printed word; inspect original"/></a>'
                     piece+=f'<a id="{ref}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'
                 if local_ocr and index in result['marked']:
                     piece='<span class="uncertain" title="Unverified local OCR reading">'+piece+'</span>'
@@ -2668,7 +2683,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     for i,j in punctuation_proof],
                 published_tokens=result['tokens'],
                 marked=sorted(result['marked']),fallback=result['fallback'],guard=result['guard'],
-                adjudication=result.get('adjudication',[]),verified_unchanged=adjudication.get('verified_unchanged',[]) if adjudication else [],original_model_tokens=original_model_tokens,
+                adjudication=result.get('adjudication',[]),source_image_words=sorted(i for i,d in (result.get('word_notes')or{}).items()if d.get('source_image_only')),verified_unchanged=sorted(set(result.get('verified_unchanged',[]))|set(adjudication.get('verified_unchanged',[]) if adjudication else [])),original_model_tokens=original_model_tokens,
                 layer_words=[w['text'] for w in local],dropped_layer_words=result['dropped_layer_words'],
                 continues_previous=block['continues_previous'],continues_next=block['continues_next']))
             if role=='caption' and punctuation_proof and printed_head is not None and printed_tail is not None:

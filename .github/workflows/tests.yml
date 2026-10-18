@@ -254,6 +254,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libldap2-dev libsasl2-dev libssl-dev gettext \
             tesseract-ocr tesseract-ocr-eng tesseract-ocr-osd
+          sudo scripts/install-reflow-latin-ocr.sh /usr/share/tesseract-ocr/5/tessdata
           tesseract --version
           tesseract --list-langs
 

@@ -1094,3 +1094,178 @@ def test_native_pixel_correction_preserves_inline_word_formatting(tmp_path,monke
     assert records[0]['marked']==[3]
     assert any(d['status']=='RESOLVED'and d['chosen']==['remains']for d in records[0]['adjudication'])
 
+
+def test_alternate_optical_alphabet_settles_a_macron_without_erasing_its_mark():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the clear sampel beside the window.')
+    model='Please read the clear samplē beside the window.'.split()
+    witness=pa.CropWitness(words('Please read the clear sample beside the window.'))
+    witness.alternates=lambda:[words('Please read the clear samplē beside the window.',96),
+                               words('Please read the clear samplē beside the window.',95)]
+    result=adjudicate(model,source,witness)
+    assert result['tokens']==model
+    assert result['word_notes'][4]['status']=='RESOLVED'
+    assert result['word_notes'][4]['method']=='two_alternate_alphabet_pixel_readings'
+    assert result['marked']=={4}
+
+
+def test_alternate_alphabet_does_not_claim_absence_of_an_unrepresented_mark():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the clear sample beside the window.')
+    witness=pa.CropWitness(source)
+    witness.alternates=lambda:[source,source]
+    result=adjudicate('Please read the clear samplẹ beside the window.'.split(),source,witness)
+    assert result['word_notes'][4]['status']=='UNRESOLVED'
+    assert result['tokens'][4]=='samplẹ'
+
+
+def test_two_alternate_pixel_reads_restore_the_native_number_at_its_own_occurrence():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read section 4.2.17; before opening the box.')
+    witness=pa.CropWitness(words('Please read section 4.2-17; before opening the box.',40))
+    witness.alternates=lambda:[source,source]
+    result=adjudicate('Please read section 4.2-17; before opening the box.'.split(),source,witness)
+    assert result['tokens']==[w['text']for w in source]
+    assert result['word_notes'][3]['status']=='RESOLVED'
+
+
+def test_alternate_optical_data_must_match_the_pinned_network(tmp_path):
+    from cps.services.reflow import pixel_adjudication as pa
+    (tmp_path/'LatinRaw.traineddata').write_bytes(b'not the optical model')
+    assert pa._verified_latin_directory((str(tmp_path),))is None
+
+
+def test_settled_edit_does_not_run_the_optional_recognizer():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the clear sample beside the window.')
+    witness=pa.CropWitness(source)
+    def unwanted():raise AssertionError('an already proved edit needs no extra recognition')
+    witness.alternates=unwanted
+    result=adjudicate('Please read the clear sampel beside the window.'.split(),source,witness)
+    assert result['tokens']==[w['text']for w in source]
+    assert result['word_notes'][4]['status']=='RESOLVED'
+
+
+def test_unsettled_alternate_word_publishes_its_own_ink_not_wrong_live_text(tmp_path,monkeypatch):
+    from tests.unit import test_round4_defects as ink
+    from cps.services.reflow import pixel_adjudication as pa
+    page=ink.InkPage();printed='The clear sample remains readable beside the open window.'
+    page.text(printed,'body',model=printed.replace('remains','remalns'))
+    source=[dict(text=w[4],bbox=list(w[:4]),confidence=40)for w in page.page.get_text('words')]
+    def crop(display,regions,cache):
+        # The first witness and the proposed reading agree on the bad spelling;
+        # two alternate pixel views disagree but cannot certify a replacement.
+        bad=pa.CropWitness([dict(w,text='remalns'if w['text']=='remains'else w['text'])for w in source])
+        bad.alternates=lambda:[source,source]
+        return bad
+    monkeypatch.setattr(pa,'read_crop',crop)
+    _,report,docs=ink.convert_ink(tmp_path,monkeypatch,[page])
+    text=' '.join(ink.body_texts(docs))
+    assert 'remalns'not in text
+    images=[n for root in docs.values()for n in root.iter()if n.get('class')=='source-word-image']
+    assert len(images)==1
+    assert len(images[0])==1 and images[0][0].tag.endswith('img')
+    assert 'The clear sample'in text and 'readable beside the open window.'in text
+    assert report['pages'][0]['blocks'][0]['source_image_words']==[3]
+
+
+@pytest.mark.parametrize('dot',[False,True])
+def test_underdot_absence_requires_complete_blank_pixels_below_a_proved_baseline(dot):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=200,height=120)
+        page.insert_text((30,50),'calm',fontsize=14)
+        word=page.get_text('words')[0]
+        if dot:page.draw_circle((46,52.5),.7,color=(0,0,0),fill=(0,0,0))
+        assert pa.below_dot_absent(SourceDisplay(doc,0),dict(text='calm',bbox=list(word[:4])))is(not dot)
+
+
+@pytest.mark.parametrize('dot',[False,True])
+def test_alternate_alphabet_needs_pixels_to_remove_a_below_baseline_mark(dot):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=350,height=120)
+        page.insert_text((30,50),'Please read calm beside the window.',fontsize=14)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        if dot:page.draw_circle((source[2]['bbox'][0]+8,52.5),.7,color=(0,0,0),fill=(0,0,0))
+        witness=pa.CropWitness(source);witness.alternates=lambda:[source,source]
+        witness.mark_absence=lambda word:pa.below_dot_absent(SourceDisplay(doc,0),word)
+        result=adjudicate('Please read cạlm beside the window.'.split(),source,witness)
+    assert result['tokens'][2]==('cạlm'if dot else'calm')
+    assert result['word_notes'][2]['status']==('UNRESOLVED'if dot else'RESOLVED')
+
+
+def test_unsettled_views_cannot_force_a_wrong_live_spelling_or_choose_each_other():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('clear sampel beside')
+    witness=pa.CropWitness(source)
+    witness.alternates=lambda:[words('clear sample beside',40),words('clear samble beside',35)]
+    result=dict(tokens='clear sampel beside'.split(),marked={1},word_notes={})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert result['tokens'][1]=='sampel','no alternate guess gains authority'
+    assert result['word_notes'][1]['source_image_only']
+    assert result['word_notes'][1]['status']=='UNRESOLVED'
+
+
+def test_installed_alternate_network_reads_printed_macron_pixels(tmp_path):
+    import pymupdf,shutil
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    engine=shutil.which('tesseract')
+    if not engine or not pa._latin_directory(engine):pytest.skip('pinned alternate optical data not installed')
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=400,height=160)
+        font=pymupdf.Font('tiro')
+        writer=pymupdf.TextWriter(page.rect)
+        writer.append((25,65),'Please read māple beside the clear window.',font=font,fontsize=14)
+        writer.write_text(page)
+        witness=pa.read_crop(SourceDisplay(doc,0),[[20,45,380,75]],tmp_path)
+        views=witness.alternates()
+    assert len(views)==2
+    assert all('māple'in [w['text']for w in view]for view in views)
+
+
+def test_alternate_recognition_joins_only_consecutive_rows_in_the_same_column():
+    from cps.services.reflow import pixel_adjudication as pa
+    assert pa.alternate_regions([[20,20,180,32],[30,35,175,47],[30,50,160,62]])==[[20,20,180,62]]
+    assert pa.alternate_regions([[20,20,100,32],[130,35,200,47]])==[[20,20,100,32],[130,35,200,47]]
+    assert pa.alternate_regions([[20,20,180,32],[20,100,180,112]])==[[20,20,180,32],[20,100,180,112]]
+
+
+def test_refinement_retains_an_unresolved_original_word_footprint():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the sampel beside the quiet window.')
+    result=pa.refine_fallback([w['text']for w in source],
+        words('Please read the sample beside the quiet window.'),{'unrelated'},source=source)
+    assert result['tokens'][3]=='sampel'
+    assert result['word_notes'][3]['status']=='UNRESOLVED'
+    assert result['boxes'][3]==source[3]['bbox']
+
+
+def test_a_punctuation_atom_cannot_authorize_deleting_a_word_prefix():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('read , beside')
+    source[1]['bbox']=[35,20,38,32]
+    view=words('read scope beside')
+    witness=pa.CropWitness([dict(w,confidence=40)for w in source]);witness.alternates=lambda:[view,view]
+    result=adjudicate('read microscope beside'.split(),source,witness)
+    assert result['tokens'][1]=='microscope'
+    assert result['word_notes'][1]['status']=='UNRESOLVED'
+
+
+def test_exact_alternate_pixels_settle_a_spurious_agreeing_reading_conflict():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read every original detail beside the window.')
+    witness=pa.CropWitness([dict(w,text='eveiy'if w['text']=='every'else w['text'])for w in source])
+    witness.alternates=lambda:[source,source]
+    conflicts=pa.audit_agreement([w['text']for w in source],source,witness)
+    assert set(conflicts)=={2}
+    result=dict(tokens=[w['text']for w in source],marked={2},word_notes=conflicts)
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert result['marked']==set()
+    assert result['word_notes']=={}
+    assert result['verified_unchanged']==[2]
