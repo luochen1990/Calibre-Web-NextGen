@@ -808,3 +808,152 @@ def test_an_image_prepared_with_bars_before_the_upgrade_is_redone_on_the_next_sy
     assert max(thin_image.getpixel((x, 134)) for x in range(100)) < 255
     assert repeat_state["desired_revision"] == thin_state["desired_revision"]
     assert far_state["desired_revision"] == previous_revisions[far.id]
+
+
+def _set_fit(client, public_id, body):
+    return client.patch(f"/api/v1/devices/{public_id}/sleep-screen", json=body)
+
+
+def _has_bands(image):
+    width, height = image.size
+    return (min(image.getpixel((x, 0)) for x in range(width)) == 255
+            and min(image.getpixel((x, height - 1)) for x in range(width)) == 255)
+
+
+def test_image_fit_choice_sets_each_device_rendition_and_survives_new_uploads(world):
+    """Automatic, Fill the screen and Show the whole image each govern the rendition.
+
+    The choice is stored per device, applies to later uploads and to a new
+    screen size, re-renders without a re-upload, and moves the revision only
+    when the rendition's bytes change.
+    """
+    _add_user(world, "alice")
+    owner = world.browser("alice")
+    reader = _register_device(world, "alice", "fit-reader")
+    spare = _register_device(world, "alice", "fit-spare", label="Kobo Libra")
+    for device_id in ("fit-reader", "fit-spare"):
+        _report(world, "alice", device_id, width=100, height=135)
+
+    initial = _metadata(owner, reader.public_id).get_json() or {}
+    _upload(owner, reader.public_id, _square_marker_png(100, 100, 20), "square.png")
+    auto_state, auto_image = _prepared(world, owner, reader)
+
+    fill = _set_fit(owner, reader.public_id, {"fit": "fill"})
+    fill_state, fill_image = _prepared(world, owner, reader)
+    fill_again = _set_fit(owner, reader.public_id, {"fit": "fill"})
+    repeat_state = _metadata(owner, reader.public_id).get_json() or {}
+
+    _upload(owner, reader.public_id, _square_marker_png(84, 111, 20), "portrait.png")
+    kept_state, kept_image = _prepared(world, owner, reader)
+    whole = _set_fit(owner, reader.public_id, {"fit": "whole"})
+    whole_state, whole_image = _prepared(world, owner, reader)
+    _report(world, "alice", "fit-reader", width=90, height=120)
+    resized_state, resized_image = _prepared(world, owner, reader)
+    back = _set_fit(owner, reader.public_id, {"fit": "auto"})
+    back_state, back_image = _prepared(world, owner, reader)
+
+    spare_before = _metadata(owner, spare.public_id).get_json() or {}
+    early = _set_fit(owner, spare.public_id, {"fit": "fill"})
+    early_body = early.get_json() or {}
+    unsupported = _register_device(world, "alice", "fit-android", label="Android e-reader")
+    _report(world, "alice", "fit-android", platform="android", supported=False, width=None, height=None)
+    unsupported_before = _metadata(owner, unsupported.public_id).get_json() or {}
+    unsupported_fit = _set_fit(owner, unsupported.public_id, {"fit": "whole"})
+    unsupported_after = _metadata(owner, unsupported.public_id).get_json() or {}
+    _upload(owner, spare.public_id, _square_marker_png(100, 100, 20), "square.png")
+    _, spare_image = _prepared(world, owner, spare)
+
+    assert initial.get("fit") == "auto"
+    assert auto_state["fit"] == "auto" and _has_bands(auto_image)
+    assert fill.status_code == 200 and (fill.get_json() or {}).get("fit") == "fill"
+    assert fill_state["desired_revision"] != auto_state["desired_revision"]
+    assert not _has_bands(fill_image) and fill_image.size == (100, 135)
+    assert abs(_dark_extent(fill_image, "x") - _dark_extent(fill_image, "y")) <= 1, "fill must zoom, not stretch"
+    assert fill_again.status_code == 200
+    assert repeat_state["desired_revision"] == fill_state["desired_revision"]
+    assert kept_state["fit"] == "fill" and not _has_bands(kept_image)
+    assert whole.status_code == 200 and whole_state["fit"] == "whole"
+    assert _has_bands(whole_image), "the whole image is shown even when the bands are thin"
+    assert resized_image.size == (90, 120) and _has_bands(resized_image)
+    assert resized_state["fit"] == "whole"
+    assert back.status_code == 200 and back_state["fit"] == "auto" and not _has_bands(back_image)
+    assert early.status_code == 200 and early_body.get("fit") == "fill" and early_body.get("state") == "none"
+    assert early_body.get("desired_revision") == spare_before["desired_revision"], "no image: nothing to re-render"
+    assert not _has_bands(spare_image)
+    assert unsupported_fit.status_code == 200 and unsupported_after["fit"] == "whole"
+    assert unsupported_after["desired_revision"] == unsupported_before["desired_revision"]
+    assert unsupported_after["state"] == unsupported_before["state"]
+
+
+def test_image_fit_change_is_validated_owner_only_and_csrf_protected(world):
+    """Only the owner can change the fit, only to a known value, and only with CSRF."""
+    _add_user(world, "alice")
+    _add_user(world, "bob")
+    owner = world.browser("alice")
+    other = world.browser("bob")
+    reader = _register_device(world, "alice", "fit-guarded")
+    _report(world, "alice", "fit-guarded", width=100, height=135)
+    _upload(owner, reader.public_id, _square_marker_png(100, 100, 20), "square.png")
+    before = _metadata(owner, reader.public_id).get_json() or {}
+
+    responses = {
+        "unknown value": _set_fit(owner, reader.public_id, {"fit": "stretch"}),
+        "extra key": _set_fit(owner, reader.public_id, {"fit": "fill", "state": "remove"}),
+        "not a string": _set_fit(owner, reader.public_id, {"fit": None}),
+        "no body": owner.patch(f"/api/v1/devices/{reader.public_id}/sleep-screen", data="fill"),
+    }
+    foreign = _set_fit(other, reader.public_id, {"fit": "fill"})
+    unknown = _set_fit(owner, "no-such-device", {"fit": "fill"})
+    world.app.config["WTF_CSRF_ENABLED"] = True
+    without_token = _set_fit(owner, reader.public_id, {"fit": "fill"})
+    world.app.config["WTF_CSRF_ENABLED"] = False
+    untouched = _metadata(owner, reader.public_id).get_json() or {}
+    world.app.config["WTF_CSRF_ENABLED"] = True
+    token = (owner.get("/api/v1/auth/csrf").get_json() or {}).get("csrf_token")
+    with_token = owner.patch(
+        f"/api/v1/devices/{reader.public_id}/sleep-screen", json={"fit": "fill"},
+        headers={"X-CSRFToken": token or "missing-token"},
+    )
+
+    for name, response in responses.items():
+        assert response.status_code == 400, f"{name}: HTTP {response.status_code}"
+        assert _error_code(response) == "sleep_screen_invalid_fit", name
+    assert foreign.status_code == unknown.status_code == 404
+    assert without_token.status_code == 400
+    assert untouched["fit"] == "auto" and untouched["desired_revision"] == before["desired_revision"]
+    assert with_token.status_code == 200 and (with_token.get_json() or {}).get("fit") == "fill"
+    assert (with_token.get_json() or {})["desired_revision"] != before["desired_revision"]
+
+
+def test_french_and_dutch_catalogs_carry_the_image_fit_copy(world):
+    """The image fit control's labels reach the SPA in French and Dutch, not English."""
+    expected_by_locale = {
+        "fr": {
+            "Image fit": "Cadrage de l’image",
+            "Automatic": "Automatique",
+            "Fill the screen": "Remplir l’écran",
+            "Show the whole image": "Afficher l’image entière",
+            "Automatic fills the screen when only a thin edge would be cut off.":
+                "Automatique remplit l’écran quand seule une fine bordure serait rognée.",
+            "Could not change image fit. Try again.": "Impossible de modifier le cadrage de l’image. Réessayez.",
+        },
+        "nl": {
+            "Image fit": "Afbeeldingsweergave",
+            "Automatic": "Automatisch",
+            "Fill the screen": "Scherm vullen",
+            "Show the whole image": "Hele afbeelding tonen",
+            "Automatic fills the screen when only a thin edge would be cut off.":
+                "Automatisch vult het scherm als er alleen een smalle rand zou wegvallen.",
+            "Could not change image fit. Try again.":
+                "De afbeeldingsweergave kon niet worden gewijzigd. Probeer het opnieuw.",
+        },
+    }
+
+    for locale, expected in expected_by_locale.items():
+        response = world.client.get(f"/api/v1/i18n/{locale}.json")
+        assert response.status_code == 200
+        catalog = (response.get_json() or {}).get("catalog", {})
+        for msgid, translation in expected.items():
+            assert catalog.get(msgid) == translation, (
+                f"{locale} catalog translated {msgid!r} as {catalog.get(msgid)!r}, expected {translation!r}"
+            )
