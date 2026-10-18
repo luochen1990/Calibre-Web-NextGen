@@ -98,3 +98,19 @@ def test_unmatched_interior_note_row_is_owned_once_between_its_proved_rows():
     middle=[w for w in optical if w['bbox'][1]==531]
     assert all(any(vp.owned_words([w],r) for r in regions['middle']) for w in middle)
     assert all(regions['_instances'][vp._source_instance(w)]=='middle' for w in middle)
+
+
+def test_note_continuation_can_return_to_the_printed_label_margin():
+    from cps.services.reflow.source_geometry import labelled_note_anchors
+    rows=['Please carry the clear', 'sample beside the quiet', 'window today.']
+    optical=[dict(text='7',bbox=[40,520,45,527])]
+    for row,text in enumerate(rows):
+        left=60 if row==0 else 40
+        optical.extend(dict(text=t,bbox=[left+i*40,520+row*11,left+i*40+35,528+row*11])
+                       for i,t in enumerate(text.split()))
+    following=len(optical)
+    optical.extend([dict(text='8',bbox=[40,560,45,567]),dict(text='Other',bbox=[60,560,95,568])])
+    proof=labelled_note_anchors(optical,range(len(optical)),' '.join(rows).split(),'7')
+    assert proof is not None
+    assert [optical[i]['text']for i,j in proof['anchors']]==' '.join(rows).split()
+    assert all(i<following for i,j in proof['anchors'])

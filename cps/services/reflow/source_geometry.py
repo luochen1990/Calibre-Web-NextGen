@@ -157,7 +157,8 @@ def labelled_note_anchors(optical, available, candidate, marker):
         bottom = min(endings, default=float('inf')) - height * .5
         pool = [i for i in available if i != index and
                 center(box) - height * .75 <= center(optical[i]['bbox']) < bottom and
-                optical[i]['bbox'][0] >= box[2] and
+                optical[i]['bbox'][0] >= (box[2] if
+                    abs(center(optical[i]['bbox'])-center(box))<=height*.75 else box[0]) and
                 optical[i]['bbox'][2] <= right + height * 4]
         anchors = unique_anchors(optical, pool, candidate, minimum=4)
         if not anchors:
