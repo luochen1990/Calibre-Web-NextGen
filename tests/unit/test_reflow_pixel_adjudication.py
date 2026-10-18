@@ -142,6 +142,43 @@ def test_fragment_binding_keeps_repeated_words_in_their_own_positions():
     assert fragment_word_ranges(fragment,['different']) is None
 
 
+def test_fragment_binding_keeps_inline_ordinals_and_typed_references_intact():
+    from cps.services.reflow.pixel_adjudication import fragment_word_ranges
+    fragment='<p>The 1<sup>st</sup> clear sample has a printed reference<a class="noteref" href="#note"><sup>7</sup></a>.</p>'
+    tokens='The 1st clear sample has a printed reference7.'.split()
+    ranges=fragment_word_ranges(fragment,tokens)
+    assert ranges is not None
+    assert fragment[slice(*ranges[2])]=='clear'
+    assert fragment[slice(*ranges[1])]=='1<sup>st</sup>'
+    assert fragment[slice(*ranges[7])]=='reference<a class="noteref" href="#note"><sup>7</sup></a>.'
+    assert fragment_word_ranges(fragment,tokens[:-1]+['reference8.']) is None
+
+
+def test_native_conflict_next_to_inline_ordinal_keeps_live_text_and_style(tmp_path,monkeypatch):
+    import re
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    text='The 1st clear sample remalns readable today.'
+    fragment='<p>The 1<sup>st</sup> clear sample remalns readable today.</p>'
+    class Package:
+        def disclosure_image(self,*args):pass
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=500)
+        leaf.insert_text((30,70),text,fontsize=10)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=88)for w in leaf.get_text('words')]
+        witness=[dict(w,text='remains'if w['text']=='remalns'else w['text'])for w in source]
+        monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+        page=dict(pno=0,body=[fragment],asides=[])
+        records=[dict(id='native-0',role='body',source_regions=[[25,55,390,80]])]
+        vp._audit_native_pixels(doc,page,records,tmp_path,Package(),{})
+    assert '1<sup>st</sup>'in page['body'][0]
+    assert page['body'][0].count('class="source-disclosure-ref"')==1
+    authored=re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',page['body'][0])
+    assert authored==fragment,'only the owned generated control is excluded from authored text'
+    assert len(page['asides'])==1 and 'Unresolved source reading: remalns.'in page['asides'][0]
+    assert records[0]['marked']==[4]
+
+
 def test_native_layer_pixel_conflict_is_visible_at_its_own_occurrence(tmp_path,monkeypatch):
     import pymupdf
     from types import SimpleNamespace

@@ -4093,6 +4093,13 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 raise ValueError('Native pixel conflict has no unique published occurrence')
             edits=[]
             for index,decision in conflicts.items():
+                a,z=ranges[index]
+                if decision['status']=='RESOLVED' and '<' in fragment[a:z]:
+                    # Keep ordinal formatting and typed reference actions. A
+                    # lexical replacement cannot delete their inline markup;
+                    # retain the authored word with an owned unresolved note.
+                    decision.update(alternative=decision['chosen'],chosen=[tokens[index]],
+                        status='UNRESOLVED',method='formatted_native_word_requires_typed_edit')
                 ident=f"v4-native-d-{page['pno']}-{record['id']}-{index}";origin='r-'+ident
                 src='images/'+ident+'.jpg';box=source[index]['bbox']
                 clip=extract.pymupdf.Rect(box);clip.x0-=2;clip.y0-=2;clip.x1+=2;clip.y1+=2;clip &= display.rect
@@ -4104,8 +4111,12 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                              else escape(chosen)+'. Consult the original printed word in the image.')
                 explanation+=' An independent upright crop supports this correction.' if decision['status']=='RESOLVED' else ' An independent upright crop could not settle this difference.'
                 page['asides'].append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{page["pno"]}" data-reflow-owner-block="{escape(record["id"],quote=True)}" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{origin}">Return</a></aside>')
-                a,z=ranges[index]
-                edits.append((a,z,(escape(chosen) if chosen!=tokens[index] else fragment[a:z])+f'<a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'))
+                if chosen!=tokens[index]:edits.append((a,z,escape(chosen)))
+                # Add the control after any enclosing inline action closes;
+                # never nest a new link inside a typed source reference.
+                closing=re.match(r'(?:</(?:sup|sub|em|strong|i|b|a|span)\s*>)+',fragment[z:],re.I)
+                at=z+(closing.end() if closing else 0)
+                edits.append((at,at,f'<a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'))
                 tokens[index]=chosen
             for a,z,value in sorted(edits,reverse=True):fragment=fragment[:a]+value+fragment[z:]
             page['body'][position]=fragment

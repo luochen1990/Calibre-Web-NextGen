@@ -460,17 +460,32 @@ def audit_agreement(tokens, source, witness):
 
 
 def fragment_word_ranges(fragment, tokens):
-    """Bind a complete simple fragment to exact raw word ranges, or refuse.
+    """Bind the complete authored stream across inline tags to raw ranges.
 
-    Formatting inside a word, generated controls and differing token inventories
-    require a richer binding. Refusal is explicit; spelling searches never place
-    a warning on the first equal word elsewhere in the fragment.
+    A formatted word may enclose inline markup in its range. Callers retain that
+    markup when adding a control and must not replace it as a plain text slice.
+    Different inventories are refused; equal spelling never selects an owner.
     """
     import re
     from . import annotate
-    words=[]
+    plain=[];starts=[];ends=[];previous=None
     for node in annotate._text_nodes(fragment,include_uncertain=True):
-        for word in re.finditer(r'\S+',node.plain):
-            words.append((word.group(),node.starts[word.start()],node.ends[word.end()-1]))
+        if previous is not None and re.search(r'</li\s*>',fragment[previous:node.raw_start]):
+            plain.append(' ');starts.append(previous);ends.append(previous)
+        plain.extend(node.plain);starts.extend(node.starts);ends.extend(node.ends)
+        previous=node.ends[-1] if node.ends else previous
+    words=[]
+    for word in re.finditer(r'\S+',''.join(plain)):
+        a,z=starts[word.start()],ends[word.end()-1]
+        opened=[]
+        for closing,name in re.findall(r'<(/?)(sup|sub|em|strong|i|b|a|span)\b[^>]*>',fragment[a:z],re.I):
+            if closing:
+                if opened and opened[-1]==name.casefold():opened.pop()
+            else:opened.append(name.casefold())
+        while opened:
+            closing=re.match(r'</'+opened[-1]+r'\s*>',fragment[z:],re.I)
+            if closing is None:break
+            z+=closing.end();opened.pop()
+        words.append((word.group(),a,z))
     if [word for word,_,_ in words]!=tokens:return None
     return [(a,z) for _,a,z in words]
