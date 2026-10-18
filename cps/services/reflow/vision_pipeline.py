@@ -4207,7 +4207,11 @@ def cover_missing_lines(answer,optical,source_words,display,regions=None,body_ow
                          pixel_rows.get(id(printed[-1])),pixel_rows.get(id(_pixel_line_order(run)[0])))))
             and previous_text.split() and vision_reading.normalized(previous_text.split()[-1])==vision_reading.normalized(printed[-1]['text'])
             and assemble.continues(previous_text,block['text']))
-        if len(run)<vision_reading.UNALIGNED_RUN and not (forward or float_edge or backward):continue
+        corroborated_short=(len(run)>=2 and score==1. and len(local)==len(run)
+            and all(vision_reading.normalized(a['text'])==vision_reading.normalized(b['text'])
+                    for a,b in zip(run,local))
+            and any(sum(c.isalpha() for c in word['text'])>=3 for word in run))
+        if len(run)<vision_reading.UNALIGNED_RUN and not (forward or float_edge or backward or corroborated_short):continue
         recovered_head=(previous and previous['role']=='body' and not labelled
             and bbox[0]>prev_box[2]+3 and bbox[1]<prev_box[1]
             and first_x<=column_x+3 and assemble.continues(previous_text,block['text']))
