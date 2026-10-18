@@ -2673,7 +2673,8 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             matched=labelled['anchors'] if labelled else _note_pixel_anchors(optical,available,candidate,block_rect(block,display))
             if labelled:note_openings[block['id']]=labelled['marker_bbox']
         from .source_geometry import unique_anchors
-        corroborated=unique_anchors(optical,available,candidate) if not labelled else []
+        proof_pool=(local_indices if valid and block['role'] in ('running_head','folio') else available)
+        corroborated=unique_anchors(optical,proof_pool,candidate) if not labelled else []
         if corroborated:
             matched=corroborated
         if not corroborated and block['role']=='body' and hasattr(display,'doc'):

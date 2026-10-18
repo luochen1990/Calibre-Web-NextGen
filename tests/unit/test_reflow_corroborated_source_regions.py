@@ -136,3 +136,16 @@ def test_native_wrapped_placement_ignores_an_interleaved_other_column():
         'near mills 121 232 343 454 565–66 676–77 787–88'.split())
     assert {j for i,j in proof}==set(range(9))
     assert all(i!=10 for i,j in proof)
+
+
+def test_running_head_cannot_relocate_to_matching_body_words():
+    text='The clear sample remains beside Brindle.'
+    optical=[word('D4MAGED',40,12),word('HEADER',90,12)]
+    optical.extend(word(t,40+i*55,200)for i,t in enumerate(text.split()))
+    header=dict(id='head',text=text,role='running_head',bbox=[0,0,1000,70],marker='',
+                low_confidence=[],continues_previous=False,continues_next=False)
+    regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    answer,_=vp.bind_geometry({'blocks':[header]},optical,display,regions,{})
+    assert answer['blocks'][0]['bbox']==header['bbox']
+    assert not any(vp.owned_words([w],r)for w in optical if w['bbox'][1]==200
+                   for r in regions.get('head',[]))
