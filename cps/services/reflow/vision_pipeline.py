@@ -2399,7 +2399,15 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             if regions is not None:regions.setdefault('_instances',{})[_source_instance(optical[i])]=note['id']
     # Bind BODY first so restored edge instances are reserved before a caption
     # or note can globally borrow its inline reference or continuation.
+    controller=unit_recovery.current()
+    blocked=controller.blocked(display.pno) if controller else {}
     for block in sorted(answer['blocks'],key=lambda b:b['role']!='body'):
+        if (block['role']=='footnote' and block['id'] in blocked
+                and block['text']==block['marker']==''):
+            # A rejected note's identity carrier cannot establish pixel
+            # ownership, including when its original rectangle was invalid.
+            if regions is not None:regions[block['id']]=[]
+            continue
         x=block['bbox'];valid=all(0<=v<=1000 for v in x) and x[0]<x[2] and x[1]<x[3]
         if block['role'] in ('figure','table') and valid:continue
         candidate=[lex(w) for w in re.sub(r'<n:[^>]+>',' ',block['text']).split()]
@@ -4007,7 +4015,19 @@ def _source_paragraph_boundaries(answer,optical,display,regions,body_owners):
 
 def _omission_coverage(answer,display,regions):
     """Record exactly the footprints used to consider each live unit covered."""
-    return {b['id']:regions.get(b['id'],[block_rect(b,display)]) for b in answer['blocks']}
+    coverage={b['id']:regions.get(b['id'],[block_rect(b,display)]) for b in answer['blocks']}
+    controller=unit_recovery.current()
+    blocked=controller.blocked(display.pno) if controller else {}
+    for block in answer['blocks']:
+        if (block['role']=='footnote' and block['id'] in blocked
+                and not coverage[block['id']]):
+            # An unplaced note retains the complete original page as context.
+            # That context covers unclaimed ink without assigning it a note
+            # location or reclassifying its text as an omitted body paragraph.
+            # Independently owned body remains live. A previously admitted
+            # narrower note footprint is preserved by register_regions.
+            coverage[block['id']]=[list(display.rect)]
+    return coverage
 
 
 def cover_missing_lines(answer,optical,source_words,display,regions=None,body_owners=None):

@@ -591,6 +591,12 @@ class Controller:
             if block['id'] in stubs:
                 if block['id'] in admitted:
                     block['bbox'] = copy.deepcopy(admitted[block['id']]['bbox'])
+                box = block['bbox']
+                if not (all(0 <= v <= 1000 for v in box)
+                        and box[0] < box[2] and box[1] < box[3]):
+                    # This is a schema-only identity, never a located note.
+                    # Its source disclosure retains the complete original page.
+                    block['bbox'] = [0, 0, 1000, 1000]
                 block.update(text='', marker='', low_confidence=[],
                              continues_previous=False, continues_next=False)
             if block['id'] in blocked and block['role'] in ('figure','table'):
