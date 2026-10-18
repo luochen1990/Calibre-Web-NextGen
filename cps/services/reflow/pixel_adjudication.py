@@ -83,6 +83,32 @@ def _word_note(record, index, span_id):
         span_id=span_id,source_range=record.get('source_range'),model_range=record.get('model_range'))
 
 
+def _terminal_word_view(model, words):
+    """Keep split terminal punctuation in its existing lexical token.
+
+    This view changes neither the literal punctuation nor its original input
+    records. A distant punctuation instance cannot enlarge the word's source
+    box or establish physical continuation proof. The original word inventory
+    remains authoritative for that separate geometry decision.
+    """
+    literals={_key(token) for token in model}
+    result=[]
+    for word in words:
+        suffix=word['text']
+        if (result and suffix and all(c in '.,;:!?' for c in suffix)
+                and _key(result[-1]['text']+suffix) in literals):
+            previous=result[-1]
+            a,b=previous['bbox'],word['bbox']
+            height=max(a[3]-a[1],b[3]-b[1],1)
+            adjacent=(min(a[3],b[3])-max(a[1],b[1])>=height*.5
+                      and 0<=b[0]-a[2]<=height*1.5)
+            box=[min(a[0],b[0]),min(a[1],b[1]),max(a[2],b[2]),max(a[3],b[3])] if adjacent else a
+            result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
+                confidence=min(previous.get('confidence',100),word.get('confidence',100)))
+        else:result.append(word)
+    return result
+
+
 def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
@@ -90,6 +116,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     prove a deletion. Repeated phrases require a unique surrounding sequence.
     Source rectangles belong to occurrences, rather than spelling lookups.
     """
+    source=_terminal_word_view(model,source)
+    witness=_terminal_word_view(model,witness)
+    corroboration=_terminal_word_view(model,corroboration)
     source_tokens=[w['text'] for w in source]
     visible=[(i,t) for i,t in enumerate(model) if not t.startswith('<n:')]
     proposed=[t for _,t in visible]
@@ -133,6 +162,15 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                     decisions.append(record);chosen.append((word['text'],word['bbox'],record))
                 else:chosen.append((token,source[index]['bbox'],None))
             continue
+        if z-a==y-b==1:
+            source_word,model_word=original[a],candidate[b]
+            stem=source_word.rstrip('.,;:!?')
+            if stem and stem==model_word.rstrip('.,;:!?') and stem in (source_word,model_word):
+                # Missing terminal punctuation is not a changed lexical word.
+                # Preserve the first reading without manufacturing endpoint
+                # proof from a source token that does not print that suffix.
+                chosen.append((proposed[b],source[a]['bbox'],None))
+                continue
         alternatives=[('source',original[a:z],source_tokens[a:z]),
                       ('model',candidate[b:y],proposed[b:y])]
         # At least one nonempty adjacent anchor must locate the edit. Empty

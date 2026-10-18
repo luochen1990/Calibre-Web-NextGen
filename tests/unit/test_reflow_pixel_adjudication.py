@@ -862,3 +862,16 @@ def test_agreeing_layer_and_reader_do_not_override_two_own_pixel_readings():
     remote=[dict(w,bbox=[w['bbox'][0],200,w['bbox'][2],212])for w in pixels]
     uncertain=adjudicate([w['text']for w in original],original,pixels,corroboration=remote)
     assert uncertain['tokens']==[w['text']for w in original]
+
+
+@pytest.mark.parametrize('punctuation',[';', '.'])
+def test_split_terminal_punctuation_does_not_create_a_word_or_duplicate_symbol(punctuation):
+    source=words('The clear sample remains readable today '+punctuation)
+    proposed=('The clear sample remains readable today'+punctuation).split()
+    result=adjudicate(proposed,source,[dict(w)for w in source])
+    assert result['tokens']==proposed
+    assert result['marked']==set(),'terminal punctuation segmentation is not a word correction'
+    damaged_source=[dict(w,text='t0day' if w['text']=='today' else w['text'])for w in source]
+    damaged=adjudicate(proposed,damaged_source,[dict(w)for w in damaged_source])
+    assert damaged['tokens'][-1].endswith(punctuation)
+    assert 5 in damaged['marked'],'letter disagreement still needs its own uncertainty'
