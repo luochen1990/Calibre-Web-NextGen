@@ -399,6 +399,10 @@ def audit_agreement(tokens, source, witness):
         if len(overlapping)!=1:continue
         other=overlapping[0]
         if other.get('confidence',0)<85 or _key(other['text'])==_key(token):continue
+        # Missing terminal punctuation is not a contradictory word reading.
+        # Keep the original punctuation; letter, case and internal-symbol
+        # differences still require occurrence-linked uncertainty.
+        if _key(other['text']).rstrip('.,;:!?')==_key(token).rstrip('.,;:!?'):continue
         notes[i]=dict(source=[token],model=[token],chosen=[token],
             alternative=[other['text']],status='UNRESOLVED',method='agreeing_readings_pixel_conflict')
     return notes

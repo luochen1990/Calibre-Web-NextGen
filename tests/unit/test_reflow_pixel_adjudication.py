@@ -811,3 +811,12 @@ def test_compile_reserves_proved_marker_before_word_conservation(tmp_path,monkey
     else:
         assert 'class="noteref"'in page['body'][0] and '<sup>7</sup>'in page['body'][0]
     assert not any(d.get('source')==['7']for d in report['blocks'][0]['adjudication'])
+
+
+def test_pixel_audit_does_not_turn_missing_terminal_punctuation_into_a_word_conflict():
+    from cps.services.reflow.pixel_adjudication import audit_agreement
+    source=words('The clear sample remains readable today.')
+    witness=[dict(w,text='today' if w['text']=='today.' else w['text'])for w in source]
+    assert audit_agreement([w['text']for w in source],source,witness)=={}
+    damaged=[dict(w,text='t0day' if w['text']=='today' else w['text'])for w in witness]
+    assert set(audit_agreement([w['text']for w in source],source,damaged))=={5}
