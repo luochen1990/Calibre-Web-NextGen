@@ -100,3 +100,61 @@ def unique_anchors(optical, available, candidate):
     best = max(proofs.values())
     winners = [identity for identity, score in proofs.items() if score == best]
     return list(winners[0]) if len(winners) == 1 else []
+
+
+def labelled_note_anchors(optical, available, candidate, marker):
+    """Locate repeated note wording only through its own printed opening label.
+
+    A hint's proximity cannot choose between repeated citations. A literal
+    source label must stand left of the first printed row, and the chosen
+    passage must start on that row. The next aligned printed label bounds the
+    available continuation. Unreadable or competing labels prove no placement.
+    """
+    import re
+    available = list(available)
+    marker = marker.strip().strip('().[] ')
+    if not re.fullmatch(r'\d{1,4}|[*†‡]', marker) or not available:
+        return None
+    label_text = lambda word: word['text'].strip().strip('().[] ')
+    sizes = [optical[i]['bbox'][3] - optical[i]['bbox'][1] for i in available]
+    height = max(1, statistics.median(sizes))
+    center = lambda box: (box[1] + box[3]) / 2
+    proofs = []
+    for index in available:
+        label = optical[index]
+        if label_text(label) != marker:
+            continue
+        box = label['bbox']
+        # Printed labels occupy the opening margin. The very next physical
+        # word must be adjacent and share the original baseline.
+        row = [i for i in available if i != index and
+               abs(center(optical[i]['bbox']) - center(box)) <= height * .75 and
+               optical[i]['bbox'][0] >= box[2]]
+        row.sort(key=lambda i: optical[i]['bbox'][0])
+        if not row or row[0] == index:
+            continue
+        if not 0 <= optical[row[0]]['bbox'][0] - box[2] <= height * 4:
+            continue
+        right = optical[row[0]]['bbox'][2]
+        for previous, current in zip(row, row[1:]):
+            if optical[current]['bbox'][0] - optical[previous]['bbox'][2] > height * 4:
+                break
+            right = optical[current]['bbox'][2]
+        endings = [center(optical[i]['bbox']) for i in available if i != index and
+                   re.fullmatch(r'\d{1,4}|[*†‡]', label_text(optical[i])) and
+                   abs(optical[i]['bbox'][0] - box[0]) <= height and
+                   center(optical[i]['bbox']) > center(box) + height * .8]
+        bottom = min(endings, default=float('inf')) - height * .5
+        pool = [i for i in available if i != index and
+                center(box) - height * .75 <= center(optical[i]['bbox']) < bottom and
+                optical[i]['bbox'][0] >= box[2] and
+                optical[i]['bbox'][2] <= right + height * 4]
+        anchors = unique_anchors(optical, pool, candidate)
+        if not anchors:
+            continue
+        first = min(anchors, key=lambda pair: pair[1])
+        if first[1] > 2 or abs(center(optical[first[0]]['bbox']) - center(box)) > height * .75:
+            continue
+        proofs.append(dict(anchors=anchors, marker_bbox=list(box),
+                           first_word_bbox=list(optical[row[0]]['bbox'])))
+    return proofs[0] if len(proofs) == 1 else None
