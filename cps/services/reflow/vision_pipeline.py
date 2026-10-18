@@ -2825,6 +2825,49 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             # edge atom. The existing matcher proves that partial word beside
             # its exact same-row neighbour; it is not a distant text match.
             partial=[]
+            if block['role']=='body' and valid:
+                # A compact continuation cannot erase an exact hinted prefix
+                # when original ink proves the divided word across artwork.
+                # This joins source territories, never the intervening pixels.
+                exact = sorted((i,j) for i,j in matched if source[i] == candidate[j])
+                prefix = sorted(exact, key=lambda pair: pair[1])
+                n = 0
+                while n < len(prefix) and prefix[n][1] == n:
+                    n += 1
+                prefix = prefix[:n]
+                tail_positions = {j for i,j in corroborated}
+                if (n >= 3 and n < len(candidate) and
+                        any(len(candidate[j]) >= 6 for i,j in prefix) and
+                        set(range(n+1,len(candidate))) <= tail_positions):
+                    ends = [i for i in local_indices if
+                        optical[i]['text'].endswith(tuple(assemble.HYPHENS)) and
+                        candidate[n].startswith(source[i]) and source[i] != candidate[n]]
+                    pairs = []
+                    for a in ends:
+                        left = optical[a]['bbox'];h = max(1,left[3]-left[1])
+                        previous = optical[prefix[-1][0]]['bbox']
+                        if not (abs(sum(left[1::2])-sum(previous[1::2]))<=h and
+                                0 <= left[0]-previous[2] <= 3*h):continue
+                        if any(w['bbox'][0]>=left[2] and
+                            abs(sum(w['bbox'][1::2])-sum(left[1::2]))<=h for w in optical):continue
+                        for b in available:
+                            right = optical[b]['bbox']
+                            if source[a]+source[b] != candidate[n] or right[1] <= left[3]:continue
+                            if any(w['bbox'][2]<=right[0] and
+                                abs(sum(w['bbox'][1::2])-sum(right[1::2]))<=h for w in optical):continue
+                            following = [optical[i]['bbox']for i,j in corroborated if j==n+1]
+                            if len(following)!=1:continue
+                            near=following[0]
+                            if not (abs(sum(right[1::2])-sum(near[1::2]))<=2*h and
+                                    0 <= near[0]-right[2] <= 3*h and
+                                    abs(right[0]-optical[prefix[0][0]]['bbox'][0])<=3*h):continue
+                            if not any(other['role'] in ('figure','table') and
+                                left[3]<block_rect(other,display)[1] and
+                                block_rect(other,display)[3]<right[1]for other in answer['blocks']):continue
+                            pairs.append((a,b))
+                    if len(pairs)==1:
+                        a,b=pairs[0]
+                        partial.extend(prefix+[(a,n),(b,n)])
             if block['role']=='body':
                 for index,position in matched:
                     if position not in (0,len(candidate)-1):continue

@@ -194,3 +194,24 @@ def test_complete_nearby_caption_rows_outrank_a_partial_local_hint(monkeypatch):
     regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
     vp.bind_geometry({'blocks':[cap]},optical,display,regions,{})
     assert all(any(vp.owned_words([w],r)for r in regions.get('cap',[]))for w in optical)
+
+
+def test_exact_hint_prefix_survives_a_proved_divided_word_across_art(monkeypatch):
+    monkeypatch.setattr(vp,'_reserve_object_instances',lambda *args:None)
+    upper='The careful observers recorded a well-'
+    lower=['preserved sample remains beside the quiet window while workers',
+           'record several independent measurements before the evening rain.']
+    optical=[word(t,40+35*i,70)for i,t in enumerate(upper.split())]
+    for row,text in enumerate(lower):
+        optical += [word(t,40+35*i,250+12*row)for i,t in enumerate(text.split())]
+    block=dict(id='wrapped',role='body',text=upper+' '.join(lower),bbox=[75,90,600,115],
+        marker='',low_confidence=[],continues_previous=False,continues_next=False)
+    art=dict(id='art',role='figure',text='',bbox=[75,160,850,320],marker='',
+        low_confidence=[],continues_previous=False,continues_next=False)
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    regions={}
+    vp.bind_geometry({'blocks':[block,art]},optical,display,regions,{})
+    owned=regions.get('_instances',{})
+    assert all(owned.get(vp._source_instance(w))=='wrapped'for w in optical)
+    assert min(r[1]for r in regions['wrapped'])==70
+    assert len(regions['wrapped'])>=2,'an illustration gap must remain separate source territories'
