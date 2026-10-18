@@ -820,3 +820,19 @@ def test_pixel_audit_does_not_turn_missing_terminal_punctuation_into_a_word_conf
     assert audit_agreement([w['text']for w in source],source,witness)=={}
     damaged=[dict(w,text='t0day' if w['text']=='today' else w['text'])for w in witness]
     assert set(audit_agreement([w['text']for w in source],source,damaged))=={5}
+
+
+@pytest.mark.parametrize('recognized',['t','+'])
+def test_unknown_reference_slot_is_not_an_ordinary_lexical_word(recognized):
+    from cps.services.reflow import vision_pipeline as vp
+    tokens=['Clear','minerals,’‡','<n:note>','and','ordinary','samples.']
+    source=[dict(text='minerals,’',bbox=[30,20,75,32]),
+            dict(text=recognized,bbox=[77,22,81,30]),dict(text='and',bbox=[84,20,102,32])]
+    proof=dict(status='UNPROVED',source_bbox=[77,22,81,30],
+        reason='original_marker_slot_not_uniquely_bound',
+        anchor_before_bbox=source[0]['bbox'],anchor_after_bbox=source[2]['bbox'])
+    model,lexical=vp._lexical_marker_view(tokens,source,{2:proof})
+    assert model==['Clear','minerals,’','<n:note>','and','ordinary','samples.']
+    assert [w['text']for w in lexical]==['minerals,’','and']
+    assert source[1]['text']==recognized,'reservation must not edit the original occurrence inventory'
+    assert proof['lexical_literal_suffix']=='‡'

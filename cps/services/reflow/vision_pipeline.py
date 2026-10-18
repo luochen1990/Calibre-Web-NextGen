@@ -1640,6 +1640,27 @@ def _lexical_marker_view(tokens,source,proofs):
             re.fullmatch(r'\d{1,4}|[*†‡§¶]',proof.get('label') or ''))
         opaque=(proof.get('status')=='UNPROVED' and proof.get('reason') in opaque_reasons
             and proof.get('anchor_before_bbox') and proof.get('anchor_after_bbox'))
+        # An attached symbolic alternative and two exact lexical endpoints
+        # reserve a bounded unknown glyph for the dedicated marker verifier.
+        # English OCR must not turn that provisional reference into a word.
+        before=proof.get('anchor_before_bbox');after=proof.get('anchor_after_bbox')
+        symbol=re.search(r'([*†‡])$',tokens[index-1]) if index else None
+        symbol_value=symbol[1] if symbol else proof.get('lexical_literal_suffix')
+        if not proved and symbol_value:
+            # An unplaced symbolic alternative must survive for final reference
+            # disclosure even when it cannot reserve any original source ink.
+            proof['lexical_literal_suffix']=symbol_value
+            proof['lexical_placeholder']=tokens[index]
+            if tokens[index-1].endswith(symbol_value):lexical[index-1]=tokens[index-1][:-1]
+        provisional=bool(not proved and symbol_value and before and after and
+            before[2]-.5<=box[0] and box[2]<=after[0]+.5 and
+            0<box[2]-box[0]<=max(1,before[3]-before[1])*3 and
+            min(box[3],before[3],after[3])>max(box[1],before[1],after[1]))
+        if provisional:
+            proof['lexical_literal_suffix']=symbol_value
+            proof['lexical_placeholder']=tokens[index]
+            if tokens[index-1].endswith(symbol_value):lexical[index-1]=tokens[index-1][:-1]
+            opaque=True
         if not (proved or opaque):continue
         slots.append((proof,bool(proved)))
         # This field is supplied only by the existing sole-instance proof.
@@ -1662,7 +1683,9 @@ def _lexical_marker_view(tokens,source,proofs):
                 # broad cardinal token. Keep it opaque only inside its actual
                 # bounded raised original slot; numeric-role failures stay live.
                 height=max(1,proof['anchor_before_bbox'][3]-proof['anchor_before_bbox'][1])
-                if (re.fullmatch(r'[0-9*†‡§¶]+',text) and
+                marker_atom=(re.fullmatch(r'[0-9*†‡§¶]+',text) or
+                    proof.get('lexical_literal_suffix') and re.fullmatch(r'[A-Za-z+]',text))
+                if (marker_atom and
                         box[0]-height*.5<=bounds[0] and bounds[2]<=box[2]+height*.5 and
                         box[1]-height*.5<=bounds[1] and bounds[3]<=box[3]+height*.5):
                     replacement='';break
@@ -2119,7 +2142,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         # This early pass cannot dispatch a marker request. Final
                         # rendering keeps the complete original inventories and
                         # performs its usual verified/disclosed reference binding.
-                        marker_corroboration=optical_local
+                        marker_corroboration=optical_local;physical={}
                         if role in ('body','other','caption') and any(
                                 re.fullmatch(r'<n:[^>]+>',t) for t in first_tokens):
                             local_context=dict(note_context,marker_reader=None)
@@ -2157,6 +2180,15 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                                 refined['decisions']=adjudication['decisions']+refined['decisions']
                                 refined['verified_unchanged']=adjudication.get('verified_unchanged',[])
                                 adjudication=refined
+                        # Restore the original symbolic alternative at its
+                        # stable typed reference boundary. The normal original-
+                        # glyph verifier still decides whether it is one action.
+                        for proof in physical.values():
+                            suffix=proof.get('lexical_literal_suffix')
+                            marker=proof.get('lexical_placeholder')
+                            positions=[i for i,t in enumerate(adjudication['tokens']) if t==marker]
+                            if suffix and len(positions)==1 and positions[0]>0:
+                                adjudication['tokens'][positions[0]-1]+=suffix
                         result.update(tokens=adjudication['tokens'],
                             marked=adjudication['marked'],boxes=adjudication['boxes'])
                         evidence_boxes=adjudication['boxes']
