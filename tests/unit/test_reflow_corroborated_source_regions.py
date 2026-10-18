@@ -57,3 +57,19 @@ def test_equal_repeated_readings_do_not_identify_one_source_occurrence():
     optical = [word(t, 40+i*35, y) for y in (100, 300)
                for i, t in enumerate(text.split())]
     assert unique_anchors(optical, range(len(optical)), text.split()) == []
+
+
+def test_compact_unique_pixel_proof_overrides_more_broad_fuzzy_anchors(monkeypatch):
+    text = 'The bright bridge remains open beside seven mills.'
+    optical = [word('clear' if t=='bright' else t, 40+i*35, 200)
+               for i, t in enumerate(text.split())]
+    optical += [word('The', 40, 400)]
+    # A permissive matcher can count more tokens by borrowing a remote copy.
+    # A coherent exact occurrence must dominate that unrelated physical union.
+    original = vp._geometry_anchors
+    def broad(*args, **kwargs):
+        if args[0] is not optical:return original(*args, **kwargs)
+        return [(len(optical)-1, 0)]+[(i, i) for i in range(1, len(text.split()))]
+    monkeypatch.setattr(vp, '_geometry_anchors', broad)
+    regions = bind(text, 'body', [70, 260, 650, 570], optical)
+    assert regions == [[40, 200, 313, 208]]

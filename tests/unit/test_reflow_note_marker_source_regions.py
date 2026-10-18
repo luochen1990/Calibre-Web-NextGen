@@ -81,3 +81,20 @@ def test_same_row_unclaimed_word_between_note_anchors_stays_in_its_source_crop()
     missing=next(w for w in optical if w['text']=='Brindle')
     assert vp.owned_words([missing],regions['gap'][0])==[missing]
     assert regions['_instances'][vp._source_instance(missing)]=='gap'
+
+
+def test_unmatched_interior_note_row_is_owned_once_between_its_proved_rows():
+    optical=[dict(text='7',bbox=[40,520,45,527])]
+    rows=['The narrow bridge remains open.', 'Brindle carried another sample.',
+          'The quiet mill keeps working.']
+    for row, text in enumerate(rows):
+        optical += [dict(text=t,bbox=[60+i*42,520+row*11,98+i*42,528+row*11])
+                    for i,t in enumerate(text.split())]
+    text=' '.join(rows).replace(rows[1], 'Brindlc carricd anothcr samplc.')
+    answer={'blocks':[dict(note('middle','7'),text=text)]}
+    regions={}
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    vp.bind_geometry(answer,optical,display,regions,{})
+    middle=[w for w in optical if w['bbox'][1]==531]
+    assert all(any(vp.owned_words([w],r) for r in regions['middle']) for w in middle)
+    assert all(regions['_instances'][vp._source_instance(w)]=='middle' for w in middle)

@@ -2599,7 +2599,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             if labelled:note_openings[block['id']]=labelled['marker_bbox']
         from .source_geometry import unique_anchors
         corroborated=unique_anchors(optical,available,candidate) if not labelled else []
-        if corroborated and len({j for _,j in corroborated})>=len({j for _,j in matched}):
+        if corroborated:
             matched=corroborated
         borrowed=(block['role']=='body' and block['id'] not in owners and any(
             max(n for a,b,n in SequenceMatcher(None,[source[i] for i in range(len(optical))
@@ -2720,6 +2720,29 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             else:transition=True
             if transition:components.append([])
             components[-1].append(anchor)
+        interior_rows=[]
+        if block['role']=='footnote' and len(components)>1:
+            # A damaged transcription may omit every matching word on a middle
+            # row. Its ink still belongs between this note's proved rows; do
+            # not emit it a second time as an unrelated recovered paragraph.
+            # Fill only short, same-column gaps with no intervening unit or
+            # independently printed opening label. Keep each row's own crop.
+            for before,after in zip(components,components[1:]):
+                a=vision_reading.union([optical[i]['bbox'] for i,j in before])
+                b=vision_reading.union([optical[i]['bbox'] for i,j in after])
+                gap=b[1]-a[3]
+                if not (height*.5<gap<=height*2.5 and min(a[2],b[2])>max(a[0],b[0])):continue
+                left=min(a[0],b[0]);right=max(a[2],b[2])
+                between=[i for i,w in enumerate(optical) if a[3]<sum(w['bbox'][1::2])/2<b[1]
+                         and w['bbox'][0]>=left-height and w['bbox'][2]<=right+height]
+                if not between or any(i not in available for i in between):continue
+                opening=note_openings.get(block['id'])
+                if opening and any(re.fullmatch(r'[0-9]{1,4}|[*†‡]',lex(optical[i]['text']))
+                    and abs(optical[i]['bbox'][0]-opening[0])<=height for i in between):continue
+                rows=_pixel_lines([optical[i] for i in between])
+                if any(any(y['bbox'][0]-x['bbox'][2]>4*height for x,y in zip(row,row[1:])) for row in rows):continue
+                bridged_instances.update(between)
+                interior_rows.extend(vision_reading.union([w['bbox'] for w in row]) for row in rows)
         territories=[]
         for component in components:
             rect=vision_reading.union([optical[i]['bbox'] for i,j in component])
@@ -2752,6 +2775,8 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                 territories.extend(vision_reading.union([w['bbox'] for w in row])
                     for row in _pixel_lines([optical[i] for i,j in component]))
             else:territories.append(rect)
+        if interior_rows:
+            territories=sorted(territories+interior_rows,key=lambda rect:(rect[1],rect[0]))
         if len(territories)>1 and regions is None:
             reject('Disjoint printed reading requires source region ownership')
         if regions is not None:regions[block['id']]=territories
