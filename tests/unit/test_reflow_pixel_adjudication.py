@@ -608,12 +608,13 @@ def test_latin_pixel_alternative_cannot_certify_a_different_accent(pixel):
     assert result['word_notes'][2]['status']=='UNRESOLVED'
 
 
-def test_pixel_word_boundary_requires_one_physical_row():
+def test_printed_separate_words_do_not_fuse_across_a_row_change():
     source=words('Please read clear bridge beside the quiet window today.')
     source[3]['bbox']=[0,40,18,52]
     result=adjudicate('Please read clearbridge beside the quiet window today.'.split(),source,source)
-    assert result['tokens'][2]=='clearbridge'
-    assert result['tokens'][3]=='beside'
+    assert result['tokens'][2:4]==['clear','bridge']
+    assert result['tokens'][4]=='beside'
+    assert result['decisions'][0]['status']=='RESOLVED'
 
 
 def test_local_two_pixel_views_cannot_certify_accent_absence():
@@ -1057,3 +1058,14 @@ def test_fused_recognition_needs_pixel_space_proof_to_clear_unchanged_words():
     assert audit_agreement(tokens,original,witness,boundary_proof=blank)=={}
     assert observed==[('A','distinct')]
     assert set(audit_agreement(tokens,original,witness,boundary_proof=lambda *args:False))=={0,1}
+
+
+def test_separate_printed_words_keep_their_boundary_across_a_row_change():
+    source=words('We read (cafe bleu beside the window.')
+    for w in source[3:]:w['bbox']=[w['bbox'][0]-60,w['bbox'][1]+18,w['bbox'][2]-60,w['bbox'][3]+18]
+    result=adjudicate('We read (cafébleu beside the window.'.split(),source,source)
+    assert result['tokens']==['We','read','(café','bleu','beside','the','window.']
+    assert result['decisions'][0]['method']=='pixel_word_boundary_only'
+    assert result['decisions'][0]['status']=='UNRESOLVED'
+    assert result['marked']=={2,3},'the accent still needs its own pixel proof'
+

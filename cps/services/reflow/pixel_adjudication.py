@@ -231,12 +231,11 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         # the unresolved choice, even when the bare letter sequence agrees.
         supported=[choice for choice in supported if not _accent_conflict(
             ''.join(choice[1]),''.join(proposed[b:y]))]
-        different_rows=any(abs((left_word['bbox'][1]+left_word['bbox'][3]
-                                     -right_word['bbox'][1]-right_word['bbox'][3])/2)>
-            min(left_word['bbox'][3]-left_word['bbox'][1],right_word['bbox'][3]-right_word['bbox'][1])*.75+2
-            for left_word,right_word in zip(source[a:z],source[a+1:z]))
-        wrapped=(z-a>1 and y-b==1 and (different_rows or
-                 any(t.endswith(('-', '\u00ad')) for t in source_tokens[a:z-1]))
+        # A row transition alone does not print a division. Preserve each
+        # independently witnessed word boundary unless an actual terminal
+        # hyphen in the original source proves the joined spelling.
+        wrapped=(z-a>1 and y-b==1 and
+                 any(t.endswith(('-', '\u00ad')) for t in source_tokens[a:z-1])
                  and ''.join(placement(t) for t in source_tokens[a:z])==placement(proposed[b]))
         # A crop that ends at a divided atom has not observed the complete
         # lexical word. Matching that prefix cannot certify deleting the
