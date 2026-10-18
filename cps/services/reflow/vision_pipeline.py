@@ -3707,10 +3707,17 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
             source=_pixel_line_order([w for w in physical if any(owned_words([w],box) for box in territories)])
             tokens=_seam_text(page['body'][position]).split()
             record['published_tokens']=tokens
-            if [w['text'] for w in source]!=tokens:
-                record['pixel_adjudication_status']='UNPLACED_SOURCE_WORDS'
-                continue
             witness=pixel_adjudication.read_crop(display,territories,Path(cache)/'adjudication')
+            if [w['text'] for w in source]!=tokens:
+                # The native factory already proved its formatting/wrap joins.
+                # Inspect original physical occurrences before that transform;
+                # a conflict without an output-word binding is not silent.
+                conflicts=pixel_adjudication.audit_agreement([w['text'] for w in source],source,witness)
+                record['adjudication']=list(conflicts.values())
+                record['pixel_adjudication_status']='SOURCE_OCCURRENCES_CHECKED_BEFORE_NATIVE_TRANSFORM'
+                if conflicts:
+                    raise ValueError('Pixel conflict in transformed native text has no unique published word binding')
+                continue
             refined=pixel_adjudication.refine_fallback(tokens,witness,text_quality.english_lexicon(),source=source)
             # Native fragments retain their structure and word inventory. Only
             # one-for-one, independently corroborated spelling edits fit here.

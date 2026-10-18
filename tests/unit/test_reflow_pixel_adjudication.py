@@ -208,3 +208,25 @@ def test_fallback_cannot_borrow_the_clear_word_from_another_occurrence():
 def test_adjacent_disjoint_row_cannot_certify_the_source_occurrence():
     from cps.services.reflow.pixel_adjudication import _same_occurrence
     assert not _same_occurrence(dict(bbox=[0,0,30,14]),dict(bbox=[0,16,30,22]))
+
+
+def test_native_factory_joined_wrap_still_receives_an_independent_pixel_read(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    with pymupdf.open() as doc:
+        page=doc.new_page(width=400,height=500)
+        page.insert_text((30,70),'The sam-',fontsize=10)
+        page.insert_text((30,85),'ple remains clear today.',fontsize=10)
+        physical=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        regions=[vp.vision_reading.union([w['bbox']for w in physical[:2]]),
+                 vp.vision_reading.union([w['bbox']for w in physical[2:]])]
+        seen=[]
+        def witness(*args):
+            seen.append(args[1]);return physical
+        monkeypatch.setattr(pa,'read_crop',witness)
+        records=[dict(id='wrapped',role='body',source_regions=regions)]
+        published=dict(pno=0,body=['<p>The sample remains clear today.</p>'],asides=[])
+        vp._audit_native_pixels(doc,published,records,tmp_path,object(),{})
+        assert seen==[regions]
+        assert published['body']==['<p>The sample remains clear today.</p>']
+        assert records[0]['published_tokens']=='The sample remains clear today.'.split()
