@@ -114,3 +114,25 @@ def test_joint_placement_needs_visible_ink_and_unique_physical_occurrence():
     assert native_pixel_anchors(native,[],[],candidate)==[]
     repeated=native+[dict(w,bbox=[w['bbox'][0],400,w['bbox'][2],408]) for w in native]
     assert native_pixel_anchors(repeated,repeated,range(len(repeated)),candidate)==[]
+
+
+def test_compact_occurrence_wins_over_shared_anchors_with_extra_source_words():
+    from cps.services.reflow.source_geometry import unique_anchors
+    optical=[word(t,40+i*35,200)for i,t in enumerate('near other mills 121 232 343'.split())]
+    optical += [word(t,40+i*35,212)for i,t in enumerate('near Brindle 454 565 676 787 898'.split())]
+    candidate='near Brindlc 454 565 676 787 898'.split()
+    proof=unique_anchors(optical,range(len(optical)),candidate)
+    assert proof
+    assert all(optical[i]['bbox'][1]==212 for i,j in proof)
+
+
+def test_native_wrapped_placement_ignores_an_interleaved_other_column():
+    from cps.services.reflow.source_geometry import native_pixel_anchors
+    native=[word(t,100+i*35,200,30)for i,t in enumerate('near mills 121 232 343 454 565-66 676-'.split())]
+    native += [word('77',120,211,20),word('787-88',145,211,30),word('Elsewhere',0,207,28)]
+    optical=[dict(w)for w in native]
+    for i,t in [(3,'$32'),(4,'$43'),(5,'$54'),(6,'65-66'),(7,'$76-')]:optical[i]=dict(optical[i],text=t)
+    proof=native_pixel_anchors(native,optical,range(len(optical)),
+        'near mills 121 232 343 454 565–66 676–77 787–88'.split())
+    assert {j for i,j in proof}==set(range(9))
+    assert all(i!=10 for i,j in proof)

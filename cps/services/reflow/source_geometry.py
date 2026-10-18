@@ -92,7 +92,14 @@ def unique_anchors(optical, available, candidate, *, minimum=5, complete_short=T
             longest = max(count for _, _, count in matcher.get_matching_blocks())
             # Extra context in a larger window cannot defeat an equally exact
             # second occurrence. The physical anchor identity is the proof.
-            score = (len(covered), longest)
+            source_start=min(sequence.index(i) for i,j in anchors)
+            source_end=max(sequence.index(i) for i,j in anchors)
+            extra=sum(bool(source_keys[i]) for i in sequence[source_start:source_end+1])-len({i for i,j in anchors})
+            # Borrowing a common word across an unrelated entry adds physical
+            # source words between shared anchors. Prefer the passage that
+            # conserves the candidate's compact sequence. Identical repeated
+            # passages still tie, irrespective of their hint or row wrapping.
+            score = (len(covered), longest, -extra)
             if identity not in proofs or score > proofs[identity]:
                 proofs[identity] = score
     if not proofs:
@@ -205,7 +212,7 @@ def native_pixel_anchors(native, optical, available, candidate):
         joined=a['text'].rstrip(',;:').rstrip('-‐–')+native[k]['text']
         if _key(joined) not in {_key(t) for t in candidate}:continue
         units[i]=dict(geometric[i],text=joined,source_indices=[i,k])
-    proof=unique_anchors(units,range(len(units)),candidate)
+    proof=unique_anchors(units,pool,candidate)
     variant=False
     if {j for _,j in proof}!=set(range(len(candidate))):
         # A differing interior word cannot locate itself. Three exact anchors
