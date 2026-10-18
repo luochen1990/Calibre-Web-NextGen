@@ -1703,6 +1703,11 @@ def _lexical_marker_view(tokens,source,proofs):
         before=proof.get('anchor_before_bbox');after=proof.get('anchor_after_bbox')
         symbol=re.search(r'([*†‡])$',tokens[index-1]) if index else None
         symbol_value=symbol[1] if symbol else proof.get('lexical_literal_suffix')
+        if not proved and symbol_value:
+            # An unplaced literal is protected from lexical replacement too.
+            # This metadata makes no claim about its original glyph or owner.
+            proof['unplaced_literal_suffix']=symbol_value
+            proof['unplaced_literal_placeholder']=tokens[index]
         # Keep an unplaced literal in all lexical views. Removing it only from
         # the model makes independent OCR reintroduce the same ink as a word
         # correction, after which restoration would print the symbol twice.
@@ -2241,11 +2246,26 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         # stable typed reference boundary. The normal original-
                         # glyph verifier still decides whether it is one action.
                         for proof in physical.values():
-                            suffix=proof.get('lexical_literal_suffix')
-                            marker=proof.get('lexical_placeholder')
+                            suffix=proof.get('lexical_literal_suffix') or proof.get('unplaced_literal_suffix')
+                            marker=proof.get('lexical_placeholder') or proof.get('unplaced_literal_placeholder')
                             positions=[i for i,t in enumerate(adjudication['tokens']) if t==marker]
                             if suffix and len(positions)==1 and positions[0]>0:
-                                adjudication['tokens'][positions[0]-1]+=suffix
+                                index=positions[0]-1
+                                if not adjudication['tokens'][index].endswith(suffix):
+                                    adjudication['tokens'][index]+=suffix
+                                decision=adjudication['word_notes'].get(index)
+                                if decision and decision['method'] in ('independent_upright_crop',
+                                        'two_own_pixel_readings','agreeing_readings_pixel_conflict'):
+                                    values=[decision[k] for k in ('source','model','chosen','alternative') if k in decision]
+                                    lexical=lambda value:value[:-len(suffix)] if value.endswith(suffix) else value
+                                    if (all(len(value)==1 for value in values)
+                                            and len({lexical(value[0])for value in values})==1):
+                                        # Glyph identity has its own disclosure.
+                                        # It is not a correction of this unchanged
+                                        # lexical word, nor authority to delete it.
+                                        adjudication['marked'].discard(index)
+                                        adjudication['word_notes'].pop(index)
+                                        adjudication['decisions']=[d for d in adjudication['decisions'] if d is not decision]
                         result.update(tokens=adjudication['tokens'],
                             marked=adjudication['marked'],boxes=adjudication['boxes'])
                         evidence_boxes=adjudication['boxes']

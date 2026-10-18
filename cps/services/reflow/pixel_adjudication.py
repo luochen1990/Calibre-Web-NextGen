@@ -449,9 +449,10 @@ def audit_agreement(tokens, source, witness):
     to replace a valid source word. Only the source occurrence's own overlapping
     ink can cause a mark; a different copy of a repeated word cannot do so.
     """
-    if len(tokens)!=len(source):return {}
+    visible=[(i,token)for i,token in enumerate(tokens) if not token.startswith('<n:')]
+    if len(visible)!=len(source):return {}
     notes={}
-    for i,(token,word) in enumerate(zip(tokens,source)):
+    for (i,token),word in zip(visible,source):
         overlapping=[w for w in witness if _same_occurrence(word,w)]
         if len(overlapping)!=1:continue
         other=overlapping[0]

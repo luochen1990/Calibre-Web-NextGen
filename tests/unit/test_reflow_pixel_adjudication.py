@@ -892,6 +892,50 @@ def test_unplaced_terminal_symbol_is_not_removed_then_reintroduced_as_a_word():
     assert 'lexical_placeholder' not in proof
 
 
+@pytest.mark.parametrize('kind',['plain_pixels','attached_pixels','crop_omits_symbol'])
+def test_unplaced_literal_survives_lexical_adjudication_exactly_once(tmp_path,monkeypatch,kind):
+    import copy,pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    text='The clear sample remains readable near the ordinary village before sunset today.'
+    source=words(text)
+    if kind!='plain_pixels':source[2]=dict(source[2],text='sample*')
+    witness=copy.deepcopy(source)
+    if kind=='crop_omits_symbol':witness[2]['text']='sample'
+    monkeypatch.setattr(pa,'read_crop',lambda *args:copy.deepcopy(witness))
+    monkeypatch.setattr(vp,'_literal_note_refs',lambda *args,**kwargs:{})
+    def proof(tokens,*args,**kwargs):
+        return {tokens.index('<n:n1>'):dict(status='UNPROVED',source_bbox=[10,10,300,40],
+            reason=vp._MARKER_SLOT_UNBOUND)}
+    monkeypatch.setattr(vp,'_placeholder_display_evidence',proof)
+    context=dict(cache=tmp_path/'cache',labels={'*':[(0,'n1')]},owners={},
+        catalogue={(0,'n1'):{'target':'v4-note-0-n1','label':'*'}},refs={})
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open()as doc:
+        doc.new_page(width=600,height=400)
+        _,report=vp.compile_page({'blocks':[block(text.replace('sample','sample*<n:n1>'),bbox=(0,0,1000,700)),
+            block('',ident='n1',role='footnote',marker='*',bbox=(0,900,1000,1000))]},
+            source,SourceDisplay(doc,0),0,Package(),{},pixel_words=source,note_context=context)
+    record=report['blocks'][0]
+    assert record['published_tokens']==text.replace('sample','sample* <n:n1>').split()
+    assert not record['marked'],'only glyph identity is uncertain; the unchanged lexical word is not a correction'
+    assert not record['adjudication']
+    assert report['note_marker_disclosures'],'the unproved reference still requires its own source disclosure'
+
+
+def test_agreeing_word_pixel_audit_keeps_indices_across_typed_references():
+    from cps.services.reflow.pixel_adjudication import audit_agreement
+    source=words('Clear samples remain readable.')
+    witness=[dict(w,text='samp1es' if w['text']=='samples' else w['text'])for w in source]
+    notes=audit_agreement(['Clear','<n:note>','samples','remain','readable.'],source,witness)
+    assert set(notes)=={2}
+    assert notes[2]['source']==notes[2]['model']==notes[2]['chosen']==['samples']
+    assert notes[2]['alternative']==['samp1es']
+    assert notes[2]['status']=='UNRESOLVED'
+
+
 def test_native_live_text_without_a_source_occurrence_cannot_skip_pixel_audit(tmp_path):
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp
