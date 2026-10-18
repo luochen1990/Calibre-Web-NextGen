@@ -139,3 +139,28 @@ def test_complete_source_paragraph_keeps_its_guarded_tail_when_model_borrows_lon
     assert record['published_tokens'] == CLEAN.split()
     assert CLEAN in ''.join(published['body'])
     assert ''.join(published['body']).count('Green baskets') == 1
+
+
+@pytest.mark.parametrize('printed,reading,verified',[
+    ('Green baskets contain ripe apples.','Green baskets contain ripe apples.',True),
+    ('Green baskets contain ripe apples.','Purple carts carry fresh bread.',False),
+    ('','Green baskets contain ripe apples.',False),
+])
+def test_image_alt_reading_requires_its_own_independent_pixels(compilation,tmp_path,monkeypatch,printed,reading,verified):
+    from cps.services.reflow import pixel_adjudication
+    display,package=compilation
+    observed=[]
+    def recognize(own_display,regions,cache):
+        assert own_display is display
+        observed.append(regions)
+        return [dict(w,confidence=99)for w in words(printed)]
+    monkeypatch.setattr(pixel_adjudication,'read_crop',recognize)
+    published,report=vision_pipeline.compile_page(
+        answer(block(reading,role='figure',bbox=(0,0,1000,1000))),[],
+        display,0,package,{},note_context={'cache':tmp_path})
+    assert observed,'alt text must not bypass the independent pixel read'
+    text=''.join(published['body'])
+    assert ('alt="'+reading+'"'in text) is verified
+    if not verified:assert 'alt="Original figure from PDF page 1"'in text
+    record=report['blocks'][0]
+    assert record['description_pixel_verified']is verified

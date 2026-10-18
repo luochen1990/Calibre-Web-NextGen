@@ -2102,13 +2102,29 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 src=f'images/vision_p{pno:04d}_{bid}.jpg'
                 package.image(src,display.jpeg(box,scale=2,quality=88))
                 image_records[src]=dict(page=pno,bbox=box,kind='figure' if role=='figure' else 'table')
-                body.append(f'<figure><img src="{src}" alt="{escape(block["text"],quote=True)}"/></figure>')
+                # A generated description is not a transcription merely
+                # because it consists of dictionary words. Publish literal
+                # reading text only when this original crop proves it; otherwise
+                # the actual figure carries a neutral source label.
+                description_verified=False
+                if note_context and note_context.get('cache'):
+                    from . import pixel_adjudication
+                    description_pixels=pixel_adjudication.read_crop(display,territories,
+                        Path(note_context['cache'])/'adjudication')
+                    description_verified=bool(description_pixels) and (
+                        [pixel_adjudication._key(w['text']) for w in description_pixels]
+                        ==[pixel_adjudication._key(t) for t in block['text'].split()]
+                        and all(w.get('confidence',0)>=90 for w in description_pixels))
+                description=(block['text'] if description_verified else
+                             f'Original {role} from PDF page {pno+1}')
+                body.append(f'<figure><img src="{src}" alt="{escape(description,quote=True)}"/></figure>')
                 if role=='table':
                     proved=_source_grid_live_text(block['text'],owned(pixel_words or words),display,box,pno,bid)
                     if proved:
                         html,case=proved;body[-1]+=html;live_table_cells.append(case)
                         tokens_count+=case['source_words']
                 alignment.append(dict(id=bid,role=role,bbox=box,
+                    description_pixel_verified=description_verified,
                     source_bound_art=bool((regions or {}).get(bid)) and
                         (role=='figure' or vision_pixels.table_rules(display,box)),
                     continues_previous=False,continues_next=False));continue
@@ -4321,7 +4337,10 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
             edits=[]
             for index,decision in conflicts.items():
                 a,z=ranges[index]
+                formatted=None
                 if decision['status']=='RESOLVED' and '<' in fragment[a:z]:
+                    formatted=pixel_adjudication.replace_formatted_word(fragment[a:z],decision['chosen'][0])
+                if decision['status']=='RESOLVED' and '<' in fragment[a:z] and formatted is None:
                     # Keep ordinal formatting and typed reference actions. A
                     # lexical replacement cannot delete their inline markup;
                     # retain the authored word with an owned unresolved note.
@@ -4338,7 +4357,7 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                              else escape(chosen)+'. Consult the original printed word in the image.')
                 explanation+=' An independent upright crop supports this correction.' if decision['status']=='RESOLVED' else ' An independent upright crop could not settle this difference.'
                 page['asides'].append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{page["pno"]}" data-reflow-owner-block="{escape(record["id"],quote=True)}" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{origin}">Return</a></aside>')
-                if chosen!=tokens[index]:edits.append((a,z,escape(chosen)))
+                if chosen!=tokens[index]:edits.append((a,z,formatted if formatted is not None else escape(chosen)))
                 # Add the control after any enclosing inline action closes;
                 # never nest a new link inside a typed source reference.
                 closing=re.match(r'(?:</(?:sup|sub|em|strong|i|b|a|span)\s*>)+',fragment[z:],re.I)

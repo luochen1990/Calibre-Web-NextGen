@@ -529,3 +529,34 @@ def fragment_word_ranges(fragment, tokens):
         words.append((word.group(),a,z))
     if [word for word,_,_ in words]!=tokens:return None
     return [(a,z) for _,a,z in words]
+
+
+def replace_formatted_word(fragment, chosen):
+    """Replace text characters while preserving their inline style boundaries.
+
+    Typed references, ordinals and other structural elements are deliberately
+    outside this lexical edit. Character alignment maps existing style cuts;
+    it never moves an action or strips its tags to obtain a spelling.
+    """
+    import re
+    from html import escape
+    from . import annotate
+    if any(name.casefold() not in ('em','strong','i','b','span')
+           for name in re.findall(r'</?([a-zA-Z][\w:-]*)\b',fragment)):
+        return None
+    nodes=[n for n in annotate._text_nodes(fragment,include_uncertain=True)if n.plain]
+    original=''.join(n.plain for n in nodes)
+    if not original or any(c.isspace()for c in original+chosen):return None
+    def boundary(offset):
+        if offset==len(original):return len(chosen)
+        for _,a,z,b,y in SequenceMatcher(None,original,chosen,autojunk=False).get_opcodes():
+            if a<=offset<z:return b+round((offset-a)*(y-b)/(z-a))
+        return 0
+    edits=[];offset=0
+    for node in nodes:
+        end=offset+len(node.plain)
+        edits.append((node.starts[0],node.ends[-1],escape(chosen[boundary(offset):boundary(end)])))
+        offset=end
+    for a,z,value in reversed(edits):fragment=fragment[:a]+value+fragment[z:]
+    return fragment
+

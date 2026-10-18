@@ -1069,3 +1069,28 @@ def test_separate_printed_words_keep_their_boundary_across_a_row_change():
     assert result['decisions'][0]['status']=='UNRESOLVED'
     assert result['marked']=={2,3},'the accent still needs its own pixel proof'
 
+
+@pytest.mark.parametrize('word',['<em>remalns</em>','re<em>malns</em>'])
+def test_native_pixel_correction_preserves_inline_word_formatting(tmp_path,monkeypatch,word):
+    import re
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,vision_pixels
+    fragment='<p>The clear sample '+word+' readable today.</p>'
+    class Package:
+        def disclosure_image(self,*args):pass
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=500)
+        leaf.insert_text((30,70),'The clear sample remalns readable today.',fontsize=10)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in leaf.get_text('words')]
+        witness=[dict(w,text='remains'if w['text']=='remalns'else w['text'])for w in source]
+        monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+        monkeypatch.setattr(vision_pixels,'words',lambda *args:witness)
+        page=dict(pno=0,body=[fragment],asides=[])
+        records=[dict(id='native-0',role='body',source_regions=[[25,55,390,80]])]
+        vp._audit_native_pixels(doc,page,records,tmp_path,Package(),{})
+    authored=re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',page['body'][0])
+    assert vp._seam_text(authored)=='The clear sample remains readable today.'
+    assert '<em>'in authored and '</em>'in authored
+    assert records[0]['marked']==[3]
+    assert any(d['status']=='RESOLVED'and d['chosen']==['remains']for d in records[0]['adjudication'])
+
