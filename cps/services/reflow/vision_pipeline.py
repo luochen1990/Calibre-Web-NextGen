@@ -2334,6 +2334,8 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
     def reject(message):
         # The current response unit owns this error. A previous loop's note
         # object must not turn an unplaced block into a page-wide rejection.
+        if unit_recovery.current() is None:
+            raise ValueError(message)
         with unit_recovery.guard(display.pno,'geometry',block=block['id']):
             raise ValueError(message)
     def lex(word):return re.sub(r'[^\w]', '', vision_reading.normalized(word).casefold())
@@ -3899,6 +3901,8 @@ def _source_paragraph_boundaries(answer,optical,display,regions,body_owners):
     import statistics
     answer=copy.deepcopy(answer);published=[];repairs=[]
     def reject(message):
+        if unit_recovery.current() is None:
+            raise ValueError(message)
         with unit_recovery.guard(display.pno,'source_word_coverage',block=block['id']):
             raise ValueError(message)
     identities={b['id'] for b in answer['blocks']}
