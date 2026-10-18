@@ -18,6 +18,7 @@ from . import unit_recovery, text_quality, visible_scripts, local_reading
 
 
 _MARKER_GROUP_AMBIGUOUS = 'multiple_original_glyphs_for_one_placeholder'
+_MARKER_GROUP_INCOMPLETE = 'complete_original_marker_group_not_proved'
 _MARKER_SLOT_UNBOUND = 'original_marker_slot_not_uniquely_bound'
 _MARKER_ROLE_UNPROVED = 'numeric_original_marker_role_unproved'
 
@@ -1687,7 +1688,7 @@ def _lexical_marker_view(tokens,source,proofs):
     opaque_reasons={_MARKER_GROUP_AMBIGUOUS,
         'original_character_optical_marker_conflict',
         'original_character_without_independent_optical_corroboration',
-        'complete_original_marker_group_not_proved','original_marker_verification_unusable'}
+        _MARKER_GROUP_INCOMPLETE,'original_marker_verification_unusable'}
     for index,proof in proofs.items():
         if not (0<=index<len(tokens) and re.fullmatch(r'<n:[^>]+>',tokens[index])):continue
         box=proof.get('source_bbox')
@@ -1869,7 +1870,7 @@ def _placeholder_display_evidence(tokens,optical,display,box,context,pno,literal
                         slot[0]=max(box[0],a[0]-.4)
                         ink=vision_pixels.ink_bounds(display,slot)
                     else:ink=list(unique[0]['bbox']) if conflict or uncorroborated else vision_pixels.ink_bounds(display,slot)
-                    if incomplete_group:proof['reason']='complete_original_marker_group_not_proved'
+                    if incomplete_group:proof['reason']=_MARKER_GROUP_INCOMPLETE
                     if conflict:proof['reason']='original_character_optical_marker_conflict';proof['optical_labels']=sorted(optical_labels)
                     elif uncorroborated:proof['reason']='original_character_without_independent_optical_corroboration'
                     proof['source_bbox']=list(ink or slot)

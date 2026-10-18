@@ -883,7 +883,7 @@ def test_unplaced_terminal_symbol_is_not_removed_then_reintroduced_as_a_word():
             dict(text='specimens*',bbox=[38,20,95,32])]
     original=copy.deepcopy(source)
     proof=dict(status='UNPROVED',source_bbox=[38,20,98,32],
-        reason='complete_original_marker_group_not_proved',
+        reason=vp._MARKER_GROUP_INCOMPLETE,
         anchor_before_bbox=source[-1]['bbox'],anchor_after_bbox=None)
     model,lexical=vp._lexical_marker_view(tokens,source,{2:proof})
     assert model==tokens
