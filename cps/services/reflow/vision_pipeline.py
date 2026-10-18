@@ -2601,6 +2601,14 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
         corroborated=unique_anchors(optical,available,candidate) if not labelled else []
         if corroborated:
             matched=corroborated
+        if not corroborated and block['role']=='body' and hasattr(display,'doc'):
+            from .source_geometry import native_pixel_anchors
+            if not hasattr(display,'_placement_words'):
+                display._placement_words=layer_words(display.doc,display.pno,display)
+            joint=native_pixel_anchors(display._placement_words,optical,available,candidate)
+            if joint:
+                matched=joint
+                repairs.append(dict(block=block['id'],method='native_sequence_on_independent_pixel_ink'))
         borrowed=(block['role']=='body' and block['id'] not in owners and any(
             max(n for a,b,n in SequenceMatcher(None,[source[i] for i in range(len(optical))
                 if reserved.get(i)==owner],candidate,autojunk=False).get_matching_blocks())>=vision_reading.UNALIGNED_RUN

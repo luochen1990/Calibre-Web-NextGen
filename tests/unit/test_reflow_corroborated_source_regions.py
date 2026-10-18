@@ -73,3 +73,44 @@ def test_compact_unique_pixel_proof_overrides_more_broad_fuzzy_anchors(monkeypat
     monkeypatch.setattr(vp, '_geometry_anchors', broad)
     regions = bind(text, 'body', [70, 260, 650, 570], optical)
     assert regions == [[40, 200, 313, 208]]
+
+
+def test_native_sequence_can_locate_wrapped_numeric_ink_without_certifying_digits(monkeypatch):
+    text='near mills 121 232 343 454 565–66 676–77 787–88'
+    native=[word(t,40+i*42,200,38) for i,t in enumerate(
+        'near mills 121 232 343 454 565-66 676-'.split())]
+    native += [word('77',60,211,20),word('787-88',85,211,38)]
+    optical=[dict(w) for w in native]
+    for i,t in [(3,'$32'),(4,'$43'),(5,'$54'),(6,'65-66'),(7,'$76-')]:
+        optical[i]=dict(optical[i],text=t)
+    monkeypatch.setattr(vp,'layer_words',lambda *args:native)
+    block=dict(id='wrapped',text=text,role='body',bbox=[70,300,650,330],marker='',
+               low_confidence=[],continues_previous=False,continues_next=False)
+    regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0,doc=object())
+    bound,_=vp.bind_geometry({'blocks':[block]},optical,display,regions,{})
+    assert bound['blocks'][0]['text']==text
+    assert min(r[1] for r in regions['wrapped'])==200
+    assert max(r[3] for r in regions['wrapped'])==219
+    assert all(regions['_instances'][vp._source_instance(w)]=='wrapped' for w in optical)
+
+
+def test_joint_views_place_one_interior_variant_but_do_not_correct_it(monkeypatch):
+    text='The bright renovation 12–13'
+    native=[word(t,40+i*50,200,46) for i,t in enumerate('The bright renovations 12-13'.split())]
+    optical=[dict(w) for w in native]
+    monkeypatch.setattr(vp,'layer_words',lambda *args:native)
+    block=dict(id='variant',text=text,role='body',bbox=[70,300,650,330],marker='',
+               low_confidence=[],continues_previous=False,continues_next=False)
+    regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0,doc=object())
+    bound,_=vp.bind_geometry({'blocks':[block]},optical,display,regions,{})
+    assert bound['blocks'][0]['text']==text
+    assert regions['variant']==[[40,200,236,208]]
+
+
+def test_joint_placement_needs_visible_ink_and_unique_physical_occurrence():
+    from cps.services.reflow.source_geometry import native_pixel_anchors
+    native=[word(t,40+i*50,200,46) for i,t in enumerate('The bright renovations 12-13'.split())]
+    candidate='The bright renovation 12–13'.split()
+    assert native_pixel_anchors(native,[],[],candidate)==[]
+    repeated=native+[dict(w,bbox=[w['bbox'][0],400,w['bbox'][2],408]) for w in native]
+    assert native_pixel_anchors(repeated,repeated,range(len(repeated)),candidate)==[]

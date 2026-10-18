@@ -14,7 +14,7 @@ def _key(value):
                    if not unicodedata.combining(char) and (char.isalnum() or char == '_'))
 
 
-def unique_anchors(optical, available, candidate, *, minimum=5):
+def unique_anchors(optical, available, candidate, *, minimum=5, complete_short=True):
     """Return a uniquely corroborated compact row window, or no proof.
 
     A distant common word cannot bridge unrelated entries. Adjacent printed
@@ -86,7 +86,7 @@ def unique_anchors(optical, available, candidate, *, minimum=5):
                 continue
             # Complete short readings are required: common suffixes alone do
             # not locate an unfamiliar name or abbreviated heading.
-            if len(positions) <= 4 and covered != positions:
+            if complete_short and len(positions) <= 4 and covered != positions:
                 continue
             identity = tuple(anchors)
             longest = max(count for _, _, count in matcher.get_matching_blocks())
@@ -161,3 +161,85 @@ def labelled_note_anchors(optical, available, candidate, marker):
         proofs.append(dict(anchors=anchors, marker_bbox=list(box),
                            first_word_bbox=list(optical[row[0]]['bbox'])))
     return proofs[0] if len(proofs) == 1 else None
+
+
+def native_pixel_anchors(native, optical, available, candidate):
+    """Locate a complete native sequence on independently visible pixel ink.
+
+    This is placement evidence only. Native spellings never certify chosen
+    words. A literal divided token can establish two original ink occurrences;
+    a short reading with one interior mismatch needs agreement of both source
+    views on every source word. Neither path trusts the supplied rectangle.
+    """
+    if not native or not optical or not 3<=len(candidate)<=40:return []
+    available=list(available)
+    # Font metric boxes can overlap adjacent baselines. Coherent-row testing
+    # uses their central band; returned ownership still uses original ink.
+    geometric=[]
+    for i,w in enumerate(native):
+        a=w['bbox'];h=max(1,a[3]-a[1]);cy=(a[1]+a[3])/2
+        geometric.append(dict(w,bbox=[a[0],cy-h*.3,a[2],cy+h*.3],source_indices=[i]))
+    base=unique_anchors(geometric,range(len(native)),candidate,
+                        minimum=3,complete_short=False)
+    covered={j for _,j in base}
+    if len(covered)<3:return []
+    height=max(1,statistics.median(w['bbox'][3]-w['bbox'][1] for w in native))
+    boxes=[native[i]['bbox'] for i,j in base]
+    envelope=[min(b[0] for b in boxes),min(b[1] for b in boxes),
+              max(b[2] for b in boxes),max(b[3] for b in boxes)]
+    pool=[i for i,w in enumerate(native) if w['bbox'][0]>=envelope[0]-height*2
+          and w['bbox'][0]<=envelope[2]+height*3
+          and w['bbox'][1]>=envelope[1]-height
+          and w['bbox'][3]<=envelope[3]+height*2.5]
+    units=[dict(w) for w in geometric]
+    # An internal divided word is still one candidate token. Keep both source
+    # instances, and require its second atom to open the next physical row.
+    for i in pool:
+        a=native[i];box=a['bbox']
+        if not a['text'].rstrip(',;:').endswith(('-', '‐', '–')):continue
+        next_row=[k for k in pool if height*.3<native[k]['bbox'][1]-box[1]<=height*2]
+        if not next_row:continue
+        top=min(native[k]['bbox'][1] for k in next_row)
+        row=[k for k in next_row if abs(native[k]['bbox'][1]-top)<height*.5]
+        k=min(row,key=lambda k:native[k]['bbox'][0])
+        joined=a['text'].rstrip(',;:').rstrip('-‐–')+native[k]['text']
+        if _key(joined) not in {_key(t) for t in candidate}:continue
+        units[i]=dict(geometric[i],text=joined,source_indices=[i,k])
+    proof=unique_anchors(units,range(len(units)),candidate)
+    variant=False
+    if {j for _,j in proof}!=set(range(len(candidate))):
+        # A differing interior word cannot locate itself. Three exact anchors
+        # and complete native/pixel agreement may locate its physical slot.
+        missing=set(range(len(candidate)))-covered
+        if len(candidate)>4 or len(missing)!=1:return []
+        j=next(iter(missing))
+        if j in (0,len(candidate)-1):return []
+        variants=[]
+        for i in pool:
+            if len(_key(native[i]['text']))<6:continue
+            alternate=list(candidate);alternate[j]=native[i]['text']
+            found=unique_anchors(geometric,range(len(native)),alternate)
+            if {n for _,n in found}==set(range(len(candidate))):variants.append(found)
+        identities={tuple(found) for found in variants}
+        if len(identities)!=1:return []
+        proof=list(next(iter(identities)));variant=True
+        units=[dict(w) for w in geometric]
+    result=[];exact=set();claimed={}
+    for index,j in proof:
+        for source_index in units[index]['source_indices']:
+            a=native[source_index];box=a['bbox'];matches=[]
+            for i in available:
+                b=optical[i]['bbox'];h=max(1,box[3]-box[1],b[3]-b[1])
+                overlap=min(box[2],b[2])-max(box[0],b[0])
+                if abs((box[1]+box[3]-b[1]-b[3])/2)>h*.65:continue
+                if overlap<min(box[2]-box[0],b[2]-b[0])*.5:continue
+                matches.append(i)
+            if not matches:return []
+            same=[i for i in matches if _key(optical[i]['text'])==_key(a['text'])]
+            if variant and len(same)!=1:return []
+            if same:exact.add(j)
+            for i in matches:
+                if i in claimed and claimed[i]!=j:return []
+                claimed[i]=j;result.append((i,j))
+    if len(exact)<3:return []
+    return sorted(set(result),key=lambda pair:(pair[1],optical[pair[0]]['bbox'][1],optical[pair[0]]['bbox'][0]))
