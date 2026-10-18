@@ -142,3 +142,37 @@ def test_differently_recognized_note_label_retains_an_explicit_owned_occurrence(
     assert remaining==optical[1:]
     remote=dict(optical[0],bbox=[40,640,45,647])
     assert vp._note_lexical_evidence([remote],proof)==[remote]
+
+
+def test_complete_two_column_note_is_not_replaced_by_a_partial_labelled_prefix():
+    rows=['The narrow bridge remains','beside the quiet mill.','A careful worker waits','Another sample arrives','before evening rain.']
+    optical=[dict(text='*',bbox=[24,500,29,507])]
+    for number,text in enumerate(rows):
+        x,y=(40,500+12*number) if number<3 else (210,500+12*(number-3))
+        optical += [dict(text=t,bbox=[x+32*i,y,x+32*i+28,y+8])for i,t in enumerate(text.split())]
+    block=dict(note('continued','*'),text=' '.join(rows),bbox=[40,680,900,770])
+    regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    vp.bind_geometry({'blocks':[block]},optical,display,regions,{})
+    actual=vp._owned_block_words(block,{'blocks':[block]},optical,display,regions,ordered=True)
+    assert [w['text']for w in vp._note_lexical_evidence(actual,regions.get('_note_openings',{}).get('continued'))]==block['text'].split()
+
+
+def test_complete_note_territory_does_not_prove_an_interior_label_partition():
+    optical=[dict(text=t,bbox=[40+32*i,500,68+32*i,508])for i,t in enumerate('A careful worker waits.'.split())]
+    optical += [dict(text='+',bbox=[24,520,29,527])]
+    optical += [dict(text=t,bbox=[40+32*i,520,68+32*i,528])for i,t in enumerate('Another printed citation follows.'.split())]
+    block=dict(note('merged','†'),text='A careful worker waits. Another printed citation follows.',bbox=[40,680,900,770])
+    regions={'merged':[[24,500,180,528]]};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    assert vp._unpartitioned_note_openings({'blocks':[block]},optical,display,regions,{})==[
+        dict(block='merged',source_bbox=[24,520,29,527])]
+    initial=dict(text='+',bbox=[24,500,29,507])
+    control=[initial]+[w for w in optical if w['text']!='+']
+    regions['_note_openings']={'merged':dict(observed_text='+',source_bbox=initial['bbox'])}
+    assert vp._unpartitioned_note_openings({'blocks':[block]},control,display,regions,{})==[]
+
+
+def test_complete_note_placement_does_not_choose_between_repeated_occurrences():
+    text='The narrow bridge remains beside the quiet mill.'
+    optical=[dict(text=t,bbox=[40+32*i,y,68+32*i,y+8])for y in (500,525)for i,t in enumerate(text.split())]
+    assert vp._note_pixel_anchors(optical,range(len(optical)),text.casefold().replace('.','').split(),
+        [20,480,400,550],exact_complete=True)==[]

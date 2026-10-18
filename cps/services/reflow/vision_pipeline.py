@@ -220,7 +220,7 @@ def _source_note_boundaries(answer,optical,display,regions,body_owners,reader,re
     return answer,repairs
 
 
-def _note_pixel_anchors(optical,available,candidate,hint):
+def _note_pixel_anchors(optical,available,candidate,hint,*,exact_complete=False):
     """Corroborate a complete note in physical row or column reading order.
 
     A coarse hint can omit an internal row edge or the top of the next column.
@@ -276,6 +276,21 @@ def _note_pixel_anchors(optical,available,candidate,hint):
             for sequence in (sides,list(reversed(sides))):
                 yield [lookup[id(w)] for side in sequence for w in _pixel_line_order(side)]
     orders.extend(gutter_orders(pool))
+    if exact_complete:
+        # A complete literal occurrence inside the supplied territory may span
+        # a proved persistent gutter. Enumerate identities rather than letting
+        # one partial row window win merely because it is compact.
+        key=lambda text:re.sub(r'[^\w]','',vision_reading.normalized(text).casefold())
+        proofs={}
+        if len(candidate)<5:return []
+        for order in [[lookup[id(w)]for w in _pixel_line_order([optical[i]for i in local])],*gutter_orders(local)]:
+            sequence=[i for i in order if key(optical[i]['text'])]
+            keys=[key(optical[i]['text'])for i in sequence]
+            for at in range(len(keys)-len(candidate)+1):
+                if keys[at:at+len(candidate)]==candidate:
+                    indices=tuple(sequence[at:at+len(candidate)])
+                    proofs[indices]=list(zip(indices,range(len(candidate))))
+        return next(iter(proofs.values())) if len(proofs)==1 else []
     matches=[_geometry_anchors(optical,order,candidate) for order in orders]
     score=lambda pairs:(len({j for _,j in pairs}),sum(i in local for i,j in pairs))
     best=max(matches,key=score,default=[])
@@ -408,6 +423,30 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
         result=[word for word in result if id(word) not in reserved or id(word) in protected]
     return result
 
+
+
+
+def _unpartitioned_note_openings(answer,optical,display,regions,body_owners):
+    """Find still-interior symbolic openings before accepting note geometry."""
+    import statistics
+    unproved=[]
+    for block in answer['blocks']:
+        if block['role']!='footnote' or block['marker'] not in ('*','†','‡'):continue
+        owned=_owned_block_words(block,answer,optical,display,regions,body_owners,ordered=True)
+        opening=regions.get('_note_openings',{}).get(block['id'])
+        owned=_note_lexical_evidence(owned,opening)
+        if not owned:continue
+        height=max(1,statistics.median(w['bbox'][3]-w['bbox'][1]for w in owned))
+        for position,word in enumerate(owned):
+            if not position or word['text'] not in {block['marker'],'+'}:continue
+            if not any(re.search(r'\w',w['text'])for w in owned[:position]):continue
+            box=word['bbox'];middle=sum(box[1::2])/2
+            row=[w for w in owned if w is not word and abs(sum(w['bbox'][1::2])/2-middle)<=height*.55]
+            following=[w for w in row if 0<=w['bbox'][0]-box[2]<=4*height]
+            preceding=[w for w in row if 0<=box[0]-w['bbox'][2]<=4*height]
+            if following and not preceding:
+                unproved.append(dict(block=block['id'],source_bbox=list(box)))
+    return unproved
 
 
 def _note_lexical_evidence(items, opening):
@@ -2647,7 +2686,9 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
         from .source_geometry import labelled_note_anchors,local_note_openings
         openings=local_note_openings(optical,available,note['marker'],hint)
         labelled=labelled_note_anchors(optical,available,candidate,note['marker'],openings=openings or None)
-        anchors=labelled['anchors'] if labelled else _note_pixel_anchors(optical,available,candidate,hint)
+        complete=_note_pixel_anchors(optical,available,candidate,hint,exact_complete=True)
+        if labelled and complete and any(dict((j,i)for i,j in complete).get(j)!=i for i,j in labelled['anchors']):complete=[]
+        anchors=complete or (labelled['anchors'] if labelled else _note_pixel_anchors(optical,available,candidate,hint))
         if labelled:note_openings[note['id']]=labelled['marker_bbox']
         local=[(i,j) for i,j in anchors if owned_words([optical[i]],hint)]
         if (len({j for i,j in anchors})+bool(labelled)<min(5,len(candidate)) or
@@ -2751,20 +2792,22 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                     first=min(j for i,j in suffix)
                     matched=sorted(set([(i,j) for i,j in matched if j<first]+suffix),
                         key=lambda pair:(pair[1],optical[pair[0]]['bbox'][0]))
-        labelled=None;local_openings=[]
+        labelled=None;local_openings=[];complete_note=[]
         if block['role']=='footnote' and valid:
             from .source_geometry import labelled_note_anchors,local_note_openings
             hint=block_rect(block,display)
             local_openings=local_note_openings(optical,available,block['marker'],hint)
             labelled=labelled_note_anchors(optical,available,candidate,block['marker'],openings=local_openings or None)
-            matched=labelled['anchors'] if labelled else _note_pixel_anchors(optical,local_indices if local_openings else available,candidate,hint)
+            complete_note=_note_pixel_anchors(optical,available,candidate,hint,exact_complete=True)
+            if labelled and complete_note and any(dict((j,i)for i,j in complete_note).get(j)!=i for i,j in labelled['anchors']):complete_note=[]
+            matched=complete_note or (labelled['anchors'] if labelled else _note_pixel_anchors(optical,local_indices if local_openings else available,candidate,hint))
             if labelled:note_openings[block['id']]=labelled['marker_bbox']
         from .source_geometry import unique_anchors
         proof_pool=(local_indices if valid and block['role'] in ('running_head','folio','heading','caption') else available)
         # A printed note opening owns its local footer even when its reading is
         # damaged. A pagewide prose match cannot move that note onto BODY ink.
         if local_openings:proof_pool=local_indices
-        corroborated=unique_anchors(optical,proof_pool,candidate) if not labelled and not seed_caption_complete else []
+        corroborated=unique_anchors(optical,proof_pool,candidate) if not labelled and not seed_caption_complete and not complete_note else []
         if corroborated:
             # Compact exact proof must retain an independently located divided
             # edge atom. The existing matcher proves that partial word beside
@@ -5383,6 +5426,9 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
         answer,boundary_repairs=_source_note_boundaries(answer,optical,display,regions,body_owners,
             getattr(reader,'read_marker',None),boundary_receipts,n)
         repairs.extend(boundary_repairs)
+        for opening in _unpartitioned_note_openings(answer,optical,display,regions,body_owners):
+            with unit_recovery.guard(n,'note_boundaries',block=opening['block']):
+                raise ValueError('Interior printed note opening requires a verified source partition')
     if controller:
         controller.register_regions(n,regions,_omission_coverage(answer,display,regions))
         controller.admit_answer(n,answer)
