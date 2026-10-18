@@ -17,6 +17,11 @@ from .source_display import SourceDisplay
 from . import unit_recovery, text_quality, visible_scripts, local_reading
 
 
+_MARKER_GROUP_AMBIGUOUS = 'multiple_original_glyphs_for_one_placeholder'
+_MARKER_SLOT_UNBOUND = 'original_marker_slot_not_uniquely_bound'
+_MARKER_ROLE_UNPROVED = 'numeric_original_marker_role_unproved'
+
+
 def clean_native(page, raw=None):
     """A painted, Unicode-readable native layer with no page-sized scan carrier."""
     if not page.get_bboxlog():
@@ -1679,7 +1684,7 @@ def _lexical_marker_view(tokens,source,proofs):
     """
     lexical=list(tokens)
     slots=[]
-    opaque_reasons={'multiple_original_glyphs_for_one_placeholder',
+    opaque_reasons={_MARKER_GROUP_AMBIGUOUS,
         'original_character_optical_marker_conflict',
         'original_character_without_independent_optical_corroboration',
         'complete_original_marker_group_not_proved','original_marker_verification_unusable'}
@@ -1796,7 +1801,7 @@ def _placeholder_display_evidence(tokens,optical,display,box,context,pno,literal
                 if ((same_row and b[0]>=a[0] and 0<=b[0]-a[2]<=height*4)
                         or (0<=b[1]-a[3]<=height*2 and b[0]<a[0])):
                     pairs.append((first,second))
-        proof={'status':'UNPROVED','source_bbox':list(box),'reason':'original_marker_slot_not_uniquely_bound'}
+        proof={'status':'UNPROVED','source_bbox':list(box),'reason':_MARKER_SLOT_UNBOUND}
         # An absent lexical slot provides no evidence for the printed label.
         # Keep the known note owner, but disclose its unproved body display in
         # exactly the same way as multiple candidate original slots below.
@@ -1841,13 +1846,13 @@ def _placeholder_display_evidence(tokens,optical,display,box,context,pno,literal
                 and str(unique[0].get('label') or '').isdigit()
                 and not _numeric_original_marker_role(display,a,unique[0]['bbox']))
             if numeric_role_unproved:
-                proof.update(source_bbox=list(unique[0]['bbox']),reason='numeric_original_marker_role_unproved')
+                proof.update(source_bbox=list(unique[0]['bbox']),reason=_MARKER_ROLE_UNPROVED)
             elif len(unique)==1 and complete_identity and optical_labels=={unique[0].get('label')} and re.fullmatch(r'\d{1,4}|[*†‡§¶]',unique[0].get('label') or ''):
                 c=unique[0];proof.update(status='PROVED',label=c['label'],source_bbox=list(c['bbox']),
                     method='unique_raised_original_glyph_at_exact_lexical_slot',reason=None)
             elif len(unique)>1:
                 proof.update(source_bbox=vision_reading.union([c['bbox'] for c in unique]),
-                    reason='multiple_original_glyphs_for_one_placeholder')
+                    reason=_MARKER_GROUP_AMBIGUOUS)
             else:
                 # Independent OCR can miss the glyph entirely. Original ink
                 # between two exact words supplies only a bounded verification
@@ -2342,7 +2347,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     if nid in unresolved_notes:
                         from .unit_source import source_unit
                         proof=placeholder_display.get(index,dict(status='UNPROVED',
-                            source_bbox=list(box),reason='original_marker_slot_not_uniquely_bound'))
+                            source_bbox=list(box),reason=_MARKER_SLOT_UNBOUND))
                         reason='Printed note association requires original source inspection'
                         _,contexts,unit=source_unit(display,pno,f'marker-{bid}-{index}','other',
                             package,image_records,reason,bbox=proof['source_bbox'])

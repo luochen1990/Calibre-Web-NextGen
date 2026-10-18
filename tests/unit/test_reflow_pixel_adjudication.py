@@ -777,13 +777,13 @@ def test_unbound_or_numeric_role_unproved_markers_are_never_stripped():
     source=[dict(text='Clear',bbox=[10,20,40,32]),
             dict(text='7',bbox=[41,20,45,32]),dict(text='words',bbox=[47,20,77,32])]
     tokens=['Clear','<n:first>','words']
-    for reason in ['numeric_original_marker_role_unproved','original_marker_slot_not_uniquely_bound']:
+    for reason in [vp._MARKER_ROLE_UNPROVED,vp._MARKER_SLOT_UNBOUND]:
         proof=dict(status='UNPROVED',source_bbox=[41,20,45,32],reason=reason,
                    anchor_before_bbox=source[0]['bbox'],anchor_after_bbox=source[2]['bbox'])
         assert vp._lexical_marker_view(tokens,source,{1:proof})==(tokens,source)
     # An unbounded entire-block rectangle cannot reserve a source number.
     proof=dict(status='UNPROVED',source_bbox=[0,0,100,100],
-               reason='multiple_original_glyphs_for_one_placeholder')
+               reason=vp._MARKER_GROUP_AMBIGUOUS)
     assert vp._lexical_marker_view(tokens,source,{1:proof})==(tokens,source)
 
 
@@ -794,7 +794,7 @@ def test_bounded_unknown_marker_identity_remains_opaque_without_claiming_a_label
             dict(text='3',bbox=[150,20,155,32])]
     tokens=['Clear','<n:first>','words','3']
     proof=dict(status='UNPROVED',source_bbox=[41,17,48,23],
-               reason='multiple_original_glyphs_for_one_placeholder',
+               reason=vp._MARKER_GROUP_AMBIGUOUS,
                anchor_before_bbox=source[0]['bbox'],anchor_after_bbox=source[2]['bbox'])
     model,lexical=vp._lexical_marker_view(tokens,source,{1:proof})
     assert model==tokens and [w['text']for w in lexical]==['Clear','words','3']
@@ -821,7 +821,7 @@ def test_compile_reserves_proved_marker_before_word_conservation(tmp_path,monkey
     def proof(tokens,optical,display,box,context,pno,literal=None):
         calls.append((context.get('marker_reader'),copy.deepcopy(optical)))
         i=tokens.index('<n:n1>')
-        result=(dict(status='UNPROVED',source_bbox=glyph,reason='multiple_original_glyphs_for_one_placeholder',
+        result=(dict(status='UNPROVED',source_bbox=glyph,reason=vp._MARKER_GROUP_AMBIGUOUS,
                      anchor_before_bbox=original[2]['bbox'],anchor_after_bbox=original[4]['bbox'])
                 if kind=='opaque'else dict(status='PROVED',label='7',source_bbox=glyph))
         if tokens[i-1]=='sample7':result.update(deduplicated_literal_token=i-1,literal_display_text='sample')
@@ -866,7 +866,7 @@ def test_unknown_reference_slot_is_not_an_ordinary_lexical_word(recognized):
     source=[dict(text='minerals,’',bbox=[30,20,75,32]),
             dict(text=recognized,bbox=[77,22,81,30]),dict(text='and',bbox=[84,20,102,32])]
     proof=dict(status='UNPROVED',source_bbox=[77,22,81,30],
-        reason='original_marker_slot_not_uniquely_bound',
+        reason=vp._MARKER_SLOT_UNBOUND,
         anchor_before_bbox=source[0]['bbox'],anchor_after_bbox=source[2]['bbox'])
     model,lexical=vp._lexical_marker_view(tokens,source,{2:proof})
     assert model==['Clear','minerals,’','<n:note>','and','ordinary','samples.']
