@@ -367,3 +367,28 @@ def test_fallback_adjudication_retains_the_first_reader_alternative(tmp_path,mon
     assert report['blocks'][0]['published_tokens']==text.split()
     decisions=report['blocks'][0]['adjudication']
     assert any(d['model']==text.split()[3:11] and d['chosen']==d['model'] and d['status']=='RESOLVED'for d in decisions)
+
+
+def test_unplaced_multiword_edit_has_bounded_word_notes_not_repeated_paragraphs(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    original=words('Please carry the blue box beside the quiet window today.')
+    model='Please carry the small wooden sample and open box beside the quiet window today.'
+    monkeypatch.setattr(pa,'read_crop',lambda *args:words(model,30))
+    result=adjudicate(model.split(),original,words(model,30))
+    assert all(len(note['chosen'])==1 for note in result['word_notes'].values())
+    assert any(note.get('mapping')=='unplaced_within_span'for note in result['word_notes'].values())
+    assert any(len(d['model'])>1 for d in result['decisions'])
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open() as doc:
+        doc.new_page(width=600,height=400)
+        page,report=vp.compile_page({'blocks':[block(model,role='footnote',marker='2',bbox=(0,0,1000,1000))]},
+            original,SourceDisplay(doc,0),0,Package(),{},pixel_words=original,note_context={'cache':tmp_path/'cache'})
+    assert report['blocks'][0]['published_tokens']==model.split()
+    notes=[aside for aside in page['asides'] if 'Unresolved source reading' in aside]
+    assert len(notes)>=5
+    assert all('small wooden sample and open' not in aside for aside in notes)
+    assert any('source-word correspondence is unresolved' in aside for aside in notes)

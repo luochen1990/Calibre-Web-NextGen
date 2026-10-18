@@ -2293,7 +2293,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     if local_ocr:
                         explanation=((source_quote+' ') if decision and decision['status']=='RESOLVED' else '')+'This local OCR transcription has not been independently verified. Consult the original printed reading in the image. '+f'<a href="#v4-local-ocr-source-{pno}">View complete original page</a>.'
                     elif decision:
-                        if decision['source']==decision['chosen'] and decision.get('model',decision['source'])==decision['chosen']:
+                        if decision.get('mapping')=='unplaced_within_span':
+                            explanation=escape(' '.join(decision['chosen']))+'. Its source-word correspondence is unresolved. Compare the original printed span in the image.'
+                        elif decision['source']==decision['chosen'] and decision.get('model',decision['source'])==decision['chosen']:
                             explanation=escape(' '.join(decision['chosen']))+'. Consult the original printed word in the image.'
                         else:explanation=source_quote+(' An independent upright crop supports this correction.' if decision['status']=='RESOLVED' else ' An independent upright crop could not settle this difference.')+' Compare the original printed word in the image.'
                     else:explanation=escape(' '.join(result['tokens'][i] for i in endings[index]))+'. '+source_quote

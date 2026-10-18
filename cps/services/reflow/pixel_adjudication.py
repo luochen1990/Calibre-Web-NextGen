@@ -46,6 +46,18 @@ def blank_between(display,left,right,regions):
     return gray.getextrema()[0]>=180
 
 
+def _word_note(record, index, span_id):
+    """Keep full edit evidence once; never invent a positional word pairing."""
+    if max(len(record[key]) for key in ('source','model','chosen'))<=1:return record
+    if (record['chosen']==record['source'] and not record['model'] or
+            not record['source'] and record['chosen']==record['model']):
+        return dict(record,source=record['source'][index:index+1],
+                    model=record['model'][index:index+1],chosen=record['chosen'][index:index+1])
+    return dict(source=[],model=[],chosen=record['chosen'][index:index+1],
+        status=record['status'],method=record['method'],mapping='unplaced_within_span',
+        span_id=span_id,source_range=record.get('source_range'),model_range=record.get('model_range'))
+
+
 def adjudicate(model, source, witness, uncertain=(), absence_proof=None):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
@@ -97,9 +109,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None):
         box=( [min(x[0] for x in boxes),min(x[1] for x in boxes),
                max(x[2] for x in boxes),max(x[3] for x in boxes)] if boxes else None)
         for j,token in enumerate(literal):
-            word_record=(dict(record,source=record['source'][j:j+1],
-                model=record['model'][j:j+1],chosen=[token])
-                if len(record['source'])==len(record['chosen']) and len(record['chosen'])>1 else record)
+            word_record=_word_note(record,j,len(decisions)-1)
             chosen.append((token,evidence[j]['bbox'] if evidence else box,word_record))
         # A deletion still needs a control attached to an adjacent live word.
         if not literal:changes.append((len(chosen),record,box))
@@ -267,7 +277,7 @@ def refine_fallback(tokens, witness, lexicon, source=()):
             method='contextual_crop_lexical_support' if resolved else 'pixel_read_inconclusive')
         decisions.append(record)
         for i,t in enumerate(chosen):
-            index=len(output);output.append(t);notes[index]=record
+            index=len(output);output.append(t);notes[index]=_word_note(record,i,len(decisions)-1)
             if resolved:bounds[index]=evidence[i]['bbox']
     return dict(tokens=output,boxes=bounds,marked=set(notes),word_notes=notes,decisions=decisions)
 
