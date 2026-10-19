@@ -1142,13 +1142,28 @@ def _source_header_ownership(scans):
 
 def _corroborate_note_prefix(display,prefixes,label,cache):
     """Read the complete original label before treating an OCR fragment as a veto."""
-    if cache is None or not re.fullmatch(r'\d{1,4}',label):return None
+    if not re.fullmatch(r'\d{1,4}',label):return None
     from . import pixel_adjudication as pa
     bounds=vision_reading.union([w['bbox']for w in prefixes])
     if not (0<bounds[2]-bounds[0]<=80 and 0<bounds[3]-bounds[1]<=40):return None
-    witness=pa.read_crop(display,[bounds],cache)
     occurrence=dict(bbox=bounds)
     normalize=lambda text:re.sub(r'^[\s([.]+|[\s).\]]+$','',text)
+    from . import native_text
+    native=[dict(text=w[4],bbox=list(w[:4]))for w in display.page.get_text('words')]
+    candidates=[]
+    for word,proved in zip(native,native_text.drawn_word_authorities(display.page,native)):
+        box=list(display.reading_rect(word['bbox']))
+        # A smaller native fragment is not proof of the complete printed label.
+        overlap=max(0,min(box[2],bounds[2])-max(box[0],bounds[0]))
+        if (proved and overlap>=(bounds[2]-bounds[0])*.8
+                and pa._complete_word_occurrence(occurrence,dict(bbox=box))):
+            candidates.append(dict(text=word['text'],bbox=box))
+    if candidates:
+        if len(candidates)!=1 or normalize(candidates[0]['text'])!=label:return None
+        return dict(label=label,original_readings=[w['text']for w in prefixes],
+            source_bbox=list(bounds),method='visible_native_note_prefix')
+    if cache is None:return None
+    witness=pa.read_crop(display,[bounds],cache)
     def owned(view,confidence):
         words=[w for w in view if pa._complete_word_occurrence(occurrence,w)]
         return (words[0]if len(words)==1 and words[0].get('confidence',0)>=confidence

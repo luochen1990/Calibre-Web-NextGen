@@ -2289,6 +2289,10 @@ def test_note_prefix_ocr_fragment_needs_own_complete_pixel_read(tmp_path,monkeyp
         page.insert_text((20,175),printed,fontsize=8)
         page.insert_text((42,175),'Clear note remains readable.',fontsize=8)
         raw=page.get_text('words');marker=list(raw[0][:4])
+        raster=page.get_pixmap(matrix=pymupdf.Matrix(2,2)).tobytes('png')
+        bitmap=doc.new_page(width=220,height=200)
+        bitmap.insert_image(bitmap.rect,stream=raster)
+        doc.delete_page(0)
         optical=[dict(text='57'if i==0 else w[4],bbox=list(w[:4]),confidence=96)
                  for i,w in enumerate(raw)]
         block=dict(id='note',role='footnote',marker='357',text='Clear note remains readable.',
@@ -2325,3 +2329,38 @@ def test_note_prefix_ocr_fragment_needs_own_complete_pixel_read(tmp_path,monkeyp
             with pytest.raises(ValueError,match='Selected note marker disagrees'):
                 vp._note_ownership({0:scan})
             assert block['text']==original['text']
+
+
+@pytest.mark.parametrize('selected',['357','457'])
+def test_visible_native_note_number_keeps_authority_over_optical_agreement(tmp_path,monkeypatch,selected):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=220,height=200)
+        page.insert_text((20,175),'357',fontsize=8)
+        page.insert_text((42,175),'Clear note remains readable.',fontsize=8)
+        raw=page.get_text('words');marker=list(raw[0][:4])
+        optical=[dict(text='57'if i==0 else w[4],bbox=list(w[:4]),confidence=96)
+                 for i,w in enumerate(raw)]
+        block=dict(id='note',role='footnote',marker=selected,text='Clear note remains readable.',
+            bbox=[50,800,960,920],continues_previous=False,continues_next=False)
+        scan=dict(display=SourceDisplay(doc,0),optical=optical,answer=dict(blocks=[block]),
+                  regions={'note':[[10,160,210,185]]},pixel_cache=tmp_path/'pixels')
+        calls=[]
+        def read_crop(*args):
+            calls.append(1)
+            witness=pa.CropWitness([dict(text='457',bbox=marker,confidence=99)])
+            witness.alternates=lambda:[[dict(text='457',bbox=marker,confidence=99)]for _ in range(2)]
+            return witness
+        monkeypatch.setattr(pa,'read_crop',read_crop)
+        if selected=='357':
+            owners,catalogue,labels=vp._note_ownership({0:scan})
+            assert owners[(0,'note')]==(0,'note')
+            assert catalogue[(0,'note')]['label']=='357'and labels['357']==[(0,'note')]
+            assert scan['source_note_marker_verifications']['note']['method']=='visible_native_note_prefix'
+        else:
+            with pytest.raises(ValueError,match='Selected note marker disagrees'):
+                vp._note_ownership({0:scan})
+        assert block['text']=='Clear note remains readable.'
+        assert calls==[], 'Optical guesses cannot replace reliable drawn native numerals'
