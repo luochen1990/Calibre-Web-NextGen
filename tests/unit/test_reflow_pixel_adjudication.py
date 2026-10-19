@@ -2274,3 +2274,54 @@ def test_pre_metadata_optical_cache_is_preserved_and_replaced_by_a_new_receipt(t
     first=vision_pixels.words(display,tmp_path);second=vision_pixels.words(display,tmp_path)
     assert first==second and first[0]['text']=='Clear' and len(calls)==1
     assert old.read_bytes()==before
+
+
+@pytest.mark.parametrize('evidence',['complete','wrong_print','unavailable','weak','conflict','other_occurrence',
+    'english_disagrees','weak_english','no_alternates','duplicate_occurrence'])
+def test_note_prefix_ocr_fragment_needs_own_complete_pixel_read(tmp_path,monkeypatch,evidence):
+    import copy
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=220,height=200)
+        printed='57'if evidence=='wrong_print'else'357'
+        page.insert_text((20,175),printed,fontsize=8)
+        page.insert_text((42,175),'Clear note remains readable.',fontsize=8)
+        raw=page.get_text('words');marker=list(raw[0][:4])
+        optical=[dict(text='57'if i==0 else w[4],bbox=list(w[:4]),confidence=96)
+                 for i,w in enumerate(raw)]
+        block=dict(id='note',role='footnote',marker='357',text='Clear note remains readable.',
+            bbox=[50,800,960,920],continues_previous=False,continues_next=False)
+        original=copy.deepcopy(block)
+        display=SourceDisplay(doc,0)
+        scan=dict(display=display,optical=optical,answer=dict(blocks=[block]),
+                  regions={'note':[[10,160,210,185]]},pixel_cache=tmp_path/'pixels')
+        calls=[]
+        def read_crop(actual,regions,cache):
+            assert actual is display and regions==[marker] and cache==tmp_path/'pixels'
+            calls.append(1)
+            if evidence=='unavailable':return pa.CropWitness()
+            box=[150,50,165,59]if evidence=='other_occurrence'else marker
+            witness=pa.CropWitness([dict(text='358'if evidence=='english_disagrees'else printed,
+                bbox=box,confidence=79 if evidence=='weak_english'else 96)])
+            if evidence=='duplicate_occurrence':witness.append(dict(witness[0]))
+            if evidence=='no_alternates':return witness
+            witness.alternates=lambda:[
+                [dict(text=printed,bbox=box,confidence=79 if evidence=='weak'else 96)],
+                [dict(text='358'if evidence=='conflict'else printed,bbox=box,confidence=96)]]
+            return witness
+        monkeypatch.setattr(pa,'read_crop',read_crop)
+        if evidence=='complete':
+            owners,catalogue,labels=vp._note_ownership({0:scan})
+            assert owners[(0,'note')]==(0,'note')
+            assert catalogue[(0,'note')]['label']=='357'and labels['357']==[(0,'note')]
+            assert block['text']==original['text']and block['marker']==original['marker']
+            assert len(calls)==1
+            proof=scan['source_note_marker_verifications']['note']
+            assert proof['label']=='357'and proof['original_readings']==['57']
+            assert proof['source_bbox']==marker
+        else:
+            with pytest.raises(ValueError,match='Selected note marker disagrees'):
+                vp._note_ownership({0:scan})
+            assert block['text']==original['text']

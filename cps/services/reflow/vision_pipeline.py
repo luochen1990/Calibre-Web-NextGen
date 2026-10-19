@@ -1140,6 +1140,32 @@ def _source_header_ownership(scans):
                 source_rule_bbox=candidate['rule'],support_pages=support))
 
 
+def _corroborate_note_prefix(display,prefixes,label,cache):
+    """Read the complete original label before treating an OCR fragment as a veto."""
+    if cache is None or not re.fullmatch(r'\d{1,4}',label):return None
+    from . import pixel_adjudication as pa
+    bounds=vision_reading.union([w['bbox']for w in prefixes])
+    if not (0<bounds[2]-bounds[0]<=80 and 0<bounds[3]-bounds[1]<=40):return None
+    witness=pa.read_crop(display,[bounds],cache)
+    occurrence=dict(bbox=bounds)
+    normalize=lambda text:re.sub(r'^[\s([.]+|[\s).\]]+$','',text)
+    def owned(view,confidence):
+        words=[w for w in view if pa._complete_word_occurrence(occurrence,w)]
+        return (words[0]if len(words)==1 and words[0].get('confidence',0)>=confidence
+                and normalize(words[0]['text'])==label else None)
+    primary=owned(witness,85)
+    alternatives=getattr(witness,'alternates',None)
+    if primary is None or alternatives is None:return None
+    views=alternatives()[:2]
+    if len(views)!=2:return None
+    secondary=[owned(view,90)for view in views]
+    if not all(secondary):return None
+    return dict(label=label,original_readings=[w['text']for w in prefixes],
+        source_bbox=list(bounds),method='complete_original_note_prefix_pixel_agreement',
+        english_confidence=primary['confidence'],
+        latin_confidences=[w['confidence']for w in secondary])
+
+
 def _note_ownership(scans):
     """Establish note continuations and marginal furniture across selected pages.
 
@@ -1288,7 +1314,10 @@ def _note_ownership(scans):
                                 and abs((w['bbox'][1]+w['bbox'][3]-box[1]-box[3])/2)<height*.55
                                 and (w is first or 0<=box[0]-w['bbox'][2]<3*height)]
                             if any(re.sub(r'^[\s([.]+|[\s).\]]+$','',w['text'])!=label for w in prefixes):
-                                raise ValueError('Selected note marker disagrees with its printed source prefix')
+                                proof=_corroborate_note_prefix(s['display'],prefixes,label,s.get('pixel_cache'))
+                                if proof is None:
+                                    raise ValueError('Selected note marker disagrees with its printed source prefix')
+                                s.setdefault('source_note_marker_verifications',{})[b['id']]=dict(proof,block=b['id'])
                     catalogue[owner]={'label':label or '*','target':f'v4-note-{n}-{b["id"]}'}
                     if label:labels.setdefault(label,[]).append(owner)
     return owners,catalogue,labels
@@ -6182,6 +6211,7 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         scans={};boundary_receipts={}
         for n in scanned:
             scans[n],receipts=_prepare_scanned_page(doc,n,reader,controller,provenance,original_frames)
+            scans[n]['pixel_cache']=reader.cache.parent/'pixel-guard-cache'
             boundary_receipts.update(receipts)
         # Resolve book-level roles before omitted-line recovery so an oversized
         # model illustration cannot swallow either live prose or a note tail.
@@ -6293,6 +6323,7 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                 _insert_source_units(page,report,controller.source_answer(n),controller.blocked(n),s['display'],package,images)
             report['recovered_omitted_blocks']=list(recovered)
             report['source_paragraph_repairs']=s.get('paragraph_repairs',[])
+            report['source_note_marker_verifications']=list(s.get('source_note_marker_verifications',{}).values())
             report['pixel_bound_geometry_repairs']=s['geometry_repairs']
             report['source_bound_figure_repairs']=s['figure_repairs']
             report['degraded_figures']=[case for case in s['figure_repairs'] if case.get('degraded')]
