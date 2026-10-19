@@ -459,7 +459,7 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
                            [t.casefold() for t in pixels],autojunk=False)
     if sum(n for _,_,n in folded.get_matching_blocks())/max(1,len(keys))<.75:return None
     known=lambda token:re.sub(r"[^\w'’]",'',token).casefold() in lexicon
-    output=[];notes={};bounds={};decisions=[]
+    output=[];notes={};bounds={};decisions=[];gaps=[]
     for kind,a,z,b,y in matcher.get_opcodes():
         if kind=='equal':
             for i,j in zip(range(a,z),range(b,y)):
@@ -493,6 +493,23 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
         resolved=bool(positive and ((unique and anchored and (lexical or numeral))
                                    or case_only or two_views))
         if _accent_conflict(''.join(tokens[a:z]),''.join(w['text'] for w in evidence)):resolved=False
+        if kind=='insert' and not resolved and unique and anchored and a-1 in source_map and a in source_map:
+            left_box=source_map[a-1]['bbox'];right_box=source_map[a]['bbox']
+            height=max(left_box[3]-left_box[1],right_box[3]-right_box[1],1)
+            # Additional recognized ink is not a proved letter. When it sits
+            # inside this exact short same-row gap, retain the gap and following
+            # word as original ink rather than silently dropping the edit.
+            # A remote row or another column cannot own it.
+            def in_gap(word):
+                box=word['bbox'];small=min(box[3]-box[1],left_box[3]-left_box[1],right_box[3]-right_box[1])
+                return (word.get('confidence',0)>=40 and any(c.isalnum()or c=='|'for c in word['text'])
+                    and box[0]>=left_box[2]-.5 and box[2]<=right_box[0]+.5
+                    and 0<right_box[0]-left_box[2]<=height*4
+                    and min(box[3],left_box[3],right_box[3])-max(box[1],left_box[1],right_box[1])>=small*.5)
+            if evidence and all(in_gap(word)for word in evidence):
+                boxes=[right_box]+[word['bbox']for word in evidence]
+                gaps.append((len(output),[min(b[0]for b in boxes),min(b[1]for b in boxes),
+                    max(b[2]for b in boxes),max(b[3]for b in boxes)]))
         chosen=[w['text'] for w in evidence] if resolved else tokens[a:z]
         record=dict(source=tokens[a:z],model=tokens[a:z],chosen=chosen,
             status='RESOLVED' if resolved else 'UNRESOLVED',
@@ -503,6 +520,12 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
             index=len(output);output.append(t);notes[index]=_word_note(record,i,len(decisions)-1)
             if resolved:bounds[index]=evidence[i]['bbox']
             elif a+i in source_map:bounds[index]=source_map[a+i]['bbox']
+    for index,box in gaps:
+        if index>=len(output):continue
+        record=dict(source=[output[index]],model=[output[index]],chosen=[output[index]],
+            status='UNRESOLVED',method='unsettled_additional_pixel_ink',
+            source_image_only=True,source_bbox=box)
+        notes[index]=record;decisions.append(record)
     return dict(tokens=output,boxes=bounds,marked=set(notes),word_notes=notes,decisions=decisions)
 
 
@@ -685,7 +708,8 @@ def disclose_alternate_conflicts(result, boxes, witness, allow_clear=True):
     if reader is None:return
     pending=[i for i in result['marked']if i in boxes
         and not result['tokens'][i].startswith('<n:')
-        and (result.get('word_notes')or{}).get(i,{}).get('status')!='RESOLVED']
+        and (result.get('word_notes')or{}).get(i,{}).get('status')!='RESOLVED'
+        and not (result.get('word_notes')or{}).get(i,{}).get('source_image_only')]
     if not pending:return
     views=reader()[:2]
     if len(views)!=2:return

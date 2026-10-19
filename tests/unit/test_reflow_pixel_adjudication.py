@@ -1386,3 +1386,58 @@ def test_unavailable_alternate_data_does_not_widen_the_primary_reading_failure(m
     witness=pa.read_crop(None,[[20,20,200,32]],tmp_path)
     assert witness.alternates()==[]
     assert list(witness)==primary
+
+
+@pytest.mark.parametrize('displaced',[False,True])
+def test_unsettled_extra_pixel_ink_is_not_lost_between_fallback_words(displaced):
+    """Authored occurrence lists put one ambiguous upright stroke in the gap."""
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Workers carried a tray outside today.')
+    glyph=dict(text='|',confidence=55,bbox=[18.5,22,19.5,31])
+    if displaced:glyph['bbox']=[118.5,62,119.5,71]
+    witness=pa.CropWitness([source[0],glyph,*source[1:]])
+    witness.alternates=lambda:[source,source]
+    result=pa.refine_fallback([w['text']for w in source],witness,
+        {'workers','carried','a','tray','outside','today'},source=source)
+    assert result['tokens']==[w['text']for w in source], 'An ambiguous stroke cannot become a guessed live letter'
+    notes=result['word_notes']
+    if displaced:
+        assert not any(n.get('source_image_only')for n in notes.values())
+    else:
+        assert notes[1]['source_image_only'], 'Unsettled additional ink must remain in the reading'
+        assert notes[1]['source_bbox']==[18.5,20,38,32]
+        assert notes[1]['status']=='UNRESOLVED'
+        assert 1 in result['marked']
+        pa.disclose_alternate_conflicts(result,result['boxes'],witness)
+        assert notes[1]['source_bbox']==[18.5,20,38,32], 'An alternate supporting the adjacent word cannot erase the uncertain gap'
+
+
+def test_fallback_extra_ink_survives_the_real_publication_as_its_own_image(tmp_path,monkeypatch):
+    """A generated scan prints a narrow letter that both initial inputs omit."""
+    from tests.unit import test_round4_defects as ink
+    from cps.services.reflow import pixel_adjudication as pa
+    page=ink.InkPage();printed='Before lunch I carried a tray outside today.'
+    page.text(printed,'body',model=printed.replace(' I ',' ')+
+        ' Green baskets contain ripe apples while purple carts carry fresh bread beside a clean window.')
+    original=page.finish
+    source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.page.get_text('words')]
+    def missing_letter():
+        image,optical,answer=original()
+        return image,[w for w in optical if w['text']!='I'],answer
+    page.finish=missing_letter
+    witness=pa.CropWitness([dict(w,text='|',confidence=55)if w['text']=='I'else w for w in source])
+    monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+    path,report,docs=ink.convert_ink(tmp_path,monkeypatch,[page])
+    record=next(b for b in report['pages'][0]['blocks']if b['id']=='body')
+    assert record['fallback']
+    assert record['source_image_words']==[2], 'The ambiguous extra letter and its next word must survive as ink'
+    text=' '.join(ink.body_texts(docs))
+    assert 'Before lunch'in text and 'a tray outside today.'in text
+    assert 'carried'not in text, 'The image contains that word once; do not repeat it as live text'
+    images=[n for root in docs.values()for n in root.iter()if n.get('class')=='source-word-image']
+    assert len(images)==1 and len(images[0])==1
+    decision=next(d for d in record['adjudication']if d.get('method')=='unsettled_additional_pixel_ink')
+    box=decision['source_bbox']
+    for word in source[2:4]:
+        x=(word['bbox'][0]+word['bbox'][2])/2;y=(word['bbox'][1]+word['bbox'][3])/2
+        assert box[0]<=x<=box[2]and box[1]<=y<=box[3], 'The image owns the omitted stroke and following word'
