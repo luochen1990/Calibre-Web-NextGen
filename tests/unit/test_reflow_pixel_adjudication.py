@@ -1935,7 +1935,7 @@ def test_native_fused_raised_reference_cannot_become_a_second_body_number(tmp_pa
         def proof(tokens,*args,**kwargs):
             if '<n:n1>'not in tokens:return {}
             return {tokens.index('<n:n1>'):dict(status='UNPROVED',source_bbox=None,
-                reason='original_marker_slot_not_uniquely_bound',anchor_before_bbox=list(last[:4]),anchor_after_bbox=None)}
+                reason='synthetic_requested_slot_ambiguous',anchor_before_bbox=list(last[:4]),anchor_after_bbox=None)}
         monkeypatch.setattr(vp,'_placeholder_display_evidence',proof)
         context=dict(cache=tmp_path/'cache',labels={'7':[(0,'n1')]},owners={},
             catalogue={(0,'n1'):{'target':'v4-note-0-n1','label':'7'}},refs={})
