@@ -10,6 +10,56 @@ def words(text, confidence=99):
             for i,t in enumerate(text.split())]
 
 
+@pytest.mark.parametrize('conflict', [False, True])
+def test_positive_own_optical_word_does_not_need_a_missing_neighbor_read(conflict):
+    source=words('The clear sample stays readable.')
+    witness=words('The clcar sample stays readable.') if conflict else []
+    result=adjudicate('The clear sample stays readable.'.split(),source,witness,uncertain={1})
+    if conflict:
+        from cps.services.reflow.pixel_adjudication import audit_agreement
+        assert 1 in audit_agreement(result['tokens'],source,witness)
+    else:
+        assert result['tokens']==[w['text']for w in source]
+        assert result['marked']==set()
+
+
+@pytest.mark.parametrize('settled', [False, True])
+def test_valid_printed_ordinal_is_not_certified_as_opaque_ocr_letters(settled):
+    from cps.services.reflow.pixel_adjudication import CropWitness
+    source=words('Read the Bth: sample now.')
+    witness=CropWitness(words('Read the Bth: sample now.'))
+    witness.word_readings=lambda word:([words('Read the 8th: sample now.')]*2 if settled else [])
+    result=adjudicate('Read the 8th: sample now.'.split(),source,witness)
+    assert result['tokens'][2]=='8th:'
+    assert result['word_notes'][2]['status']==('RESOLVED' if settled else 'UNRESOLVED')
+    assert 2 in result['marked']
+    assert bool(result['word_notes'][2].get('source_image_only')) is not settled
+
+
+def test_conflicting_valid_printed_ordinal_still_wins_when_pixels_prove_it():
+    source=words('Read the 9th sample now.')
+    result=adjudicate('Read the 8th sample now.'.split(),source,source)
+    assert result['tokens'][2]=='9th'
+    assert result['word_notes'][2]['status']=='RESOLVED'
+    assert 2 in result['marked']
+
+
+def test_complete_two_column_territory_keeps_column_order(monkeypatch):
+    from types import SimpleNamespace
+    from cps.services.reflow import vision_pipeline as pipeline
+    import pymupdf
+    source=[]
+    for x,prefix in [(10,'Left'),(150,'Right')]:
+        for y in [20,40,60]:
+            source.extend([dict(text=prefix,bbox=[x,y,x+35,y+10]),
+                           dict(text=str(y),bbox=[x+40,y,x+55,y+10])])
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,250,120))
+    block=dict(id='sample',role='body',text='Synthetic columns',bbox=[0,0,1,1])
+    result=pipeline._owned_block_words(block,dict(blocks=[block]),source,display,
+        regions={'sample':[[0,0,250,120]]},ordered=True)
+    assert [w['text']for w in result]==[w['text']for w in source]
+
+
 def test_pixel_read_restores_short_model_deletion():
     source=words('We carried the blue box to the open door today.')
     result=adjudicate('We carried the open door today.'.split(),source,source)
@@ -106,11 +156,12 @@ def test_multiple_note_references_keep_their_own_lexical_boundaries():
     assert result['tokens']==text.split()
 
 
-def test_agreeing_words_do_not_erase_unresolved_reader_uncertainty():
+@pytest.mark.parametrize('source_confidence',[30,99])
+def test_agreeing_words_do_not_erase_unresolved_reader_uncertainty(source_confidence):
     text='The clear sample remains readable today.'
-    result=adjudicate(text.split(),words(text),words(text,30),uncertain={3})
-    assert result['marked']=={3}
-    assert result['word_notes'][3]['status']=='UNRESOLVED'
+    result=adjudicate(text.split(),words(text,source_confidence),words(text,30),uncertain={3})
+    assert result['marked']==({3}if source_confidence<90 else set())
+    if source_confidence<90:assert result['word_notes'][3]['status']=='UNRESOLVED'
 
 
 def test_unique_spelling_in_a_second_copy_cannot_settle_the_first_occurrence():

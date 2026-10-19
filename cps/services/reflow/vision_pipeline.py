@@ -493,7 +493,11 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
             if same_column:
                 ordered_groups[-1][0]=territory;ordered_groups[-1][1].extend(local)
             else:ordered_groups.append([territory,list(local)])
-    if ordered:result=[word for _,group in ordered_groups for word in _pixel_line_order(group)]
+    if ordered:
+        result=[]
+        for _,group in ordered_groups:
+            columns,proved=_proved_recovery_columns(group)
+            for column in columns if proved else [_pixel_line_order(group)]:result.extend(column)
     if block['role']=='heading' and result and body_owners:
         # A run-in heading can share a physical row with the following
         # paragraph. Its broad rectangle must not let a damaged recognition
@@ -4944,7 +4948,10 @@ def _proved_recovery_columns(words):
     gaps=[b[0]-a[1] for a,b in zip(intervals,intervals[1:])]
     # A gutter must exceed ordinary persistent inter-word spacing as well as
     # the type height. Repeated word slots alone do not prove text columns.
-    minimum=max(6,1.5*height,2*statistics.median(gaps)) if gaps else 6
+    # The sole persistent gap can itself be the gutter. Including it in the
+    # estimate of ordinary word spacing makes a two-column proof impossible.
+    ordinary=[gap for gap in gaps if gap<1.5*height]
+    minimum=max(6,1.5*height,2*statistics.median(ordinary)) if ordinary else max(6,1.5*height)
     cuts=[(a[1]+b[0])/2 for a,b in zip(intervals,intervals[1:])
           if b[0]-a[1]>=minimum]
     if not cuts:return [words],False

@@ -24,6 +24,30 @@ def _accent_conflict(left,right):
     return a!=b and bare(a)==bare(b)
 
 
+def _ordinal(value):
+    import re
+    match=re.fullmatch(r'([0-9]+)(st|nd|rd|th)[.,;:!?]?',_key(value))
+    if not match:return False
+    number=int(match[1]);suffix=('th'if 10<=number%100<=20 else {1:'st',2:'nd',3:'rd'}.get(number%10,'th'))
+    return match[2]==suffix
+
+
+def _ordinal_noise(value):
+    import re
+    return bool(re.fullmatch(r'[0-9gGsSiIlLoOuUbBrRaA]+(?:st|nd|rd|th)[.,;:!?]?',_key(value)))
+
+
+def _own_word_choice(source,witness):
+    reader=getattr(witness,'word_readings',None)
+    if reader is None:return None
+    views=reader(source)
+    if len(views)!=2:return None
+    own=[[w for w in view if _complete_word_occurrence(source,w)]for view in views]
+    if not all(len(row)==1 and row[0].get('confidence',0)>=85 for row in own):return None
+    first,second=own[0][0],own[1][0]
+    return first if _key(first['text'])==_key(second['text'])else None
+
+
 def _boundary_parts(model,source):
     """Insert proved spaces while preserving every original model codepoint."""
     parts=[];start=cursor=0
@@ -106,9 +130,9 @@ def _terminal_word_view(model, words):
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
         else:result.append(word)
-    if any(hasattr(words,name) for name in ('alternates','resampled')):
+    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings')):
         result=CropWitness(result)
-        for name in ('alternates','resampled','mark_absence'):
+        for name in ('alternates','resampled','mark_absence','word_readings'):
             if hasattr(words,name):setattr(result,name,getattr(words,name))
     return result
 
@@ -277,20 +301,35 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             and placement(proposed[b]).startswith(placement(source_tokens[a]))
             and len(placement(proposed[b]))>len(placement(source_tokens[a])))
         if wrapped or partial_wrap:supported=[];boundary=None
-        alternate=None;resampled=None
+        # Letter noise resembling a number is not a verified replacement of a
+        # well-formed ordinal. Inspect that exact original word with separate
+        # language networks; if they cannot settle it, publish original ink.
+        ordinal_conflict=(z-a==y-b==1 and _ordinal(proposed[b]) and any(
+            len(choice[1])==1 and not _ordinal(choice[1][0]) and _ordinal_noise(choice[1][0])
+            for choice in supported))
+        if ordinal_conflict:supported=[]
+        alternate=None;resampled=None;word_choice=None
         if len(supported)!=1 and z-a==y-b==1 and not partial_wrap:
-            resampled=_resampled_model_choice(source,a,witness,proposed[b])
+            word_choice=_own_word_choice(source[a],witness)
+            if word_choice and _accent_conflict(word_choice['text'],proposed[b]):word_choice=None
+            if word_choice and max(SequenceMatcher(None,placement(word_choice['text']),placement(t)).ratio()
+                                   for t in (source_tokens[a],proposed[b]))<.65:word_choice=None
+            if word_choice:supported=[('word',[word_choice['text']],[word_choice])]
+            else:resampled=_resampled_model_choice(source,a,witness,proposed[b])
             if resampled:supported=[('resampled',[resampled['text']],[resampled])]
-            else:
+            if not word_choice and not resampled:
                 alternate=_alternate_choice(source,a,witness,proposed[b])
                 if alternate:supported=[('alternate',[alternate['text']],[alternate])]
+        if ordinal_conflict:supported=[choice for choice in supported if len(choice[1])==1 and _ordinal(choice[1][0])]
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
             boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or not proposed[b:y] else ('model',proposed[b:y],[]))
         record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=list(literal),
                     status='RESOLVED' if resolved else 'UNRESOLVED',
-                    method=('corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
+                    method=('two_own_word_language_readings' if word_choice else 'corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
                     source_range=[a,z],model_range=[b,y])
+        if ordinal_conflict and not resolved:
+            record.update(source_image_only=True,source_bbox=list(source[a]['bbox']))
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
                [w['bbox'] for w in source[a:z]])
@@ -328,7 +367,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                  _complete_word_occurrence(dict(bbox=bounds[i]),word)]
             own_exact=(len(own)==1 and own[0].get('confidence',0)>=90
                        and _key(own[0]['text'])==_key(tokens[i]))
-            if i not in notes and own_exact:
+            source_own=[word for word in source if i in bounds and
+                        _complete_word_occurrence(dict(bbox=bounds[i]),word)]
+            source_exact=(len(source_own)==1 and source_own[0].get('confidence',0)>=90
+                          and _key(source_own[0]['text'])==_key(tokens[i])
+                          and not any(w.get('confidence',0)>=85 and _key(w['text'])!=_key(tokens[i])for w in own))
+            if i not in notes and (own_exact or source_exact):
                 verified.append(i);continue
             if i not in notes and context and all(w.get('confidence',0)>=90 for w in context) and all(
                     j in bounds and _same_occurrence(dict(bbox=bounds[j]),word)
@@ -422,6 +466,20 @@ def read_crop(display, regions, cache):
             except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
         result.resampled=resampled
         result.alternates=alternatives
+        @lru_cache(maxsize=128)
+        def own_word(bounds):
+            try:
+                import shutil
+                engine=shutil.which('tesseract')
+                directory=_latin_directory(engine) if engine else None
+                if not directory:return []
+                width,height=bounds[2]-bounds[0],bounds[3]-bounds[1]
+                if not (0<width<=200 and 0<height<=80 and width/height<=18):return []
+                return [_read_crop(display,[bounds],cache,language=language,scale=6,
+                                  tessdata=data,psm=8)
+                        for language,data in [('eng',None),('LatinRaw',directory)]]
+            except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
+        result.word_readings=lambda word:own_word(tuple(word['bbox']))
         result.mark_absence=lambda word:below_dot_absent(display,word)
         return result
     except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
@@ -430,7 +488,7 @@ def read_crop(display, regions, cache):
         return result
 
 
-def _read_crop(display, regions, cache, language='eng', scale=4, tessdata=None):
+def _read_crop(display, regions, cache, language='eng', scale=4, tessdata=None,psm=6):
     """Recognize upright source crops with bounded pixels and a separate layout.
 
     The full-page recognizer uses 3x/automatic page layout. This witness uses
@@ -464,13 +522,13 @@ def _read_crop(display, regions, cache, language='eng', scale=4, tessdata=None):
             picture=ImageOps.expand(Image.open(io.BytesIO(image)).convert('RGB'),border=border,fill='white')
             encoded=io.BytesIO();picture.save(encoded,format='PNG');image=encoded.getvalue()
         model_identity=(_latin_digest() if language=='LatinRaw' else b'')
-        identity=hashlib.sha256(f'upright-block-{language}-psm6-scale{scale}-v3\0'.encode()+model_identity+_engine_identity(engine)+image).hexdigest()
+        identity=hashlib.sha256(f'upright-block-{language}-psm{psm}-scale{scale}-v3\0'.encode()+model_identity+_engine_identity(engine)+image).hexdigest()
         target=root/(identity+'.json')
         with (root/(identity+'.lock')).open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX)
             if target.exists():rows=json.loads(target.read_text())
             else:
-                command=[engine,'stdin','stdout','-l',language,'--psm','6']
+                command=[engine,'stdin','stdout','-l',language,'--psm',str(psm)]
                 if tessdata:command+=['--tessdata-dir',str(tessdata)]
                 command+=['-c','tessedit_create_tsv=1']
                 result=subprocess.run(command,
