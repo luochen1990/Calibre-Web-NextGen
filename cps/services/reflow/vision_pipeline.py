@@ -5709,7 +5709,6 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
         prov=(provenance or {}).get(n,{})
         display=SourceDisplay(doc,n,dict(prov,layer='ocr' if prov.get('space')=='reading' else 'native',
             original_frame=(original_frames or {}).get(n)))
-        from . import local_reading
         display=local_reading.reading_display(display,saved['reading'])
         optical=saved['optical']
         controller.source_repairs[n]=lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache')
@@ -5731,7 +5730,6 @@ def _prepare_scanned_page(doc,n,reader,controller,provenance,original_frames):
     with unit_recovery.guard(n,'optical_evidence'):
         optical=vision_pixels.words(display,reader.cache.parent/'pixel-guard-cache')
     with unit_recovery.guard(n,'reading'):
-        from . import local_reading
         reading=(controller.read(n,image,lambda value:_source_note_id_repair(value,display,optical,reader.cache.parent/'pixel-guard-cache'),
                     local_read=lambda reason:local_reading.read_oriented(display,controller.staging/'local-ocr-cache',reason))
                  if controller else reader.read(image))
