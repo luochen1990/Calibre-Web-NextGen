@@ -356,11 +356,11 @@ def read_crop(display, regions, cache):
         from functools import lru_cache
         @lru_cache(maxsize=1)
         def alternatives():
-            import shutil
-            engine=shutil.which('tesseract')
-            directory=_latin_directory(engine) if engine else None
-            if not directory:return []
             try:
+                import shutil
+                engine=shutil.which('tesseract')
+                directory=_latin_directory(engine) if engine else None
+                if not directory:return []
                 heights=[r[3]-r[1]for r in regions if r[3]>r[1]]
                 # Tiny printed letters need enough samples to distinguish their
                 # strokes. Both frames remain bounded by four million pixels.
@@ -700,6 +700,44 @@ def disclose_alternate_conflicts(result, boxes, witness, allow_clear=True):
             result['marked'].discard(index);result['word_notes'].pop(index)
             result.setdefault('verified_unchanged',[]).append(index)
             result['adjudication']=[d for d in result.get('adjudication',[])if d is not note]
+            continue
+        # A different local alphabet does not invalidate positive independent
+        # evidence for this occurrence. Keep its original uncertainty, rather
+        # than replacing supported prose with the alternate network's noise.
+        own_primary=[w for w in witness if _complete_word_occurrence(original,w)]
+        letters=lambda value:''.join(c for c in _key(value).casefold()if c.isalpha())
+        lexical=letters(token)
+        if (note.get('source')==note.get('chosen')==[token]
+                and len(own_primary)==1 and lexical
+                and letters(own_primary[0]['text'])==lexical):continue
+        original_words=[w for w in getattr(witness,'source_occurrences',())
+                        if _complete_word_occurrence(original,w)]
+        if (len(original_words)==1 and original_words[0].get('confidence',0)>=85
+                and lexical and letters(original_words[0]['text'])==lexical):
+            # The original occurrence still supplies a supported alternative.
+            # Do not resolve it: retain its marked, source-linked uncertainty.
+            continue
+        # Case, punctuation and raised-number suffixes have separate source
+        # controls. Their disagreement cannot remove an unchanged lexical word.
+        if lexical and any(letters(w['text'])==lexical for w in (a,b)):continue
+        # An interpolated span box cannot authorize a particular word image.
+        # Keep the existing unplaced source control rather than guessing an
+        # occurrence inside that span from the alternate OCR output.
+        if note.get('mapping')=='unplaced_within_span':continue
+        if (len(own_primary)==1 and token.endswith(('-', '\u00ad', '\u2010', '\u2011'))
+                and lexical and letters(own_primary[0]['text'])==lexical):continue
+        source=note.get('source')or[]
+        if (len(source)==1 and source[0].endswith(('-', '\u00ad', '\u2010', '\u2011'))
+                and lexical.startswith(letters(source[0]))
+                and all(_key(w['text']).strip()==_key(source[0]).strip()for w in (a,b))):
+            # This crop owns only the printed prefix. It cannot contradict the
+            # complete word whose physical continuation is checked separately.
+            continue
+        if (any(c.isalpha()for c in token) and any(c.isdigit()for c in token)
+                and note.get('source')==note.get('model')==note.get('chosen')==[token]):
+            # A letter/number identifier is not a guessed prose spelling. Keep
+            # its literal instance and unresolved source control unless an
+            # earlier positive adjudication actually proved the replacement.
             continue
         if any(_key(w['text'])==_key(token)for w in (a,b)):continue
         literal=lambda t:''.join(c for c in unicodedata.normalize('NFKD',t.casefold())if c.isalnum())

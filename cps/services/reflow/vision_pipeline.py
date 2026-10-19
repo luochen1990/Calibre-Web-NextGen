@@ -2374,6 +2374,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     # and its exact recognized source occurrence inventory.
                     for i,decision in conflicts.items():result.setdefault('word_notes',{}).setdefault(i,decision)
             if witness is not None and hasattr(witness,'alternates'):
+                witness.source_occurrences=source_occurrences if local_ocr else baseline
                 pixel_adjudication.disclose_alternate_conflicts(result,evidence_boxes,witness,allow_clear=not local_ocr)
             if getattr(witness,'failure',None):
                 # Keep the already admitted reading and its own source owners.
@@ -3394,8 +3395,10 @@ def _continuation_decision(left,right,blocks,tail,head):
             and lexical_reference(head_text.split()[0])==lexical_reference(right.get('printed_head') or '')):
         return decision('split','distinct_reference_entry_after_range')
     if tail_text.endswith(tuple(assemble.HYPHENS)) and not right.get('completed_division_source_proved'):
+        letters=lambda words:''.join(c for word in words for c in word.casefold()if c.isalpha())
         head_corrections=[d for d in right.get('adjudication',[]) if d.get('status')=='RESOLVED'
-            and d.get('model_range',[None])[0]==0 and d.get('source')!=d.get('model')]
+            and d.get('model_range',[None])[0]==0 and d.get('source')!=d.get('model')
+            and letters(d.get('source',[]))!=letters(d.get('model',[]))]
         a,b=left.get('physical_tail') or {},right.get('physical_head') or {}
         prefix=re.fullmatch(r"([A-Za-z'’]+)["+assemble.HYPHENS+r']',a.get('text',''))
         lexical=lambda word:vision_reading.normalized(word).casefold()

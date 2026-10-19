@@ -1284,3 +1284,105 @@ def test_one_coherent_frame_pair_can_settle_a_number_but_conflicting_pairs_canno
     witness.alternates=lambda:[source,source,conflict,conflict]
     result=adjudicate([w['text']for w in bad],source,witness)
     assert result['word_notes'][3]['status']=='UNRESOLVED'
+
+
+def test_an_owned_english_word_witness_prevents_spurious_image_replacement():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The careful sample remains beside the window.')
+    witness=pa.CropWitness(source)
+    witness.alternates=lambda:[words('The careful sampie remains beside the window.',40)]*2
+    result=dict(tokens=[w['text']for w in source],marked={2},word_notes={2:dict(source=['sample'],model=['sample'],chosen=['sample'],status='UNRESOLVED')})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness,allow_clear=False)
+    assert not result['word_notes'][2].get('source_image_only')
+    assert result['marked']=={2},'A local optical claim remains visibly unverified'
+
+
+def test_case_only_alternate_noise_keeps_the_owned_literal_word_live():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The clear SAMPLE remains beside the window.',40)
+    witness=pa.CropWitness(words('The clear sampie remains beside the window.',40))
+    witness.alternates=lambda:[words('The clear Sample remains beside the window.',40)]*2
+    result=dict(tokens=[w['text']for w in source],marked={2},word_notes={2:dict(source=['SAMPLE'],model=['SAMPLE'],chosen=['SAMPLE'],status='UNRESOLVED')})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert not result['word_notes'][2].get('source_image_only')
+    assert result['marked']=={2}
+
+
+def test_partial_printed_wrap_is_not_counterevidence_to_a_complete_word():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('across the mea- while waiting',40)
+    witness=pa.CropWitness(source);witness.alternates=lambda:[words('across the mea- while waiting')]*2
+    result=dict(tokens='across the meadow while waiting'.split(),marked={2},word_notes={2:dict(source=['mea-'],model=['meadow'],chosen=['meadow'],status='UNRESOLVED')})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert not result['word_notes'][2].get('source_image_only')
+    assert result['tokens'][2]=='meadow'
+
+
+def test_marker_suffix_noise_cannot_replace_its_unchanged_lexical_prefix():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The clear crystal(2048), remains visible.',40)
+    witness=pa.CropWitness(words('The clear crystal(**), remains visible.',40))
+    witness.alternates=lambda:[words('The clear crystal(°°), remains visible.',40)]*2
+    result=dict(tokens=[w['text']for w in source],marked={2},word_notes={2:dict(source=['crystal(2048),'],model=['crystal(2048),'],chosen=['crystal(2048),'],status='UNRESOLVED')})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert not result['word_notes'][2].get('source_image_only')
+    assert result['tokens'][2]=='crystal(2048),'
+
+
+def test_unplaced_edit_cannot_guess_one_word_image_from_an_alignment_box():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Historical examples remain beside the window.',40)
+    witness=pa.CropWitness(words('Histrical examples remain beside the window.',40))
+    witness.alternates=lambda:[words('Histoical examples remain beside the window.',40)]*2
+    result=dict(tokens=[w['text']for w in source],marked={0},word_notes={0:dict(source=[],model=[],chosen=['Historical'],status='UNRESOLVED',mapping='unplaced_within_span')})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert not result['word_notes'][0].get('source_image_only')
+    assert result['word_notes'][0]['mapping']=='unplaced_within_span'
+
+
+def test_a_printed_wrap_keeps_its_literal_hyphen_after_lexical_pixel_agreement():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The old bridge‐',40)
+    witness=pa.CropWitness(words('The old bridge',0))
+    witness.alternates=lambda:[words('The old bridgeE',40)]*2
+    result=dict(tokens=[w['text']for w in source],marked={2},word_notes={2:dict(source=['damaged-source-token'],model=['bridge‐'],chosen=['bridge‐'],status='UNRESOLVED')})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert not result['word_notes'][2].get('source_image_only')
+    assert result['tokens'][2]=='bridge‐'
+
+
+@pytest.mark.parametrize('confidence',[40,99])
+def test_alternate_noise_cannot_override_a_confident_original_occurrence(confidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('A printed note remains beside the window.',confidence)
+    witness=pa.CropWitness(words('A printed nate remains beside the window.'))
+    witness.alternates=lambda:[words('A printed nate remains beside the window.',40)]*2
+    witness.source_occurrences=source
+    result=dict(tokens=[w['text']for w in source],marked={2},word_notes={2:dict(source=['note'],model=['note'],chosen=['note'],status='UNRESOLVED')})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert bool(result['word_notes'][2].get('source_image_only'))is(confidence<85)
+    assert result['marked']=={2},'Conflicting local reads remain unresolved'
+
+
+def test_unsettled_identifier_keeps_its_literal_instance_and_source_control():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please inspect Item12 beside the window.',40)
+    witness=pa.CropWitness(words('Please inspect lteml2 beside the window.',40))
+    witness.alternates=lambda:[words('Please inspect Iteml2 beside the window.',40)]*2
+    result=dict(tokens=[w['text']for w in source],marked={2},word_notes={2:dict(source=['Item12'],model=['Item12'],chosen=['Item12'],status='UNRESOLVED')})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert not result['word_notes'][2].get('source_image_only')
+    assert result['tokens'][2]=='Item12' and result['marked']=={2}
+
+
+def test_unavailable_alternate_data_does_not_widen_the_primary_reading_failure(monkeypatch,tmp_path):
+    from cps.services.reflow import pixel_adjudication as pa
+    primary=words('The independently read sample remains beside the window.')
+    monkeypatch.setattr(pa,'_read_crop',lambda *a,**k:primary)
+    def unavailable(engine):raise OSError('synthetic unavailable optical data')
+    monkeypatch.setattr(pa,'_latin_directory',unavailable)
+    import shutil
+    monkeypatch.setattr(shutil,'which',lambda name:'/synthetic/tesseract')
+    witness=pa.read_crop(None,[[20,20,200,32]],tmp_path)
+    assert witness.alternates()==[]
+    assert list(witness)==primary
