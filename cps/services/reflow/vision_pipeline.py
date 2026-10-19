@@ -496,7 +496,7 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
     if ordered:
         result=[]
         for _,group in ordered_groups:
-            columns,proved=_proved_recovery_columns(group)
+            columns,proved=(_proved_recovery_columns(group)if block.get('role')in ('body','other')else([group],False))
             for column in columns if proved else [_pixel_line_order(group)]:result.extend(column)
     if block['role']=='heading' and result and body_owners:
         # A run-in heading can share a physical row with the following
@@ -4952,20 +4952,22 @@ def _proved_recovery_columns(words):
     # estimate of ordinary word spacing makes a two-column proof impossible.
     ordinary=[gap for gap in gaps if gap<1.5*height]
     minimum=max(6,1.5*height,2*statistics.median(ordinary)) if ordinary else max(6,1.5*height)
-    cuts=[(a[1]+b[0])/2 for a,b in zip(intervals,intervals[1:])
-          if b[0]-a[1]>=minimum]
-    if not cuts:return [words],False
-    groups=[[] for _ in range(len(cuts)+1)]
-    for word in words:
-        center=(word['bbox'][0]+word['bbox'][2])/2
-        groups[sum(center>cut for cut in cuts)].append(word)
-    rows=[_pixel_lines(group) for group in groups]
-    if any(len(column)<3 or statistics.median(len(row) for row in column)<2
-           for column in rows):return [words],False
-    boxes=[vision_reading.union([w['bbox'] for w in group]) for group in groups]
-    if any(min(a[3],b[3])-max(a[1],b[1])<2*height
-           for a,b in zip(boxes,boxes[1:])):return [words],False
-    return [_pixel_line_order(group) for group in groups],True
+    widths=sorted(set(gap for gap in gaps if gap>=minimum))
+    for width in widths:
+        cuts=[(a[1]+b[0])/2 for a,b in zip(intervals,intervals[1:])
+              if b[0]-a[1]>=width]
+        groups=[[] for _ in range(len(cuts)+1)]
+        for word in words:
+            center=(word['bbox'][0]+word['bbox'][2])/2
+            groups[sum(center>cut for cut in cuts)].append(word)
+        rows=[_pixel_lines(group) for group in groups]
+        if any(len(column)<3 or statistics.median(len(row) for row in column)<2
+               for column in rows):continue
+        boxes=[vision_reading.union([w['bbox'] for w in group]) for group in groups]
+        if any(min(a[3],b[3])-max(a[1],b[1])<2*height
+               for a,b in zip(boxes,boxes[1:])):continue
+        return [_pixel_line_order(group) for group in groups],True
+    return [words],False
 
 
 def _source_paragraph_boundaries(answer,optical,display,regions,body_owners):

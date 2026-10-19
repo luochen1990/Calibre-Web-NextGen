@@ -36,15 +36,17 @@ def test_valid_printed_ordinal_is_not_certified_as_opaque_ocr_letters(settled):
     assert bool(result['word_notes'][2].get('source_image_only')) is not settled
 
 
-def test_conflicting_valid_printed_ordinal_still_wins_when_pixels_prove_it():
-    source=words('Read the 9th sample now.')
+@pytest.mark.parametrize('printed',['9th','both'])
+def test_conflicting_valid_printed_ordinal_still_wins_when_pixels_prove_it(printed):
+    source=words('Read the '+printed+' sample now.')
     result=adjudicate('Read the 8th sample now.'.split(),source,source)
-    assert result['tokens'][2]=='9th'
+    assert result['tokens'][2]==printed
     assert result['word_notes'][2]['status']=='RESOLVED'
     assert 2 in result['marked']
 
 
-def test_complete_two_column_territory_keeps_column_order(monkeypatch):
+@pytest.mark.parametrize('role',['body','table'])
+def test_complete_two_column_territory_keeps_column_order(monkeypatch,role):
     from types import SimpleNamespace
     from cps.services.reflow import vision_pipeline as pipeline
     import pymupdf
@@ -54,9 +56,26 @@ def test_complete_two_column_territory_keeps_column_order(monkeypatch):
             source.extend([dict(text=prefix,bbox=[x,y,x+35,y+10]),
                            dict(text=str(y),bbox=[x+40,y,x+55,y+10])])
     display=SimpleNamespace(rect=pymupdf.Rect(0,0,250,120))
-    block=dict(id='sample',role='body',text='Synthetic columns',bbox=[0,0,1,1])
+    block=dict(id='sample',role=role,text='Synthetic columns',bbox=[0,0,1,1])
     result=pipeline._owned_block_words(block,dict(blocks=[block]),source,display,
         regions={'sample':[[0,0,250,120]]},ordered=True)
+    expected=source if role=='body'else sorted(source,key=lambda w:(w['bbox'][1],w['bbox'][0]))
+    assert [w['text']for w in result]==[w['text']for w in expected]
+
+
+def test_persistent_word_slots_do_not_mask_actual_column_gutters():
+    from types import SimpleNamespace
+    from cps.services.reflow import vision_pipeline as pipeline
+    import pymupdf
+    source=[]
+    for x,prefix in [(10,'Left'),(170,'Middle'),(330,'Right')]:
+        for y in [20,40,60]:
+            source.extend([dict(text=prefix,bbox=[x,y,x+35,y+10]),
+                           dict(text=str(y),bbox=[x+60,y,x+95,y+10])])
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,120))
+    block=dict(id='sample',role='body',text='Synthetic columns',bbox=[0,0,1,1])
+    result=pipeline._owned_block_words(block,dict(blocks=[block]),source,display,
+        regions={'sample':[[0,0,500,120]]},ordered=True)
     assert [w['text']for w in result]==[w['text']for w in source]
 
 

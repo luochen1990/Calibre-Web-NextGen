@@ -34,7 +34,8 @@ def _ordinal(value):
 
 def _ordinal_noise(value):
     import re
-    return bool(re.fullmatch(r'[0-9gGsSiIlLoOuUbBrRaA]+(?:st|nd|rd|th)[.,;:!?]?',_key(value)))
+    match=re.fullmatch(r'([0-9gGsSiIlLoOuUbBrRaA]+)(?:st|nd|rd|th)[.,;:!?]?',_key(value))
+    return bool(match and (len(match[1])==1 or any(c.isdigit()for c in match[1])))
 
 
 def _own_word_choice(source,witness):
