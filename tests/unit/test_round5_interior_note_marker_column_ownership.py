@@ -83,6 +83,11 @@ def note_text(note):
 @pytest.mark.parametrize('plus',[False,True])
 def test_source_interior_marker_keeps_unlabelled_prefix_with_previous_note(tmp_path,monkeypatch,mirror,plus):
     p,body,left,prefix,citation=fixture(mirror=mirror,plus=plus)
+    from cps.services.reflow import pixel_adjudication as pa
+    def unavailable(*args):
+        value=pa.CropWitness();value.failure='Synthetic secondary recognition unavailable'
+        return value
+    monkeypatch.setattr(pa,'read_crop',unavailable)
     calls=verified_marker_reader(monkeypatch)
     _,_,docs=h.convert_ink(tmp_path,monkeypatch,[p])
     refs,notes=h.assert_exact_returns(docs,2)

@@ -173,7 +173,13 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 word=own[0] if len(own)==1 else None
                 second=([other for other in corroboration if _same_occurrence(word,other)
                     and _key(word['text'])==_key(other['text'])] if word else [])
-                corrected=bool(word and word.get('confidence',0)>=90 and len(second)==1
+                from . import text_quality
+                lexical=lambda value:''.join(c for c in _key(value).casefold() if c.isalpha())
+                vocabulary=text_quality.english_lexicon()
+                lexical_repair=(lexical(token) not in vocabulary and
+                    not any(c.isupper() for c in token) and word is not None and
+                    lexical(word['text']) in vocabulary)
+                corrected=bool(lexical_repair and word and word.get('confidence',0)>=90 and len(second)==1
                     and _key(word['text'])!=_key(token)
                     and _key(word['text']).rstrip('.,;:!?')!=_key(token).rstrip('.,;:!?')
                     and not _accent_conflict(word['text'],token))
@@ -311,6 +317,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             left=max(0,i-1);right=min(len(tokens),i+2)
             locations=_matches(pixels,[_key(t) for t in tokens[left:right]])
             context=witness[locations[0]:locations[0]+right-left] if len(locations)==1 else []
+            own=[word for word in witness if i in bounds and
+                 _complete_word_occurrence(dict(bbox=bounds[i]),word)]
+            own_exact=(len(own)==1 and own[0].get('confidence',0)>=90
+                       and _key(own[0]['text'])==_key(tokens[i]))
+            if i not in notes and own_exact:
+                verified.append(i);continue
             if i not in notes and context and all(w.get('confidence',0)>=90 for w in context) and all(
                     j in bounds and _same_occurrence(dict(bbox=bounds[j]),word)
                     for j,word in zip(range(left,right),context)):

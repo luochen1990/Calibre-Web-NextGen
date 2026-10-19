@@ -2281,8 +2281,12 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             first_tokens,baseline=_lexical_marker_view(first_tokens,baseline,physical)
                             _,witness=_lexical_marker_view(first_tokens,witness,physical)
                             _,marker_corroboration=_lexical_marker_view(first_tokens,optical_local,physical)
-                        pending=(range(len(first_tokens)) if result['fallback'] or bid in forced_uncertain
-                                 else result['marked'])
+                        # Conservation failure and interpolated alignment are
+                        # block-level routing evidence, not reader uncertainty in
+                        # every neighboring word. Actual lexical alternatives
+                        # are adjudicated below at their own occurrences.
+                        pending=vision_reading.align(block['text'],[],block['low_confidence'],
+                            has_layer=False)['marked']
                         adjudication=pixel_adjudication.adjudicate(first_tokens,
                             baseline,witness,uncertain=pending,corroboration=marker_corroboration,
                             # Inconclusive OCR cannot revive a model passage already

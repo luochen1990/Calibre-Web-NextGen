@@ -1615,10 +1615,50 @@ def test_unreliable_native_layer_does_not_earn_drawn_print_authority(kind):
         assert not native_text.drawn_word_authority(leaf,physical)
 
 
+def test_one_alignment_disagreement_cannot_mark_every_confident_neighbor(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    printed='The clear sample remains readable beside the quiet window today.'
+    physical=words(printed)
+    # A weak secondary recognizer cannot establish uncertainty in agreed words.
+    witness=words(printed,30)
+    monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    with pymupdf.open()as doc:
+        doc.new_page(width=400,height=300)
+        _,record=vp.compile_page({'blocks':[block(printed,bbox=(0,0,1000,1000))]},
+            [dict(w,text='x'+str(i))for i,w in enumerate(physical)],
+            SourceDisplay(doc,0),0,Package(),{},pixel_words=physical,
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    assert record['blocks'][0]['marked']==[], 'No competing word or reader uncertainty exists'
 
 
+def test_cropped_neighbor_failure_does_not_mark_an_exact_owned_word():
+    # Context OCR loses the following short word, but this occurrence agrees.
+    source=words('The clear sample remains readable today.')
+    witness=[dict(w,confidence=96)for w in source if w['text']!='readable']
+    result=adjudicate([w['text']for w in source],source,witness,uncertain=())
+    assert not result['marked']
+    uncertain=adjudicate([w['text']for w in source],source,witness,uncertain={3})
+    assert 3 not in uncertain['marked'], 'Own exact crop proof is independent of its missing neighbor'
+    assert 3 in uncertain['verified_unchanged']
 
 
+@pytest.mark.parametrize(('printed','ocr'),[('each','cach'),('does','docs')])
+def test_agreed_dictionary_word_is_not_rewritten_by_duplicate_ocr_settings(printed,ocr):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The reader '+printed+' compares a carefully printed sample.')
+    pixels=[dict(w,text=ocr if w['text']==printed else w['text'])for w in source]
+    result=pa.adjudicate([w['text']for w in source],source,pixels,corroboration=pixels)
+    assert result['tokens']==[w['text']for w in source]
+    # A credible competing reading may still receive its own unresolved control.
+    notes=pa.audit_agreement(result['tokens'],source,pixels)
+    assert notes[2]['alternative']==[ocr]
+    assert notes[2]['status']=='UNRESOLVED'
 
 
 def test_visible_native_words_remain_authoritative_in_a_vision_layout_unit(tmp_path,monkeypatch):
