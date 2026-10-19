@@ -2364,3 +2364,58 @@ def test_visible_native_note_number_keeps_authority_over_optical_agreement(tmp_p
                 vp._note_ownership({0:scan})
         assert block['text']=='Clear note remains readable.'
         assert calls==[], 'Optical guesses cannot replace reliable drawn native numerals'
+
+
+@pytest.mark.parametrize('recognition_available',[True,False])
+@pytest.mark.parametrize('rotation',[0,90,180,270])
+def test_native_prefix_authority_cannot_certify_outside_legacy_factory_runs(tmp_path,monkeypatch,recognition_available,rotation):
+    import re
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,vision_pixels
+    class Package:
+        def __init__(self):self.calls=[]
+        def disclosure_image(self,name,display,box):self.calls.append(list(box))
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=300,height=230)
+        leaf.insert_text((30,60),'Number',fontname='helv',fontsize=12)
+        leaf.insert_text((80,140),'w',fontname='cour',fontsize=12)
+        leaf.insert_text((140,160),'x',fontname='cour',fontsize=12)
+        font=next(f[0]for f in leaf.get_fonts()if f[3]=='Courier')
+        doc.xref_set_key(font,'BaseFont','/CustomMarks');leaf.set_rotation(rotation);leaf=doc.reload_page(leaf)
+        from cps.services.reflow.source_display import SourceDisplay
+        display=SourceDisplay(doc,0)
+        physical=[dict(text=w[4],bbox=list(display.reading_rect(w[:4])),confidence=99)for w in leaf.get_text('words')]
+        monkeypatch.setattr(pa,'read_crop',lambda *args:physical if recognition_available else [])
+        monkeypatch.setattr(vision_pixels,'words',lambda *args:physical if recognition_available else [])
+        page=dict(pno=0,body=['<p>Number w x</p>'],asides=[])
+        records=[dict(id='native-0',role='body',source_regions=[list(display.reading_rect([25,43,76,65]))])]
+        package=Package();vp._audit_native_pixels(doc,page,records,tmp_path,package,{})
+        visible=vp._seam_text(re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',page['body'][0]))
+        assert visible=='Number', 'Correct nearby print cannot authorize unbound font codes as words'
+        assert page['body'][0].count('class="source-word-image"')==2
+        assert records[0]['marked']==[1,2]
+        assert len(records[0]['unplaced_native_factory_glyphs'])==2
+        assert len(package.calls)==2
+        for word,box in zip(physical[1:],package.calls):
+            own=word['bbox'];assert box[0]<=own[0]and box[1]<=own[1]and box[2]>=own[2]and box[3]>=own[3]
+            assert not pymupdf.Rect(box).intersects(pymupdf.Rect(physical[0]['bbox'])), 'A glyph cannot borrow the known heading'
+
+
+@pytest.mark.parametrize('failure',['duplicate_source','duplicate_output','missing','hidden'])
+def test_unbound_native_factory_glyph_cannot_borrow_another_occurrence(tmp_path,monkeypatch,failure):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=300,height=230)
+        leaf.insert_text((30,60),'Number',fontname='helv',fontsize=12)
+        if failure!='missing':leaf.insert_text((80,140),'w',fontname='cour',fontsize=12,
+            render_mode=3 if failure=='hidden'else 0)
+        if failure=='duplicate_source':leaf.insert_text((140,160),'w',fontname='cour',fontsize=12)
+        for font in leaf.get_fonts():
+            if font[3]=='Courier':doc.xref_set_key(font[0],'BaseFont','/CustomMarks')
+        leaf=doc.reload_page(leaf)
+        monkeypatch.setattr(pa,'read_crop',lambda *args:[])
+        page=dict(pno=0,body=['<p>Number '+('w w'if failure=='duplicate_output'else'w')+'</p>'],asides=[])
+        records=[dict(id='native-0',role='body',source_regions=[[25,43,76,65]])]
+        with pytest.raises(ValueError,match='Native factory output has no complete printed binding'):
+            vp._audit_native_pixels(doc,page,records,tmp_path,object(),{})

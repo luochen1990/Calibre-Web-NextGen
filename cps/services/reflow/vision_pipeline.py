@@ -4542,8 +4542,47 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
             original=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix),
                 **({'native_parts':[dict(p,bbox=list(display.source_rect(p['bbox'])*display.page.derotation_matrix))for p in w['native_parts']]}if 'native_parts'in w else{}))for w in source]
             if drawn_word_authority(doc[page['pno']],original):
-                record['pixel_adjudication_status']='VISIBLE_NATIVE_PRINT'
-                continue
+                literal=lambda values:''.join(vision_reading.normalized(t)for t in values)
+                native_view=_native_wrap_view(source,tokens)
+                from collections import Counter
+                covered=Counter(vision_reading.normalized(w['text'])for w in native_view)
+                if (covered==Counter(vision_reading.normalized(t)for t in tokens)
+                        or re.search(r'<(?:a|sup)\b[^>]*class="noteref(?:-unresolved)?"',page['body'][position])
+                        and literal(w['text']for w in native_view)==literal(tokens)):
+                    record['pixel_adjudication_status']='VISIBLE_NATIVE_PRINT'
+                    continue
+                # Authority belongs to the covered characters, never to extra
+                # factory runs outside that territory. A detached legacy run
+                # may retain its ink only at a unique visible original glyph;
+                # its placement in this factory paragraph remains unproved.
+                from difflib import SequenceMatcher
+                from .native_text import unproved_legacy_word,visible_word_ink
+                mapped={};unbound=[]
+                for kind,a,z,b,y in SequenceMatcher(None,
+                        [w['text']for w in source],tokens,autojunk=False).get_opcodes():
+                    if kind=='equal':mapped.update({b+i:source[a+i]for i in range(z-a)})
+                    elif kind=='insert':unbound.extend(range(b,y))
+                    else:raise ValueError('Native factory output has no complete printed binding')
+                used={tuple(w['bbox'])for w in source};proof=[]
+                for index in unbound:
+                    candidates=[]
+                    for word in physical:
+                        if word['text']!=tokens[index]:continue
+                        raw=dict(word,bbox=list(display.source_rect(word['bbox'])*display.page.derotation_matrix))
+                        if unproved_legacy_word(display.page,raw)and visible_word_ink(display.page,[raw])[0]:
+                            candidates.append(word)
+                    if len(candidates)!=1 or tuple(candidates[0]['bbox'])in used:
+                        raise ValueError('Native factory output has no complete printed binding')
+                    word=candidates[0];mapped[index]=word;used.add(tuple(word['bbox']))
+                    proof.append(dict(index=index,source_bbox=list(word['bbox']),
+                        method='unique_visible_legacy_glyph',mapping='unplaced_native_factory_run'))
+                if not unbound or len(mapped)!=len(tokens):
+                    raise ValueError('Native factory output has no complete printed binding')
+                source=[mapped[i]for i in range(len(tokens))]
+                original=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix))for w in source]
+                territories=list(territories)+[item['source_bbox']for item in proof]
+                record.update(source_regions=territories,unplaced_native_factory_glyphs=proof,
+                    pixel_adjudication_status='UNPLACED_NATIVE_FACTORY_GLYPHS')
             witness=pixel_adjudication.read_crop(display,territories,Path(cache)/'adjudication')
             from .native_text import unproved_legacy_word
             legacy={i for i,w in enumerate(original)if unproved_legacy_word(doc[page['pno']],w)}
