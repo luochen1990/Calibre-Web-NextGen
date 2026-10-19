@@ -4453,7 +4453,13 @@ def _native_seam_blocks(doc,book,pno,page):
         record['native_occurrence_count']=len(occurrences)
         binding=('factory_order_complete_local_source' if repeated_source is not None else
                  'unique_complete_source_text' if owned else 'native_element_box')
-        if not owned and element is not None:owned=owned_words(physical,element.bbox)
+        if not owned and element is not None:
+            owned=owned_words(physical,element.bbox)
+            if len(occurrences)>1 and compact(' '.join(w['text']for w in owned))!=compact(text):
+                # The literal exists, but a stale rectangle does not choose
+                # between its repeated original occurrences. Keep its existing
+                # unplaced-reading disclosure instead of borrowing header ink.
+                owned=[]
         if owned:
             owned=_pixel_line_order(owned)
             box=(vision_reading.union([w['bbox'] for w in owned])
@@ -4546,7 +4552,10 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 native_view=_native_wrap_view(source,tokens)
                 from collections import Counter
                 covered=Counter(vision_reading.normalized(w['text'])for w in native_view)
+                atoms=lambda values:re.findall(r'\w+|[^\w\s]',
+                    ' '.join(vision_reading.normalized(t)for t in values))
                 if (covered==Counter(vision_reading.normalized(t)for t in tokens)
+                        or atoms(w['text']for w in native_view)==atoms(tokens)
                         or re.search(r'<(?:a|sup)\b[^>]*class="noteref(?:-unresolved)?"',page['body'][position])
                         and literal(w['text']for w in native_view)==literal(tokens)):
                     record['pixel_adjudication_status']='VISIBLE_NATIVE_PRINT'

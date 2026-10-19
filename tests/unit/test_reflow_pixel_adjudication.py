@@ -2419,3 +2419,26 @@ def test_unbound_native_factory_glyph_cannot_borrow_another_occurrence(tmp_path,
         records=[dict(id='native-0',role='body',source_regions=[[25,43,76,65]])]
         with pytest.raises(ValueError,match='Native factory output has no complete printed binding'):
             vp._audit_native_pixels(doc,page,records,tmp_path,object(),{})
+
+
+@pytest.mark.parametrize('printed,published,allowed',[
+    ('A ( q ) remains.','A (<sup>q</sup>) remains.',True),
+    ('A part remains.','Apart remains.',False),
+    ('There is room.','Thereis room.',False)])
+def test_native_factory_punctuation_spacing_cannot_join_printed_words(tmp_path,monkeypatch,printed,published,allowed):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=300,height=200)
+        leaf.insert_text((25,70),printed,fontsize=12)
+        monkeypatch.setattr(pa,'read_crop',lambda *args:pytest.fail('Known drawn words do not need optical spelling guesses'))
+        page=dict(pno=0,body=['<p>'+published+'</p>'],asides=[])
+        records=[dict(id='native-0',role='body',source_regions=[[20,50,280,80]])]
+        if allowed:
+            vp._audit_native_pixels(doc,page,records,tmp_path,object(),{})
+            assert page['body']==['<p>'+published+'</p>']
+            assert records[0]['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
+            assert not records[0].get('marked')
+        else:
+            with pytest.raises(ValueError,match='Native factory output has no complete printed binding'):
+                vp._audit_native_pixels(doc,page,records,tmp_path,object(),{})
