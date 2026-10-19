@@ -2442,3 +2442,84 @@ def test_native_factory_punctuation_spacing_cannot_join_printed_words(tmp_path,m
         else:
             with pytest.raises(ValueError,match='Native factory output has no complete printed binding'):
                 vp._audit_native_pixels(doc,page,records,tmp_path,object(),{})
+
+
+@pytest.mark.parametrize('reader_error',[False,True])
+def test_complete_native_reading_restores_only_its_truncated_optical_territory(tmp_path,monkeypatch,reader_error):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    first='The quiet sample follows a steady path'
+    last='and every following word stays readable.'
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=250)
+        leaf.insert_text((25,70),'w',fontname='cour',fontsize=10)
+        leaf.insert_text((40,70),first,fontsize=10)
+        leaf.insert_text((25,90),last,fontsize=10)
+        xref=next(f[0]for f in leaf.get_fonts()if f[3]=='Courier')
+        doc.xref_set_key(xref,'BaseFont','/CustomMarks');leaf=doc.reload_page(leaf)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in leaf.get_text('words')]
+        cut=[25,78,42,94];regions={'b1':[[20,55,350,74],cut]}
+        short=[w for w in source if any(vp.owned_words([w],b)for b in regions['b1'])]
+        def recognize(display,boxes,cache):return [w for w in source if any(vp.owned_words([w],b)for b in boxes)]
+        monkeypatch.setattr(pa,'read_crop',recognize)
+        chosen=last.replace('readable.','different.')if reader_error else last
+        page,report=vp.compile_page({'blocks':[block('• '+first+' '+chosen,bbox=(0,0,1000,1000))]},source,
+            SourceDisplay(doc,0),0,Package(),{},pixel_words=short,regions=regions,
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+        record=report['blocks'][0]
+        assert record['marked']==([0,len(source)-1]if reader_error else[0]), 'Only original glyph ink and an actual reader correction need a mark'
+        assert record['source_image_words']==[0], 'Only the unproved font glyph stays original ink'
+        assert last in vp._seam_text(page['body'][0])
+        assert 'different'not in vp._seam_text(page['body'][0])
+        if reader_error:
+            assert any(d['status']=='RESOLVED'and d['model']==['different.']and d['chosen']==['readable.']for d in record['adjudication'])
+        assert any(g['kind']=='complete_native_reading_territory'for g in record['guard'])
+        tail=source[-1]['bbox']
+        assert any(b[0]<=tail[0]and b[1]<=tail[1]and b[2]>=tail[2]and b[3]>=tail[3]for b in record['source_regions'])
+
+
+@pytest.mark.parametrize('failure',['reworded_passage','dropped_word','fused_words','other_body','claimed_instance',
+    'hidden_glyph','covered_tail','missing_anchor','dropped_prior','reordered_prior','typed_reference','note_role','short_context'])
+def test_complete_native_territory_requires_every_original_occurrence_and_owner(failure):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    first='The quiet sample follows a steady path';last='and every following word stays readable.'
+    if failure=='short_context':first='Clear sample';last='remains today.'
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=250)
+        leaf.insert_text((25,70),'w',fontname='cour',fontsize=10,render_mode=3 if failure=='hidden_glyph'else 0)
+        leaf.insert_text((40,70),first,fontsize=10);leaf.insert_text((25,90),last,fontsize=10)
+        if failure=='dropped_prior':leaf.insert_text((25,160),'Elsewhere',fontsize=10)
+        if failure=='covered_tail':
+            import io
+            from PIL import Image
+            data=io.BytesIO();Image.new('RGB',(1,1),'white').save(data,format='PNG')
+            leaf.insert_image(leaf.search_for('readable.')[0],stream=data.getvalue())
+        xref=next(f[0]for f in leaf.get_fonts()if f[3]=='Courier')
+        doc.xref_set_key(xref,'BaseFont','/CustomMarks');leaf=doc.reload_page(leaf)
+        source=[dict(text=w[4],bbox=list(w[:4]))for w in leaf.get_text('words')]
+        regions={'b1':[[20,55,350,74],[25,78,42,94]]}
+        local=[w for w in source if any(vp.owned_words([w],b)for b in regions['b1'])]
+        text='• '+first+' '+last
+        if failure=='reworded_passage':text=text.replace('The quiet sample','A noisy paragraph').replace('steady path','distant lane')
+        if failure=='short_context':text=text.replace('today.','different.')
+        if failure=='dropped_word':text=text.replace('following ','')
+        if failure=='fused_words':text=text.replace('every following','everyfollowing')
+        if failure=='typed_reference':text=text.replace('sample','sample<n:n1>')
+        own=block(text,bbox=(0,0,1000,440));answer={'blocks':[own]};owners={}
+        if failure=='other_body':
+            other=block(last,ident='b2',bbox=(0,300,1000,440));answer['blocks'].append(other)
+            regions['b2']=[[20,78,350,94]];owners['b2']=[20,78,350,94]
+        if failure=='claimed_instance':regions['_instances']={vp._source_instance(source[-1]):'another-unit'}
+        if failure=='missing_anchor':local=local[:1]
+        if failure=='dropped_prior':local.append(source[-1])
+        if failure=='reordered_prior':local=list(reversed(local))
+        if failure=='note_role':own['role']='footnote';own['marker']='1'
+        assert vp._complete_native_reading_territory(own,answer,source,SourceDisplay(doc,0),regions,owners,local)is None

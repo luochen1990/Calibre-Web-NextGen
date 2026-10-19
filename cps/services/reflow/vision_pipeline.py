@@ -445,6 +445,38 @@ def _native_ink_regions(territories,words):
     return boxes
 
 
+def _complete_native_reading_territory(block,answer,words,display,regions,body_owners,local):
+    """Restore a clipped optical territory only from complete original print."""
+    if (not local or len(local)>=len(block['text'].split()) or '<n:'in block['text']
+            or block.get('role')not in ('body','heading','caption')):return None
+    from .native_text import drawn_word_authorities,unproved_legacy_word,visible_word_ink
+    def original(items):
+        return [dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix),
+            **({'native_parts':[dict(p,bbox=list(display.source_rect(p['bbox'])*display.page.derotation_matrix))for p in w['native_parts']]}if 'native_parts'in w else{}))for w in items]
+    if sum(drawn_word_authorities(display.page,original(local)))<2:return None
+    proposed=dict(regions or {});proposed[block['id']]=[block_rect(block,display)]
+    candidate=_native_lexical_view(display,_owned_block_words(block,answer,words,display,
+        proposed,body_owners,ordered=True))
+    tokens=block['text'].split()
+    if not len(local)<len(candidate)==len(tokens):return None
+    keys=[_source_instance(w)for w in candidate]
+    if len(set(keys))!=len(keys):return None
+    positions={key:i for i,key in enumerate(keys)}
+    prior=[positions.get(_source_instance(w),-1)for w in local]
+    if -1 in prior or prior!=sorted(set(prior)):return None
+    raw=original(candidate);known=drawn_word_authorities(display.page,raw);matched=0;changed=0
+    for word,token,proved,physical in zip(candidate,tokens,known,raw):
+        if proved:
+            if vision_reading.normalized(word['text'])==vision_reading.normalized(token):matched+=1
+            else:changed+=1
+        elif not(unproved_legacy_word(display.page,physical)and visible_word_ink(display.page,[physical])[0]):
+            return None
+    # One reader error can be adjudicated from mapped print only in a complete
+    # occurrence with six unchanged words; a reworded passage earns no binding.
+    if changed>1 or changed and matched<6:return None
+    return candidate
+
+
 def _word_disclosure_image(package,name,display,clip,parts=None):
     if not parts:
         if hasattr(package,'disclosure_image'):package.disclosure_image(name,display,clip)
@@ -2407,6 +2439,12 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 from . import pixel_adjudication
                 with unit_recovery.guard(pno,'pixel_adjudication',block=bid):
                     from .native_text import drawn_word_authority,drawn_word_authorities,unproved_legacy_word
+                    complete=_complete_native_reading_territory(block,answer,words,display,
+                        regions,body_owners,local)
+                    if complete is not None:
+                        result['guard'].append(dict(kind='complete_native_reading_territory',
+                            restored_words=len(complete)-len(local)))
+                        local=complete;territories=_native_ink_regions(territories,local)
                     native_occurrences=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix),
                         **({'native_parts':[dict(p,bbox=list(display.source_rect(p['bbox'])*display.page.derotation_matrix))for p in w['native_parts']]}if 'native_parts'in w else{}))for w in local]
                     native_proof=drawn_word_authorities(display.page,native_occurrences)
