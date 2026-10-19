@@ -713,9 +713,71 @@ def chapters(pages):
         return result
 
 
-def bind_links(chapters):
+def _disclose_unbound_notes(chapters, source_context):
+    """Retain printed marker text; disclose only its unproved association.
+
+    Endnotes can share one outer section. Ownership comes from the closest
+    registered action or enclosing note, never all IDs in that outer section.
+    The caller provides original-page pixels; this pass cannot invent a target.
+    """
+    from . import build_epub
+    controller = current()
+    home = {ident for c in chapters for b in c.blocks for ident in build_epub._ID.findall(b)}
+    retained = []
+    for chapter in chapters:
+        for index, fragment in enumerate(chapter.blocks):
+            if not any(target not in home for target in build_epub._HREF.findall(fragment)):
+                continue
+            root = ET.fromstring('<root xmlns:epub="http://www.idpf.org/2007/ops">' + fragment + '</root>')
+            parents = {child: parent for parent in root.iter() for child in parent}
+            changed = False
+            for node in root.iter():
+                target = node.get('href', '')
+                classes = node.get('class', '').split()
+                if (node.tag.rsplit('}', 1)[-1] != 'a' or not target.startswith('#') or
+                        target[1:] in home):
+                    continue
+                ancestor = node
+                within_note = False
+                while ancestor is not root:
+                    within_note = within_note or 'footnote' in ancestor.get('class', '').split()
+                    ancestor = parents[ancestor]
+                if not within_note and not set(classes).intersection({'noteref', 'note-return'}):
+                    continue
+                units = []
+                owner = node
+                while owner is not root:
+                    units = controller.id_units.get(owner.get('id'), []) if controller else []
+                    if units:break
+                    owner = parents[owner]
+                if not units or source_context is None:
+                    if controller:
+                        controller.check_units(units)
+                        raise UnitFailure(units, 'link_reference', ValueError('No admitted destination for ' + target[1:]))
+                    raise ValueError('No admitted destination for ' + target[1:])
+                if len({u['page'] for u in units}) != 1:
+                    raise SourceIntegrityError('Unproved note action has ambiguous source ownership')
+                identity = hashlib.sha256(ET.tostring(node) + str(len(retained)).encode()).hexdigest()[:20]
+                destination, fragments = source_context(units, target[1:], 'note-link-' + identity)
+                node.set('href', '#' + destination)
+                node.set('class', 'source-disclosure-ref')
+                node.set('{http://www.idpf.org/2007/ops}type', 'noteref')
+                node.set('aria-label', 'Note association unresolved; view original source page')
+                retained.extend(fragments)
+                controller.events.append(dict(stage='note_link_disclosure',
+                    transition='LOCAL_NOTE_SOURCE_DISCLOSURE', units=copy.deepcopy(units),
+                    missing_target=target[1:], source_reference=destination))
+                changed = True
+            if changed:
+                chapter.blocks[index] = ''.join(ET.tostring(child, encoding='unicode') for child in root)
+    if retained:
+        chapters[-1].blocks.extend(retained)
+
+
+def bind_links(chapters, source_context=None):
     """Relocate only references to a uniquely admitted destination ID."""
     from . import build_epub
+    if source_context is not None:_disclose_unbound_notes(chapters, source_context)
     controller=current();home={};orig=copy.deepcopy(chapters)
     for chapter in orig:
         for fragment in chapter.blocks:

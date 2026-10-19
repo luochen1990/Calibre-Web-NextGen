@@ -94,3 +94,50 @@ def test_native_unit_source_replacement_keeps_its_proved_note_origin(tmp_path,mo
     assert note in markup
     assert 'Independently written body text.' not in markup
     assert 'images/source.jpg' in markup
+
+
+@pytest.mark.parametrize('direction',['origin','note'])
+def test_unproved_note_link_discloses_locally_beside_an_existing_page_fallback(tmp_path,monkeypatch,direction):
+    """Printed synthetic notes remain live; only an unproved action gets ink."""
+    import re
+    from cps.services.reflow import reading_flow,unit_recovery
+    first=h.InkPage();first.reference(number=1)
+    first.text('1 '+GOOD,'good','footnote',y=280,size=7,marker='1',model=GOOD)
+    middle=h.InkPage();middle.text('The middle page has separately retained original pixels.','middle',y=70)
+    last=h.InkPage();last.text(LAST,'last',y=70)
+    original_compile=vp.compile_page
+    def compile_owned(*args,**kwargs):
+        if args[3]==1:
+            raise unit_recovery.UnitFailure([dict(page=1,block=None)],'synthetic_page_failure',ValueError('Retain this synthetic page'))
+        return original_compile(*args,**kwargs)
+    monkeypatch.setattr(vp,'compile_page',compile_owned)
+    original_finish=reading_flow.finish;reached=[]
+    def unproved(chapters,book):
+        result=original_finish(chapters,book)
+        markup=''.join(b for c in chapters for b in c.blocks)
+        origin=re.search(r'<a\b[^>]*class="noteref"[^>]*>',markup)
+        if origin is None and reached:return result
+        assert origin,'The printed synthetic marker must first be admitted'
+        attribute='id' if direction=='origin' else 'href'
+        target=re.search(attribute+r'="([^"]+)"',origin[0])[1].lstrip('#')
+        for c in chapters:c.blocks=[b.replace('id="'+target+'"','') for b in c.blocks]
+        reached.append(target)
+        return result
+    monkeypatch.setattr(reading_flow,'finish',unproved)
+    path,report,docs=h.convert_ink(tmp_path,monkeypatch,[first,middle,last])
+    assert reached
+    assert LAST in h.body_texts(docs)
+    assert sum(GOOD in ''.join(n.itertext()) for _,n in h.refs_and_notes(docs)[1])==1
+    assert {n for n,r in report['pages'].items() if r.get('source')=='original_source'}=={1}
+    assert any('The clear crystal' in text for text in h.body_texts(docs))
+    cases=report['note_link_disclosures']
+    assert len(cases)==1 and cases[0]['page']==0
+    assert cases[0]['missing_target']==reached[0]
+    assert cases[0]['source_image'] in report['images']
+    assert all(u['page'] in (0,1) for u in report['degraded_units'])
+    assert not any(e['stage']=='link_reference' for e in report['unit_recovery_events'])
+    assert build_epub.validate(path)==[]
+    links=[a for root in docs.values() for a in root.iter() if a.tag.endswith('}a')]
+    disclosed=[a for a in links if a.get('aria-label')=='Note association unresolved; view original source page']
+    assert len(disclosed)==1
+    assert ''.join(disclosed[0].itertext()).strip()==('Return' if direction=='origin' else '1')

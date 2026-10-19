@@ -6115,7 +6115,19 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         quality_sweep=_compiled_text_quality(pages,records,numbers)
         chapters=unit_recovery.chapters(pages)
         reading_flow.finish(chapters,book)
-        unit_recovery.bind_links(chapters)
+        note_link_disclosures=[]
+        def disclose_note_link(units, missing_target, bid):
+            # Association failure is local metadata uncertainty. Keep both live
+            # text and already admitted page fallbacks; expose original pixels
+            # without spending a new read or retrying unrelated transcription.
+            pno=units[0]['page']
+            from .unit_source import source_unit
+            fragment,asides,case=source_unit(SourceDisplay(doc,pno),pno,bid,'other',
+                package,images,'The printed note association could not be proved.')
+            case.update(stage='note_link_disclosure',missing_target=missing_target)
+            note_link_disclosures.append(case)
+            return case['source_reference'],[fragment]+asides
+        unit_recovery.bind_links(chapters,source_context=disclose_note_link)
         for chapter in chapters:
             chapter.blocks=[build_epub._image_aliases(block,package.aliases) for block in chapter.blocks]
         native_evidence=build_epub._resource_aliases(native_evidence,package.aliases)
@@ -6153,6 +6165,7 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                 'native_publication_repairs':native_publication_repairs,
                 'live_table_cells':[case for record in records.values() for case in record.get('live_table_cells',[])],
                 'note_marker_disclosures':[case for record in records.values() for case in record.get('note_marker_disclosures',[])],
+                'note_link_disclosures':note_link_disclosures,
                 'note_marker_repairs':[case for record in records.values() for case in record.get('note_marker_repairs',[])],
                 'degraded_figures':[case for record in records.values() for case in record['degraded_figures']],
                 'degraded_figure_count':sum(record['degraded_figure_count'] for record in records.values()),
