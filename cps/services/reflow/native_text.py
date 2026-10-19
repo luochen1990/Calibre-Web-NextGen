@@ -64,13 +64,86 @@ def _face_authority(faces,name):
     return bool(matches) and all(matches)
 
 
+def _inside_character(char, boxes):
+    return any(box[0]-.2 <= (char[3][0]+char[3][2])/2 <= box[2]+.2 and
+               box[1]-.2 <= (char[3][1]+char[3][3])/2 <= box[3]+.2 for box in boxes)
+
+
+def lexical_word_view(page, words, marker_prefixes=()):
+    """Bind font fragments into printed words without changing their letters.
+
+    Decorative initials can be serialized after their paragraph, and raised
+    ordinal suffixes can be separate words. Their original component boxes
+    remain separate: the bounding rectangle must not borrow a following row.
+    """
+    words=list(words);traces=page.get_texttrace();pairs=[]
+    expanded=[]
+    for word in words:
+        match=re.fullmatch(r'(.+[A-Za-z].*?)(\d{1,4})',word['text'])
+        if not match or match[1]not in marker_prefixes:
+            expanded.append(word);continue
+        chars=sorted([c for trace in traces for c in trace.get('chars',())
+                      if c[0]>32 and _inside_character(c,[word['bbox']])],key=lambda c:c[2][0])
+        if (match and match[1]in marker_prefixes and
+                ''.join(chr(c[0])for c in chars)==word['text']):
+            before,after=chars[:-len(match[2])],chars[-len(match[2]):]
+            def bounds(group):
+                return [min(c[3][0]for c in group),min(c[3][1]for c in group),
+                        max(c[3][2]for c in group),max(c[3][3]for c in group)]
+            a,b=bounds(before),bounds(after);height=a[3]-a[1]
+            if b[3]-b[1]<height*.8 and b[3]<a[3]-height*.15:
+                # Reserve independently raised ink for the existing marker
+                # verifier; neither its identity nor note owner is proved here.
+                expanded.extend([dict(word,text=match[1],bbox=a),dict(word,text=match[2],bbox=b)])
+                continue
+        expanded.append(word)
+    words=expanded
+    def bound(word):
+        import unicodedata
+        chars=[c for trace in traces for c in trace.get('chars',())
+               if c[0]>32 and _inside_character(c,[word['bbox']])]
+        value=''.join(chr(c[0])for c in sorted(chars,key=lambda c:c[2][0]))
+        return unicodedata.normalize('NFKC',value)==unicodedata.normalize('NFKC',word['text'])
+    def separator(a,b):
+        return any(c[0]==32 and a[2] <= (c[3][0]+c[3][2])/2 <= b[0] and
+            min(a[3],b[3],c[3][3])>max(a[1],b[1],c[3][1])
+            for trace in traces for c in trace.get('chars',()))
+    for i,head in enumerate(words):
+        if not re.fullmatch('[A-Z]|[0-9]+',head['text']) or not bound(head):continue
+        a=head['bbox'];height=a[3]-a[1];targets=[]
+        for j,tail in enumerate(words):
+            if i==j:continue
+            b=tail['bbox'];small=b[3]-b[1]
+            cap=(re.fullmatch('[A-Z]',head['text']) and tail['text'][:1].islower()
+                 and height>=small*2 and abs(a[1]-b[1])<=small*.4 and
+                 0<=b[0]-a[2]<=small*.4 and any(
+                     b[1]<w['bbox'][1]<a[3] and abs(w['bbox'][0]-b[0])<small*.4
+                     for k,w in enumerate(words)if k not in(i,j)))
+            ordinal=(head['text'].isdigit() and tail['text']in('st','nd','rd','th')
+                     and small<height*.9 and b[3]<a[3]-height*.15 and
+                     min(a[3],b[3])>max(a[1],b[1]) and
+                     0<=b[0]-a[2]<=small*.4)
+            if (cap or ordinal) and not separator(a,b) and bound(tail):targets.append(j)
+        if len(targets)==1:pairs.append((i,targets[0]))
+    used={};groups={}
+    for i,j in pairs:
+        if sum(i in pair or j in pair for pair in pairs)!=1:continue
+        parts=[words[i],words[j]];boxes=[p['bbox']for p in parts]
+        combined=dict(words[j],text=''.join(p['text']for p in parts),
+            bbox=(min(b[0]for b in boxes),min(b[1]for b in boxes),
+                  max(b[2]for b in boxes),max(b[3]for b in boxes)),
+            native_parts=[dict(text=p['text'],bbox=p['bbox'])for p in parts])
+        at=min(i,j);groups[at]=combined;used[i]=used[j]=at
+    return [groups[i]if i in groups else word for i,word in enumerate(words)
+            if i not in used or used[i]==i]
+
+
 def unproved_legacy_word(page,word):
     """A visible custom code without a character map needs original glyph ink."""
-    faces=_text_font_authorities(page);box=word['bbox']
+    faces=_text_font_authorities(page);boxes=[p['bbox']for p in word.get('native_parts',[word])]
     return any(trace.get('type')in(0,1) and trace.get('opacity',1)>=.99 and
         not _face_authority(faces,trace.get('font','').split('+',1)[-1]) and
-        any(char[0]>32 and box[0]<=(char[3][0]+char[3][2])/2<=box[2] and
-            box[1]<=(char[3][1]+char[3][3])/2<=box[3]for char in trace.get('chars',()))
+        any(char[0]>32 and _inside_character(char,boxes)for char in trace.get('chars',()))
         for trace in page.get_texttrace())
 
 
@@ -81,10 +154,9 @@ def word_prefix_ink(page,word,suffix):
     font's decoded spelling. Ambiguous or transformed character inventories
     decline this cut rather than duplicate or delete a reference label.
     """
-    box=word['bbox']
+    boxes=[p['bbox']for p in word.get('native_parts',[word])]
     chars=sorted([c for trace in page.get_texttrace()for c in trace.get('chars',())
-        if c[0]>32 and box[0]<= (c[3][0]+c[3][2])/2 <=box[2] and
-        box[1]<= (c[3][1]+c[3][3])/2 <=box[3]],key=lambda c:c[2][0])
+        if c[0]>32 and _inside_character(c,boxes)],key=lambda c:c[2][0])
     text=''.join(chr(c[0])for c in chars)
     if not suffix or text!=word['text'] or not text.endswith(suffix) or len(text)<=len(suffix):return None
     def bounds(group):
@@ -114,11 +186,9 @@ def drawn_word_authorities(page, words):
         return all(c!='\ufffd' and unicodedata.category(c) not in ('Co','Cs','Cn')for c in text)
     result=[]
     for word in words:
-        box=word['bbox'];chars=[];owners=[];valid=True
+        boxes=[p['bbox']for p in word.get('native_parts',[word])];chars=[];owners=[];valid=True
         for trace in traces:
-            own=[char for char in trace.get('chars',())if char[0]>32 and
-                box[0]-.2<=(char[3][0]+char[3][2])/2<=box[2]+.2 and
-                box[1]-.2<=(char[3][1]+char[3][3])/2<=box[3]+.2]
+            own=[char for char in trace.get('chars',())if char[0]>32 and _inside_character(char,boxes)]
             if not own:continue
             if (trace.get('type')not in(0,1) or trace.get('opacity',1)<.99 or
                     not _face_authority(faces,trace.get('font','').split('+',1)[-1])):valid=False

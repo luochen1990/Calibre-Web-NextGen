@@ -374,6 +374,42 @@ def _reserve_object_instances(answer,optical,display,regions):
             for i,j in matches:instances.setdefault(_source_instance(optical[i]),block['id'])
 
 
+def _native_lexical_view(display,words,marker_prefixes=()):
+    from .native_text import lexical_word_view
+    if not display.page.get_texttrace():return words
+    def physical(word):
+        return dict(word,bbox=list(display.source_rect(word['bbox'])*display.page.derotation_matrix))
+    grouped=lexical_word_view(display.page,[physical(word)for word in words],marker_prefixes)
+    result=[]
+    for word in grouped:
+        value=dict(word,bbox=list(display.reading_rect(word['bbox'])))
+        if 'native_parts'in word:
+            value['native_parts']=[dict(p,bbox=list(display.reading_rect(p['bbox'])))for p in word['native_parts']]
+        result.append(value)
+    return result
+
+
+def _word_disclosure_image(package,name,display,clip,parts=None):
+    if not parts:
+        if hasattr(package,'disclosure_image'):package.disclosure_image(name,display,clip)
+        else:package.image(name,display.jpeg(clip,scale=3,quality=90))
+        return
+    # A decorative initial spans several rows. Preserve only its own glyphs
+    # and word suffix, not unrelated ink inside their enclosing rectangle.
+    import io,math
+    from PIL import Image
+    original=Image.open(io.BytesIO(display.jpeg(clip,scale=3,quality=90))).convert('RGB')
+    kept=Image.new('RGB',original.size,'white')
+    for part in parts:
+        box=part['bbox'];sx=original.width/clip.width;sy=original.height/clip.height
+        region=(max(0,math.floor((box[0]-clip.x0)*sx)),max(0,math.floor((box[1]-clip.y0)*sy)),
+                min(original.width,math.ceil((box[2]-clip.x0)*sx)),min(original.height,math.ceil((box[3]-clip.y0)*sy)))
+        kept.paste(original.crop(region),region)
+    encoded=io.BytesIO();kept.save(encoded,format='JPEG',quality=90)
+    if len(encoded.getvalue())>2*1024*1024:raise extract.RasterTooLarge('compound word exceeds encoded-byte bound')
+    package.image(name,encoded.getvalue())
+
+
 def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,ordered=False):
     """Use one source-ownership rule for publication and boundary inference."""
     territories=(regions or {}).get(block['id'],[block_rect(block,display)])
@@ -2132,6 +2168,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             # after later lines. Conservation compares physical occurrences in
             # each owned territory, never that arbitrary serialization order.
             local=_owned_block_words(block,answer,words,display,regions,body_owners,ordered=True)
+            local=_native_lexical_view(display,local,
+                re.findall(r'(?:^|\s)([^\s<>]+)\s*<n:[^>]+>',block['text']))
             opening_proof=copy.deepcopy((regions or {}).get('_note_openings',{}).get(bid)) if role=='footnote' else None
             local=_note_lexical_evidence(local,opening_proof)
             # A footnote label is preserved as a label, outside its lexical reading.
@@ -2249,7 +2287,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 from . import pixel_adjudication
                 with unit_recovery.guard(pno,'pixel_adjudication',block=bid):
                     from .native_text import drawn_word_authority,drawn_word_authorities,unproved_legacy_word
-                    native_occurrences=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix)) for w in local]
+                    native_occurrences=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix),
+                        **({'native_parts':[dict(p,bbox=list(display.source_rect(p['bbox'])*display.page.derotation_matrix))for p in w['native_parts']]}if 'native_parts'in w else{}))for w in local]
                     native_proof=drawn_word_authorities(display.page,native_occurrences)
                     legacy_native_words=[w for w,physical_word in zip(local,native_occurrences)if unproved_legacy_word(display.page,physical_word)]
                     native_print_words=[w for w,proved in zip(local,native_proof)if proved]
@@ -2407,6 +2446,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     chosen=[result['tokens'][index]],status='UNRESOLVED',
                     method='unproved_native_character_map',source_image_only=True,
                     source_bbox=legacy_word['bbox'])
+                if 'native_parts'in legacy_word:decision['source_parts']=legacy_word['native_parts']
                 result['marked'].add(index)
                 result.setdefault('word_notes',{})[index]=decision
                 result.setdefault('adjudication',[]).append(decision)
@@ -2572,10 +2612,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                           vision_reading.union(boxes) if len(boxes)==len(endings[index]) else box)
                     # Tight evidence remains in final notes, never an inline word crop.
                     clip=extract.pymupdf.Rect(crop);clip.x0-=2;clip.y0-=2;clip.x1+=2;clip.y1+=2;clip &= display.rect
-                    if hasattr(package,'disclosure_image'):
-                        package.disclosure_image(src,display,clip)
-                    else:
-                        package.image(src,display.jpeg(clip,scale=3,quality=90))
+                    _word_disclosure_image(package,src,display,clip,word_decision.get('source_parts'))
                     image_records[src]=dict(page=pno,bbox=list(clip),kind='vision_disclosure')
                     label=('Unverified local OCR reading' if local_ocr else
                         'Uncertain source reading fallback' if result['fallback'] else
@@ -4329,10 +4366,12 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                     pixel_adjudication_status='UNPLACED_SOURCE_CONTEXT')
                 continue
             source=_pixel_line_order([w for w in physical if any(owned_words([w],box) for box in territories)])
+            source=_native_lexical_view(display,source)
             tokens=_seam_text(page['body'][position]).split()
             record['published_tokens']=tokens
             from .native_text import drawn_word_authority,drawn_word_authorities
-            original=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix)) for w in source]
+            original=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix),
+                **({'native_parts':[dict(p,bbox=list(display.source_rect(p['bbox'])*display.page.derotation_matrix))for p in w['native_parts']]}if 'native_parts'in w else{}))for w in source]
             if drawn_word_authority(doc[page['pno']],original):
                 record['pixel_adjudication_status']='VISIBLE_NATIVE_PRINT'
                 continue
@@ -4442,7 +4481,7 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                     elif box[3]<=label_box.y0+1e-3:clip.y1=min(clip.y1,label_box.y0)
                     elif box[1]>=label_box.y1-1e-3:clip.y0=max(clip.y0,label_box.y1)
                     else:raise ValueError('Unmapped glyph overlaps its proved note action')
-                package.disclosure_image(src,display,clip)
+                _word_disclosure_image(package,src,display,clip,output_sources[index].get('native_parts'))
                 images[src]=dict(page=page['pno'],bbox=list(clip),kind='vision_disclosure')
                 label='Pixel-verified correction' if decision['status']=='RESOLVED' else 'Unresolved source reading'
                 chosen=decision['chosen'][0] if decision['status']=='RESOLVED' else tokens[index]

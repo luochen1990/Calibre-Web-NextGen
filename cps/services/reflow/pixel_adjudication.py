@@ -898,4 +898,8 @@ def _complete_word_occurrence(source,word):
     """An internal punctuation atom cannot own a larger recognized word."""
     if not _same_occurrence(source,word):return False
     a,b=source['bbox'],word['bbox']
+    if source.get('native_parts') and not all(
+            b[0]-.2<=(p['bbox'][0]+p['bbox'][2])/2<=b[2]+.2 and
+            b[1]-.2<=(p['bbox'][1]+p['bbox'][3])/2<=b[3]+.2
+            for p in source['native_parts']):return False
     return min(a[2],b[2])-max(a[0],b[0])>=.6*(b[2]-b[0])

@@ -1840,3 +1840,107 @@ def test_mapped_embedded_font_aliases_do_not_lose_native_character_authority():
         page.insert_text((30,60),'clear sample',fontname='embedded')
         words=[dict(text=w[4],bbox=list(w[:4]))for w in page.get_text('words')]
         assert native_text.drawn_word_authority(page,words)
+
+
+@pytest.mark.parametrize('legacy_initial',[False,True])
+def test_native_decorative_initial_cannot_certify_a_truncated_word(tmp_path,monkeypatch,legacy_initial):
+    import pymupdf,io
+    from PIL import Image
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def __init__(self):self.images={}
+        def image(self,name,data):self.images[name]=data
+        def disclosure_image(self,*args):pass
+    package=Package();images={}
+    monkeypatch.setattr(pa,'read_crop',lambda *args:[])
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=400,height=300)
+        face='cour'if legacy_initial else'helv'
+        page.insert_text((30,110),'B',fontname=face,fontsize=36)
+        if legacy_initial:
+            xref=next(f[0]for f in page.get_fonts()if f[3]=='Courier')
+            doc.xref_set_key(xref,'BaseFont','/CustomMarks');page=doc.reload_page(page)
+        cap=page.get_text('words')[0]
+        x=cap[2]+.4;y=cap[1]+12*1.075
+        page.insert_text((x,y),'efore the quiet sample remains readable.',fontsize=12)
+        page.insert_text((x,y+20),'The following row stays unchanged.',fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        body,record=vp.compile_page({'blocks':[block('Before the quiet sample remains readable. The following row stays unchanged.',bbox=(0,0,1000,1000))]},source,
+            SourceDisplay(doc,0),0,package,images,pixel_words=[],
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+        own=record['blocks'][0]
+        assert own['published_tokens']=='Before the quiet sample remains readable. The following row stays unchanged.'.split()
+        assert own['marked']==([0]if legacy_initial else[])
+        assert own['source_image_words']==([0]if legacy_initial else[])
+        if legacy_initial:
+            name=next(k for k in package.images if 'v4-d-'in k)
+            picture=Image.open(io.BytesIO(package.images[name])).convert('L');clip=images[name]['bbox']
+            # The compound original word must not reproduce the next row's ink.
+            region=(int((x+3-clip[0])*picture.width/(clip[2]-clip[0])),
+                    int((cap[1]+26-clip[1])*picture.height/(clip[3]-clip[1])),
+                    int((x+20-clip[0])*picture.width/(clip[2]-clip[0])),
+                    int((cap[1]+33-clip[1])*picture.height/(clip[3]-clip[1])))
+            assert picture.crop(region).getextrema()[0]>235
+
+
+def test_native_raised_ordinal_is_one_printed_word_without_a_correction(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    monkeypatch.setattr(pa,'read_crop',lambda *args:[])
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=300,height=200)
+        page.insert_text((30,70),'1',fontsize=12)
+        digit=page.get_text('words')[0]
+        page.insert_text((digit[2]+.1,66),'st',fontsize=7)
+        page.insert_text((55,70),'clear sample',fontsize=12)
+        suffix=[c[3]for t in page.get_texttrace()if t['size']==7 for c in t['chars']]
+        suffix_box=[min(b[0]for b in suffix),min(b[1]for b in suffix),max(b[2]for b in suffix),max(b[3]for b in suffix)]
+        source=[dict(text='1',bbox=list(digit[:4]),confidence=99),dict(text='st',bbox=suffix_box,confidence=99)]+[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')if w[4]!='1st']
+        _,record=vp.compile_page({'blocks':[block('1st clear sample',bbox=(0,0,1000,1000))]},source,
+            SourceDisplay(doc,0),0,Package(),{},pixel_words=[],
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    assert record['blocks'][0]['published_tokens']==['1st','clear','sample']
+    assert record['blocks'][0]['marked']==[]
+
+
+def test_native_fused_raised_reference_cannot_become_a_second_body_number(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    monkeypatch.setattr(pa,'read_crop',lambda *args:[])
+    monkeypatch.setattr(vp,'_literal_note_refs',lambda *args,**kwargs:{})
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=400,height=300)
+        page.insert_text((30,70),'A clear sample',fontsize=12)
+        physical=page.get_text('words');last=physical[-1]
+        page.insert_text((last[2]+.1,65),'7',fontsize=7)
+        label=next(c[3]for t in page.get_texttrace()if t['size']==7 for c in t['chars'])
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in physical[:-1]]
+        source.append(dict(text='sample7',bbox=[last[0],min(last[1],label[1]),label[2],max(last[3],label[3])],confidence=99))
+        page.insert_text((30,160),'7 Words below remain readable.',fontsize=12)
+        source.extend(dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')if w[1]>120)
+        from cps.services.reflow.native_text import lexical_word_view
+        assert lexical_word_view(page,source)==source, 'Raised digits stay literal without a requested note slot'
+        def proof(tokens,*args,**kwargs):
+            if '<n:n1>'not in tokens:return {}
+            return {tokens.index('<n:n1>'):dict(status='UNPROVED',source_bbox=None,
+                reason='original_marker_slot_not_uniquely_bound',anchor_before_bbox=list(last[:4]),anchor_after_bbox=None)}
+        monkeypatch.setattr(vp,'_placeholder_display_evidence',proof)
+        context=dict(cache=tmp_path/'cache',labels={'7':[(0,'n1')]},owners={},
+            catalogue={(0,'n1'):{'target':'v4-note-0-n1','label':'7'}},refs={})
+        _,record=vp.compile_page({'blocks':[block('A clear sample<n:n1>',bbox=(0,0,1000,330)),block('Words below remain readable.',ident='n1',role='footnote',marker='7',bbox=(0,400,1000,1000))]},source,
+            SourceDisplay(doc,0),0,Package(),{},pixel_words=[],note_context=context)
+    assert record['blocks'][0]['published_tokens']==['A','clear','sample','<n:n1>']
+    assert record['blocks'][0]['marked']==[]
+    assert len(record['note_marker_disclosures'])==1
