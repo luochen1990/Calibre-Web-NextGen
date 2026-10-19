@@ -70,10 +70,23 @@ class SourceDisplay:
             clip=self.source_rect(reading),alpha=False,
             colorspace=extract.pymupdf.csGRAY if gray else extract.pymupdf.csRGB)
 
+    @staticmethod
+    def _encode_jpeg(pix,quality,optimize=False):
+        if not optimize:return pix.tobytes('jpg',jpg_quality=quality)
+        import io
+        from PIL import Image,ImageChops
+        image=Image.frombytes('RGB',(pix.width,pix.height),pix.samples)
+        red,green,blue=image.split()
+        if ImageChops.difference(red,green).getbbox() is None and ImageChops.difference(red,blue).getbbox() is None:
+            image=red
+        stream=io.BytesIO()
+        image.save(stream,format='JPEG',quality=quality,optimize=True,subsampling=2)
+        return stream.getvalue()
+
     def jpeg(self,rect=None,scale=3,quality=90,max_bytes=2*1024*1024):
         for requested in extract._scale_ladder(scale):
             pix=self.pixmap(rect,requested)
-            data=pix.tobytes('jpg',jpg_quality=quality)
+            data=self._encode_jpeg(pix,quality,getattr(self,'_preview_encoding',False))
             if len(data)<=max_bytes:return data
         raise extract.RasterTooLarge('source display exceeds encoded-byte bound')
 
@@ -120,24 +133,16 @@ class SourceDisplay:
 
     def roi_jpeg(self,rect=None,scale=3,quality=90,max_bytes=2*1024*1024,*,optimize=False):
         """Bounded original detail; default rendering and cache inputs are unchanged."""
-        if self.provenance.get('original_frame') is None and not optimize:
-            return self.jpeg(rect,scale,quality,max_bytes)
+        if self.provenance.get('original_frame') is None:
+            # Keep one bounded ordinary-source encoder and its failure/repair
+            # ownership. The scoped profile changes encoding, never its entry.
+            previous=getattr(self,'_preview_encoding',False)
+            self._preview_encoding=optimize
+            try:return self.jpeg(rect,scale,quality,max_bytes)
+            finally:self._preview_encoding=previous
         for requested in extract._scale_ladder(scale):
             pix=self.roi_pixmap(rect,requested)
-            if optimize:
-                # Inspection pages use the same samples and quality cap as
-                # other evidence, without redundant color channels on gray ink.
-                import io
-                from PIL import Image,ImageChops
-                image=Image.frombytes('RGB',(pix.width,pix.height),pix.samples)
-                red,green,blue=image.split()
-                if ImageChops.difference(red,green).getbbox() is None and ImageChops.difference(red,blue).getbbox() is None:
-                    image=red
-                stream=io.BytesIO()
-                image.save(stream,format='JPEG',quality=quality,optimize=True,subsampling=2)
-                data=stream.getvalue()
-            else:
-                data=pix.tobytes('jpg',jpg_quality=quality)
+            data=self._encode_jpeg(pix,quality,optimize)
             if len(data)<=max_bytes:return data
         raise extract.RasterTooLarge('original source detail exceeds encoded-byte bound')
 
