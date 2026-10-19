@@ -12,7 +12,7 @@ from dataclasses import replace
 from . import unit_recovery
 
 
-def text_layer_overpainted(page, traces):
+def text_layer_overpainted(page, traces, *, word_overlap=False):
     """A later unmasked page image prevents native font codes proving glyphs.
 
     This is conservative paint-order provenance, not an OCR confidence score.
@@ -23,6 +23,14 @@ def text_layer_overpainted(page, traces):
         return False
     log = page.get_bboxlog()
     images = [(i, box) for i,(kind,box) in enumerate(log) if kind == 'fill-image']
+    if word_overlap:
+        # Native word authority requires its own ink to remain unobscured.
+        # A later masked image is also insufficient positive paint proof.
+        # Ignore only sub-millipoint coordinate round trips at touching edges.
+        return any(seq > trace.get('seqno',len(log)) and
+            min(box[2],trace['bbox'][2])-max(box[0],trace['bbox'][0])>1e-3 and
+            min(box[3],trace['bbox'][3])-max(box[1],trace['bbox'][1])>1e-3
+            for seq,box in images for trace in traces)
     info = page.get_image_info()
     if len(info) != len(images):
         return False
@@ -34,37 +42,71 @@ def text_layer_overpainted(page, traces):
         for seq,box in carriers) for trace in traces)
 
 
-def drawn_word_authority(page, words):
-    """Prove that these decoded words are the page's visible mapped glyphs.
+def _text_font_authorities(page):
+    bad=unresolved_fonts(page);faces={}
+    for font in page.get_fonts():
+        name=font[3].split('+',1)[-1]
+        mapped=page.parent.xref_get_key(font[0],'ToUnicode')[0]!='null'
+        standard=bool(re.fullmatch(r'(?:Times(?:NewRoman)?|Arial|Helvetica|Courier)(?:[-,](?:Roman|Bold|Italic|Oblique|BoldItalic|BoldOblique)|PS(?:MT|-BoldMT|-ItalicMT|-BoldItalicMT)?|MT)?',name,re.I))
+        faces[name]=(mapped or standard) and name not in bad
+    return faces
 
-    OCR layers, invisible paint, overpainted text, unknown font encodings and
-    replacement/private-use characters cannot earn this authority. A crop OCR
-    disagreement cannot change reliably decoded text that actually draws ink.
-    Geometry selects occurrences, never another copy of the same spelling.
+
+def _face_authority(faces,name):
+    if name in faces:return faces[name]
+    # MuPDF may abbreviate an embedded PostScript face name in text traces.
+    # Only a long, unambiguous prefix of mapped/standard resources is usable.
+    matches=[value for key,value in faces.items()if len(name)>=15 and key.startswith(name)]
+    return bool(matches) and all(matches)
+
+
+def unproved_legacy_word(page,word):
+    """A visible custom code without a character map needs original glyph ink."""
+    faces=_text_font_authorities(page);box=word['bbox']
+    return any(trace.get('type')in(0,1) and trace.get('opacity',1)>=.99 and
+        not _face_authority(faces,trace.get('font','').split('+',1)[-1]) and
+        any(char[0]>32 and box[0]<=(char[3][0]+char[3][2])/2<=box[2] and
+            box[1]<=(char[3][1]+char[3][3])/2<=box[3]for char in trace.get('chars',()))
+        for trace in page.get_texttrace())
+
+
+def drawn_word_authority(page, words):
+    """Every occurrence must have reliable, visible native character proof."""
+    return bool(words) and all(drawn_word_authorities(page,words))
+
+
+def drawn_word_authorities(page, words):
+    """Per-word native paint proof, excluding unknown legacy encodings.
+
+    A custom face without ToUnicode can deliberately draw a symbol at a Latin
+    character code even when its descriptor claims nonsymbolic text. Only an
+    explicit Unicode map or a recognized standard text face earns authority.
+    Invisible, overpainted, replacement and private-use characters never do.
+    A failed word does not transfer its uncertainty to reliable neighbors.
     """
     import unicodedata
-    if not words:return False
     traces=page.get_texttrace()
-    bad_fonts=unresolved_fonts(page)
+    faces=_text_font_authorities(page)
     def safe(text):
-        return all(c!='\ufffd' and unicodedata.category(c) not in ('Co','Cs','Cn') for c in text)
-    relevant=[]
+        return all(c!='\ufffd' and unicodedata.category(c) not in ('Co','Cs','Cn')for c in text)
+    result=[]
     for word in words:
-        box=word['bbox'];chars=[];owners=[]
+        box=word['bbox'];chars=[];owners=[];valid=True
         for trace in traces:
-            own=[char for char in trace.get('chars',()) if char[0]>32 and
-                 box[0]-.2 <= (char[3][0]+char[3][2])/2 <= box[2]+.2 and
-                 box[1]-.2 <= (char[3][1]+char[3][3])/2 <= box[3]+.2]
+            own=[char for char in trace.get('chars',())if char[0]>32 and
+                box[0]-.2<=(char[3][0]+char[3][2])/2<=box[2]+.2 and
+                box[1]-.2<=(char[3][1]+char[3][3])/2<=box[3]+.2]
             if not own:continue
-            if (trace.get('type') not in (0,1) or trace.get('opacity',1)<.99 or
-                    trace.get('font','').split('+')[-1] in bad_fonts):return False
-            owners.append(trace);chars.extend(own)
-        if not owners or text_layer_overpainted(page,owners):return False
+            if (trace.get('type')not in(0,1) or trace.get('opacity',1)<.99 or
+                    not _face_authority(faces,trace.get('font','').split('+',1)[-1])):valid=False
+            owners.append(dict(trace,bbox=(min(c[3][0]for c in own),min(c[3][1]for c in own),
+                max(c[3][2]for c in own),max(c[3][3]for c in own))))
+            chars.extend(own)
         value=''.join(chr(char[0])for char in sorted(chars,key=lambda char:char[2][0]))
-        literal=''.join(c for c in word['text'] if not c.isspace())
-        if not safe(value+literal) or unicodedata.normalize('NFKC',value)!=unicodedata.normalize('NFKC',literal):return False
-        relevant.extend(owners)
-    return bool(relevant)
+        literal=''.join(c for c in word['text']if not c.isspace())
+        result.append(bool(valid and owners and not text_layer_overpainted(page,owners,word_overlap=True)
+            and safe(value+literal) and unicodedata.normalize('NFKC',value)==unicodedata.normalize('NFKC',literal)))
+    return result
 
 
 def synthetic_spacing_uncertain(spans):

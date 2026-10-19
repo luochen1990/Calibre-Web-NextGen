@@ -2244,24 +2244,27 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 raise _DisclosureQualityRejection('Aligned reading has no admitted source or reader inventory')
             # Decide lexical disagreements against an independently recognized
             # upright crop before rendering any live text or disclosure note.
-            adjudication=None;witness=None
+            adjudication=None;witness=None;legacy_native_words=[]
             if note_context and note_context.get('cache') and not local_ocr:
                 from . import pixel_adjudication
                 with unit_recovery.guard(pno,'pixel_adjudication',block=bid):
-                    from .native_text import drawn_word_authority
+                    from .native_text import drawn_word_authority,drawn_word_authorities,unproved_legacy_word
                     native_occurrences=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix)) for w in local]
-                    source_print=drawn_word_authority(display.page,native_occurrences)
+                    native_proof=drawn_word_authorities(display.page,native_occurrences)
+                    legacy_native_words=[w for w,physical_word in zip(local,native_occurrences)if unproved_legacy_word(display.page,physical_word)]
+                    native_print_words=[w for w,proved in zip(local,native_proof)if proved]
+                    source_print=bool(local) and all(native_proof)
                     witness=(pixel_adjudication.CropWitness([dict(w,confidence=100)for w in local]) if source_print else
                         pixel_adjudication.read_crop(display,territories,Path(note_context['cache'])/'adjudication'))
                     from difflib import SequenceMatcher
                     baseline=(optical_local if independent_optical_fallback else local or optical_local)
-                    if source_print:baseline=local
-                    if not source_print and local and optical_local and not independent_optical_fallback:
+                    if native_print_words:baseline=local
+                    if not native_print_words and local and optical_local and not independent_optical_fallback:
                         overlap=sum(n for _,_,n in SequenceMatcher(None,
                             [vision_reading.normalized(w['text']) for w in local],
                             [vision_reading.normalized(w['text']) for w in optical_local],autojunk=False).get_matching_blocks())
                         if overlap/max(1,len(optical_local))<.6:baseline=optical_local
-                    if baseline and witness:
+                    if baseline and (witness or native_print_words or legacy_native_words):
                         # Only the admitted alignment inventories reach this
                         # stage. Retain the first reader as an alternative, but
                         # require positive pixels to revive rejected words.
@@ -2291,7 +2294,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             baseline,witness,uncertain=pending,corroboration=marker_corroboration,
                             # Inconclusive OCR cannot revive a model passage already
                             # rejected by the source-conservation alignment guard.
-                            unresolved_source=bool(result['fallback']),source_print=source_print,
+                            unresolved_source=bool(result['fallback']),source_print=source_print,native_print_words=native_print_words,
                             absence_proof=lambda left,right:pixel_adjudication.blank_between(display,left,right,territories))
                         def printed_space(left,right):
                             a,b=left['bbox'],right['bbox'];h=min(a[3]-a[1],b[3]-b[1])
@@ -2300,9 +2303,10 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         conflicts=pixel_adjudication.audit_agreement(adjudication['tokens'],baseline,witness,
                             boundary_proof=printed_space)
                         for i,decision in conflicts.items():
+                            if pixel_adjudication.proved_native_occurrence(adjudication['tokens'][i],adjudication['boxes'].get(i),native_print_words):continue
                             adjudication['marked'].add(i)
                             adjudication['word_notes'].setdefault(i,decision)
-                        if result['fallback'] or bid in forced_uncertain:
+                        if (result['fallback'] or bid in forced_uncertain) and not native_print_words:
                             refined=pixel_adjudication.refine_fallback(adjudication['tokens'],witness,
                                 text_quality.english_lexicon(),source=baseline)
                             if refined is not None:
@@ -2393,6 +2397,19 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     if i in result['marked'] and not t.startswith('<n:')}
                 result['adjudication']=list(result['word_notes'].values())
                 result['guard'].append(dict(kind='independent_crop_unavailable',reason=witness.failure))
+            for legacy_word in legacy_native_words:
+                occurrences=[i for i,box in result['boxes'].items()
+                    if pixel_adjudication._complete_word_occurrence(legacy_word,dict(bbox=box))]
+                if len(occurrences)!=1:
+                    raise _DisclosureQualityRejection('Unmapped glyph has no unique published occurrence')
+                index=occurrences[0]
+                decision=dict(source=[legacy_word['text']],model=[result['tokens'][index]],
+                    chosen=[result['tokens'][index]],status='UNRESOLVED',
+                    method='unproved_native_character_map',source_image_only=True,
+                    source_bbox=legacy_word['bbox'])
+                result['marked'].add(index)
+                result.setdefault('word_notes',{})[index]=decision
+                result.setdefault('adjudication',[]).append(decision)
             compiled_reading=' '.join(result['tokens'])
             lost_scripts=(text_quality.reading_script_mismatches(block['text'],compiled_reading)
                           if result['fallback'] else text_quality.script_mismatches(block['text'],compiled_reading))
@@ -4314,41 +4331,62 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
             source=_pixel_line_order([w for w in physical if any(owned_words([w],box) for box in territories)])
             tokens=_seam_text(page['body'][position]).split()
             record['published_tokens']=tokens
-            from .native_text import drawn_word_authority
+            from .native_text import drawn_word_authority,drawn_word_authorities
             original=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix)) for w in source]
             if drawn_word_authority(doc[page['pno']],original):
                 record['pixel_adjudication_status']='VISIBLE_NATIVE_PRINT'
                 continue
             witness=pixel_adjudication.read_crop(display,territories,Path(cache)/'adjudication')
+            from .native_text import unproved_legacy_word
+            legacy={i for i,w in enumerate(original)if unproved_legacy_word(doc[page['pno']],w)}
+            reliable=drawn_word_authorities(doc[page['pno']],original)
+            output_sources={i:w for i,w in enumerate(source)}
             if [w['text'] for w in source]!=tokens:
-                # The native factory already proved its formatting/wrap joins.
-                # Inspect original physical occurrences before that transform;
-                # a conflict without an output-word binding is not silent.
-                conflicts=pixel_adjudication.audit_agreement([w['text'] for w in source],source,witness)
-                record['adjudication']=list(conflicts.values())
+                # The factory may join line wraps or preserve inline actions.
+                # Bind unchanged occurrences through that transform instead of
+                # treating one unreliable glyph as a failure of all its peers.
+                from difflib import SequenceMatcher
+                mapping={a+i:b+i for kind,a,z,b,y in SequenceMatcher(None,
+                    [w['text']for w in source],tokens,autojunk=False).get_opcodes()
+                    if kind=='equal'for i in range(z-a)}
+                conflicts=pixel_adjudication.audit_agreement([w['text']for w in source],source,witness)
+                for i in legacy:
+                    conflicts[i]=dict(source=[source[i]['text']],model=[source[i]['text']],
+                        chosen=[source[i]['text']],status='UNRESOLVED',method='unproved_native_character_map')
+                conflicts={i:d for i,d in conflicts.items()if not reliable[i]}
+                if any(i not in mapping for i in conflicts):
+                    raise ValueError('Unreliable native occurrence has no unique published word binding')
+                output_sources={mapping[i]:source[i]for i in mapping}
+                conflicts={mapping[i]:d for i,d in conflicts.items()}
+                legacy={mapping[i]for i in legacy if i in mapping}
                 record['pixel_adjudication_status']='SOURCE_OCCURRENCES_CHECKED_BEFORE_NATIVE_TRANSFORM'
-                if conflicts:
-                    raise ValueError('Pixel conflict in transformed native text has no unique published word binding')
-                continue
-            refined=pixel_adjudication.refine_fallback(tokens,witness,text_quality.english_lexicon(),source=source)
-            if (refined and any(d['status']=='UNRESOLVED' and
-                    len(d['source'])==len(d['chosen'])==1 for d in refined['decisions'])
-                    and any(w.get('confidence',0)>=90 for w in witness)):
-                # Unknown spellings need a second pixel view at this same
-                # occurrence. Cache the independent page segmentation once;
-                # a dictionary preference cannot stand in for visible ink.
-                if optical is None:optical=vision_pixels.words(display,cache)
-                corroboration=[w for w in optical if any(owned_words([w],box) for box in territories)]
-                refined=pixel_adjudication.refine_fallback(tokens,witness,
-                    text_quality.english_lexicon(),source=source,corroboration=corroboration)
-            # Native fragments retain their structure and word inventory. Only
-            # one-for-one, independently corroborated spelling edits fit here.
-            repairs={i:d for i,d in (refined or {}).get('word_notes',{}).items()
-                     if d['status']=='RESOLVED' and len(d['source'])==len(d['chosen'])==1}
-            if refined is None or len(refined['tokens'])!=len(tokens) or any(
-                    len(d['source'])!=len(d['chosen']) for d in refined['decisions']):repairs={}
-            conflicts=pixel_adjudication.audit_agreement(tokens,source,witness)
-            conflicts.update(repairs)
+            else:
+                conflicts=None
+            if conflicts is None:
+                refined=pixel_adjudication.refine_fallback(tokens,witness,text_quality.english_lexicon(),source=source)
+                if (refined and any(d['status']=='UNRESOLVED' and
+                        len(d['source'])==len(d['chosen'])==1 for d in refined['decisions'])
+                        and any(w.get('confidence',0)>=90 for w in witness)):
+                    # Unknown spellings need a second pixel view at this same
+                    # occurrence. Cache the independent page segmentation once;
+                    # a dictionary preference cannot stand in for visible ink.
+                    if optical is None:optical=vision_pixels.words(display,cache)
+                    corroboration=[w for w in optical if any(owned_words([w],box) for box in territories)]
+                    refined=pixel_adjudication.refine_fallback(tokens,witness,
+                        text_quality.english_lexicon(),source=source,corroboration=corroboration)
+                # Native fragments retain their structure and word inventory. Only
+                # one-for-one, independently corroborated spelling edits fit here.
+                repairs={i:d for i,d in (refined or {}).get('word_notes',{}).items()
+                         if d['status']=='RESOLVED' and len(d['source'])==len(d['chosen'])==1}
+                if refined is None or len(refined['tokens'])!=len(tokens) or any(
+                        len(d['source'])!=len(d['chosen']) for d in refined['decisions']):repairs={}
+                conflicts=pixel_adjudication.audit_agreement(tokens,source,witness)
+                conflicts.update(repairs)
+                reliable=drawn_word_authorities(doc[page['pno']],original)
+                conflicts={i:d for i,d in conflicts.items()if not reliable[i]}
+                for i in legacy:
+                    conflicts[i]=dict(source=[source[i]['text']],model=[source[i]['text']],
+                        chosen=[source[i]['text']],status='UNRESOLVED',method='unproved_native_character_map')
             record['adjudication']=list(conflicts.values())
             if not conflicts:continue
             fragment=page['body'][position]
@@ -4362,7 +4400,7 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 a,z=ranges[index];raw=fragment[a:z]
                 action=re.search(r'<a\b[^>]*class="noteref"[^>]*>.*?</a>',raw,re.S)
                 alternative=decision.get('alternative') or decision.get('chosen') or []
-                if action and len(alternative)==1:
+                if action and len(alternative)==1 and index not in legacy:
                     prefix=_seam_text(raw[:action.start()])
                     suffix=_seam_text(raw[action.end():])
                     value=alternative[0]
@@ -4385,7 +4423,7 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                     decision.update(alternative=decision['chosen'],chosen=[tokens[index]],
                         status='UNRESOLVED',method='formatted_native_word_requires_typed_edit')
                 ident=f"v4-native-d-{page['pno']}-{record['id']}-{index}";origin='r-'+ident
-                src='images/'+ident+'.jpg';box=source[index]['bbox']
+                src='images/'+ident+'.jpg';box=output_sources[index]['bbox']
                 clip=extract.pymupdf.Rect(box);clip.x0-=2;clip.y0-=2;clip.x1+=2;clip.y1+=2;clip &= display.rect
                 package.disclosure_image(src,display,clip)
                 images[src]=dict(page=page['pno'],bbox=list(clip),kind='vision_disclosure')
@@ -4395,7 +4433,13 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                              else escape(chosen)+'. Consult the original printed word in the image.')
                 explanation+=' An independent upright crop supports this correction.' if decision['status']=='RESOLVED' else ' An independent upright crop could not settle this difference.'
                 page['asides'].append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{page["pno"]}" data-reflow-owner-block="{escape(record["id"],quote=True)}" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{origin}">Return</a></aside>')
-                if chosen!=tokens[index]:edits.append((a,z,formatted if formatted is not None else escape(chosen)))
+                from .native_text import unproved_legacy_word
+                legacy_ink=(decision['status']=='UNRESOLVED' and
+                            index in legacy)
+                if legacy_ink:
+                    edits.append((a,z,f'<a class="source-word-image" href="#{ident}"><img src="{src}" alt="Unmapped printed glyph; inspect original"/></a>'))
+                    decision['source_image_only']=True
+                elif chosen!=tokens[index]:edits.append((a,z,formatted if formatted is not None else escape(chosen)))
                 # Add the control after any enclosing inline action closes;
                 # never nest a new link inside a typed source reference.
                 closing=re.match(r'(?:</(?:sup|sub|em|strong|i|b|a|span)\s*>)+',fragment[z:],re.I)
@@ -4405,6 +4449,8 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
             for a,z,value in sorted(edits,reverse=True):fragment=fragment[:a]+value+fragment[z:]
             page['body'][position]=fragment
             record['marked']=sorted(set(record.get('marked',[]))|set(conflicts))
+            record['source_image_words']=sorted(set(record.get('source_image_words',[]))|
+                {i for i,d in conflicts.items()if d.get('source_image_only')})
 
 
 def _audit_native_note_pixels(doc,book,page,cache,package,images):

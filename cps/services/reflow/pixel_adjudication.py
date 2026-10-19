@@ -113,7 +113,13 @@ def _terminal_word_view(model, words):
     return result
 
 
-def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False, source_print=False):
+def proved_native_occurrence(token,box,words):
+    if box is None:return False
+    return len([w for w in words if _key(token)==_key(w['text']) and
+                _same_occurrence(dict(bbox=box),w)])==1
+
+
+def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False, source_print=False, native_print_words=()):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
     Empty alternatives require both adjacent anchors, so a missing edge cannot
@@ -150,7 +156,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                                   for n,m in zip(range(i,k),range(j,l)))
             else:operations.append(('replace',a+i,a+k,b+j,b+l))
     for kind,a,z,b,y in operations:
-        if source_print:
+        if source_print or a<z and all(proved_native_occurrence(w['text'],w['bbox'],native_print_words)for w in source[a:z]):
             # This occurrence is reliably decoded visible native paint, even
             # when a page uses the vision route for layout or other units.
             # Recognition settings cannot turn punctuation into words, remove
@@ -312,6 +318,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         affected=([i for j,i in zip(range(a,z),range(b,y)) if visible[j][0] in pending]
             if kind=='equal' else list(range(b,y)) if any(visible[j][0] in pending for j in range(a,z)) else [])
         for i in affected:
+            if proved_native_occurrence(tokens[i],bounds.get(i),native_print_words):continue
             # A reader's low-confidence flag is not permanent uncertainty when
             # the same occurrence has an exact, uniquely contextual pixel read.
             left=max(0,i-1);right=min(len(tokens),i+2)

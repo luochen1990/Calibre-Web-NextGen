@@ -158,6 +158,7 @@ def test_native_conflict_next_to_inline_ordinal_keeps_live_text_and_style(tmp_pa
     # Exercise the damaged-layer audit independently of visible-font proof.
     from cps.services.reflow import native_text
     monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
+    monkeypatch.setattr(native_text,'drawn_word_authorities',lambda page,words:[False]*len(words))
     import re
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
@@ -186,6 +187,7 @@ def test_native_layer_pixel_conflict_is_visible_at_its_own_occurrence(tmp_path,m
     # Exercise the damaged-layer audit independently of visible-font proof.
     from cps.services.reflow import native_text
     monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
+    monkeypatch.setattr(native_text,'drawn_word_authorities',lambda page,words:[False]*len(words))
     import pymupdf
     from types import SimpleNamespace
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
@@ -224,6 +226,7 @@ def test_native_ocr_misspelling_is_corrected_only_with_contextual_pixel_support(
     # Exercise the damaged-layer audit independently of visible-font proof.
     from cps.services.reflow import native_text
     monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
+    monkeypatch.setattr(native_text,'drawn_word_authorities',lambda page,words:[False]*len(words))
     import pymupdf,zipfile
     from types import SimpleNamespace
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
@@ -261,6 +264,7 @@ def test_native_factory_joined_wrap_still_receives_an_independent_pixel_read(tmp
     # Exercise the damaged-layer audit independently of visible-font proof.
     from cps.services.reflow import native_text
     monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
+    monkeypatch.setattr(native_text,'drawn_word_authorities',lambda page,words:[False]*len(words))
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
     with pymupdf.open() as doc:
@@ -574,6 +578,7 @@ def test_native_unknown_spelling_uses_two_pixel_reads_and_remains_marked(tmp_pat
     # Exercise the damaged-layer audit independently of visible-font proof.
     from cps.services.reflow import native_text
     monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
+    monkeypatch.setattr(native_text,'drawn_word_authorities',lambda page,words:[False]*len(words))
     import pymupdf,zipfile
     from types import SimpleNamespace
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,vision_pixels
@@ -645,6 +650,7 @@ def test_native_footnote_receives_its_own_independent_pixel_audit(tmp_path,monke
     # Exercise the damaged-layer audit independently of visible-font proof.
     from cps.services.reflow import native_text
     monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
+    monkeypatch.setattr(native_text,'drawn_word_authorities',lambda page,words:[False]*len(words))
     import pymupdf,zipfile
     from types import SimpleNamespace
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
@@ -999,6 +1005,7 @@ def test_generated_native_notice_is_not_an_unbound_authored_paragraph(tmp_path,m
     # Exercise the damaged-layer audit independently of visible-font proof.
     from cps.services.reflow import native_text
     monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
+    monkeypatch.setattr(native_text,'drawn_word_authorities',lambda page,words:[False]*len(words))
     import pymupdf
     from cps.services.reflow import assemble,build_epub,vision_pipeline as vp,pixel_adjudication as pa
     text='The clear sample remains readable beside the quiet window.'
@@ -1096,6 +1103,7 @@ def test_native_pixel_correction_preserves_inline_word_formatting(tmp_path,monke
     # Exercise the damaged-layer audit independently of visible-font proof.
     from cps.services.reflow import native_text
     monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
+    monkeypatch.setattr(native_text,'drawn_word_authorities',lambda page,words:[False]*len(words))
     import re
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,vision_pixels
@@ -1471,6 +1479,7 @@ def test_native_pixel_abort_discloses_only_its_unit_and_keeps_siblings_and_later
     # Exercise the damaged-layer audit independently of visible-font proof.
     from cps.services.reflow import native_text
     monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
+    monkeypatch.setattr(native_text,'drawn_word_authorities',lambda page,words:[False]*len(words))
     import pymupdf,zipfile
     from types import SimpleNamespace
     from xml.etree import ElementTree as E
@@ -1700,3 +1709,96 @@ def test_visible_native_print_authority_uses_unrotated_glyph_coordinates(tmp_pat
         vp._audit_native_pixels(doc,page,records,tmp_path,object(),{})
     assert records[0]['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
     assert page['asides']==[]
+
+
+def test_unknown_legacy_face_cannot_make_a_latin_character_code_authoritative():
+    import pymupdf
+    from cps.services.reflow import native_text
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=300,height=200)
+        page.insert_text((30,70),'w',fontname='cour',fontsize=12)
+        xref=page.get_fonts()[0][0]
+        doc.xref_set_key(xref,'BaseFont','/CustomMarks')
+        page=doc.reload_page(page)
+        words=[dict(text=w[4],bbox=list(w[:4]))for w in page.get_text('words')]
+        assert words[0]['text']=='w'
+        assert not native_text.drawn_word_authority(page,words)
+
+
+@pytest.mark.parametrize('recognition_available',[True,False])
+@pytest.mark.parametrize('joined_wrap',[False,True])
+def test_unproved_legacy_glyph_cannot_rewrite_reliable_neighbor_words(tmp_path,monkeypatch,recognition_available,joined_wrap):
+    import pymupdf,re
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,vision_pixels
+    class Package:
+        def disclosure_image(self,*args):pass
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=300,height=200)
+        leaf.insert_text((30,70),'not',fontname='helv',fontsize=12)
+        leaf.insert_text((70,70),'w',fontname='cour',fontsize=12)
+        if joined_wrap:leaf.insert_text((30,100),'sam-\nple',fontname='helv',fontsize=12)
+        xref=next(f[0]for f in leaf.get_fonts()if f[3]=='Courier')
+        doc.xref_set_key(xref,'BaseFont','/CustomMarks')
+        leaf=doc.reload_page(leaf)
+        original=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in leaf.get_text('words')]
+        witness=[dict(w,text='mot'if w['text']=='not'else ')')for w in original]
+        if not recognition_available:witness=[]
+        monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+        monkeypatch.setattr(vision_pixels,'words',lambda *args:witness)
+        page=dict(pno=0,body=['<p>not w'+(' sample'if joined_wrap else'')+'</p>'],asides=[])
+        records=[dict(id='native-0',role='body',source_regions=[[25,55,120,140]])]
+        vp._audit_native_pixels(doc,page,records,tmp_path,Package(),{})
+    assert vp._seam_text(re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',page['body'][0]))==('not sample'if joined_wrap else'not')
+    assert 'class="source-word-image"'in page['body'][0]
+    assert records[0]['marked']==[1]
+    assert len(page['asides'])==1
+
+
+@pytest.mark.parametrize('recognition_available',[True,False])
+def test_vision_layout_keeps_native_authority_local_to_each_font_occurrence(tmp_path,monkeypatch,recognition_available):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=300,height=200)
+        leaf.insert_text((30,70),'not',fontname='helv',fontsize=12)
+        leaf.insert_text((70,70),'w',fontname='cour',fontsize=12)
+        xref=next(f[0]for f in leaf.get_fonts()if f[3]=='Courier')
+        doc.xref_set_key(xref,'BaseFont','/CustomMarks');leaf=doc.reload_page(leaf)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in leaf.get_text('words')]
+        pixels=[dict(w,text='mot'if w['text']=='not'else ')')for w in source]
+        if not recognition_available:pixels=[]
+        monkeypatch.setattr(pa,'read_crop',lambda *args:pixels)
+        _,record=vp.compile_page({'blocks':[block('not w',bbox=(0,0,1000,1000))]},source,
+            SourceDisplay(doc,0),0,Package(),{},pixel_words=pixels,
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    assert record['blocks'][0]['published_tokens'][0]=='not'
+    assert record['blocks'][0]['marked']==[1]
+    assert record['blocks'][0]['source_image_words']==[1]
+
+
+def test_abbreviated_font_trace_requires_every_matching_resource_to_be_authoritative():
+    from cps.services.reflow import native_text
+    face='StandardTextFace-Bold'
+    assert native_text._face_authority({face+'Extended':True},face)
+    assert not native_text._face_authority({face+'Extended':True,face+'Other':False},face)
+    assert not native_text._face_authority({'ShortName':True},'Short')
+
+
+@pytest.mark.parametrize('coverage',[1,.5])
+def test_partial_image_overpaint_cannot_borrow_an_uncovered_neighbor_trace(coverage):
+    import io,pymupdf
+    from PIL import Image
+    from cps.services.reflow import native_text
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=300,height=200)
+        page.insert_text((30,70),'clear sample',fontsize=12)
+        words=[dict(text=w[4],bbox=list(w[:4]))for w in page.get_text('words')]
+        picture=io.BytesIO();Image.new('RGB',(2,2),'white').save(picture,format='PNG')
+        box=pymupdf.Rect(words[1]['bbox']);box.x1=box.x0+box.width*coverage
+        page.insert_image(box,stream=picture.getvalue())
+        assert native_text.drawn_word_authorities(page,words)==[True,False]
