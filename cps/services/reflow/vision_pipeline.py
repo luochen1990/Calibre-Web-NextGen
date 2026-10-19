@@ -2436,6 +2436,28 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     if i in result['marked'] and not t.startswith('<n:')}
                 result['adjudication']=list(result['word_notes'].values())
                 result['guard'].append(dict(kind='independent_crop_unavailable',reason=witness.failure))
+            if legacy_native_words:
+                unplaced=any(len([i for i,slot in result['boxes'].items()
+                    if pixel_adjudication._complete_word_occurrence(w,dict(bbox=slot))])!=1
+                    for w in legacy_native_words)
+                legacy_ids={id(w)for w in legacy_native_words}
+                if (unplaced and native_print_words and role in ('body','other','caption')
+                        and not any(t.startswith('<n:')for t in proposed+result['tokens'])
+                        and all(proved or id(w)in legacy_ids for w,proved in zip(local,native_proof))):
+                    from .native_text import visible_word_ink
+                    if all(visible_word_ink(display.page,native_occurrences)):
+                        # A reader can expand opaque font codes into several
+                        # tokens sharing an interpolated box. Preserve the exact
+                        # mapped print instead, with only those opaque original
+                        # occurrences in ink. No guessed word binding is needed.
+                        result.update(tokens=[w['text']for w in local],fallback=False,native_ink_stencil=True,
+                            boxes={i:w['bbox']for i,w in enumerate(local)},marked=set(),
+                            word_notes={},adjudication=[],
+                            verified_unchanged=[i for i,proved in enumerate(native_proof)if proved])
+                        result.setdefault('guard',[]).append(dict(kind='visible_native_ink_stencil'))
+                        evidence_boxes=result['boxes']
+                        adjudication=dict(verified_unchanged=result['verified_unchanged'])
+                        wraps=_printed_wraps(result['tokens'],optical_local)
             for legacy_word in legacy_native_words:
                 occurrences=[i for i,box in result['boxes'].items()
                     if pixel_adjudication._complete_word_occurrence(legacy_word,dict(bbox=box))]
@@ -2453,7 +2475,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             compiled_reading=' '.join(result['tokens'])
             lost_scripts=(text_quality.reading_script_mismatches(block['text'],compiled_reading)
                           if result['fallback'] else text_quality.script_mismatches(block['text'],compiled_reading))
-            if lost_scripts:
+            if lost_scripts and not result.get('native_ink_stencil'):
                 # An English optical fallback cannot replace a reader's non-Latin
                 # passage with Latin lookalikes. Retain original pixels when this
                 # compiler cannot safely bind the reading in its printed script.

@@ -2001,3 +2001,43 @@ def test_native_wrapped_symbol_expression_discloses_only_its_own_word(tmp_path,m
     assert records[0]['source_image_words']==[1]
     assert len(native['asides'])==1
     assert len(package.images)==1
+
+
+@pytest.mark.parametrize('trace_decoding',['codes','replacement'])
+@pytest.mark.parametrize('reading',['invented first forms','καλημέρα κόσμε forms'])
+def test_unmapped_native_phrase_cannot_discard_its_proved_prose_neighbors(tmp_path,monkeypatch,reading,trace_decoding):
+    import pymupdf,re
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def disclosure_image(self,*args):pass
+    monkeypatch.setattr(pa,'read_crop',lambda *args:[])
+    if trace_decoding=='replacement':
+        original=pymupdf.Page.get_texttrace
+        def replacement_trace(page,*args,**kwargs):
+            traces=original(page,*args,**kwargs)
+            for trace in traces:
+                if trace['font']=='CustomMarks':
+                    trace['chars']=[(65533,*char[1:])if char[0]>32 else char for char in trace['chars']]
+            return traces
+        monkeypatch.setattr(pymupdf.Page,'get_texttrace',replacement_trace)
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=400,height=250)
+        page.insert_text((30,70),'The quiet',fontsize=12)
+        page.insert_text((90,70),'x z',fontname='cour',fontsize=12)
+        page.insert_text((130,70),'remains readable.',fontsize=12)
+        xref=next(f[0]for f in page.get_fonts()if f[3]=='Courier')
+        doc.xref_set_key(xref,'BaseFont','/CustomMarks');page=doc.reload_page(page)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        body,record=vp.compile_page({'blocks':[block('The quiet '+reading+' remains readable.',bbox=(0,0,1000,1000))]},
+            source,SourceDisplay(doc,0),0,Package(),{},pixel_words=[],
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    own=record['blocks'][0]
+    assert own['published_tokens']=='The quiet x z remains readable.'.split()
+    assert own['source_image_words']==[2,3]
+    assert own['marked']==[2,3]
+    html=''.join(body['body'])
+    assert html.count('class="source-word-image"')==2
+    assert vp._seam_text(re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',html))=='The quiet remains readable.'
+    assert not any(word in html for word in reading.split())

@@ -171,7 +171,17 @@ def drawn_word_authority(page, words):
 
 
 def drawn_word_authorities(page, words):
-    """Per-word native paint proof, excluding unknown legacy encodings.
+    """Return reliable visible character proof for each native word."""
+    return _drawn_word_authorities(page,words,require_mapping=True)
+
+
+def visible_word_ink(page, words):
+    """Prove original glyph placement, without certifying decoded letters."""
+    return _drawn_word_authorities(page,words,require_mapping=False)
+
+
+def _drawn_word_authorities(page, words, *, require_mapping):
+    """Per-word native paint proof, with optional decoded-letter authority.
 
     A custom face without ToUnicode can deliberately draw a symbol at a Latin
     character code even when its descriptor claims nonsymbolic text. Only an
@@ -191,14 +201,19 @@ def drawn_word_authorities(page, words):
             own=[char for char in trace.get('chars',())if char[0]>32 and _inside_character(char,boxes)]
             if not own:continue
             if (trace.get('type')not in(0,1) or trace.get('opacity',1)<.99 or
-                    not _face_authority(faces,trace.get('font','').split('+',1)[-1])):valid=False
+                    (require_mapping and not _face_authority(faces,trace.get('font','').split('+',1)[-1]))):valid=False
             owners.append(dict(trace,bbox=(min(c[3][0]for c in own),min(c[3][1]for c in own),
                 max(c[3][2]for c in own),max(c[3][3]for c in own))))
             chars.extend(own)
         value=''.join(chr(char[0])for char in sorted(chars,key=lambda char:char[2][0]))
         literal=''.join(c for c in word['text']if not c.isspace())
+        identity=(safe(value+literal) and unicodedata.normalize('NFKC',value)==unicodedata.normalize('NFKC',literal)
+                  if require_mapping else len(chars)==len(literal) and all(c[1]>0 for c in chars))
+        # Missing character mappings may decode as replacement characters even
+        # while the glyph IDs and placements are intact. Only image placement
+        # may use that evidence; it never authorizes the decoded spelling.
         result.append(bool(valid and owners and not text_layer_overpainted(page,owners,word_overlap=True)
-            and safe(value+literal) and unicodedata.normalize('NFKC',value)==unicodedata.normalize('NFKC',literal)))
+            and identity))
     return result
 
 
