@@ -783,7 +783,8 @@ def test_concurrent_independent_pixel_readings_recognize_once_and_share_valid_ca
             except Exception as exc:
                 results.append(exc)
     assert len(calls) == 1, 'independent readers must not recognize/write the same image twice'
-    assert results == [[{'text': 'River', 'bbox': [50, 100, 80, 110]}]] * 2
+    assert results == [[{'text': 'River', 'bbox': [50, 100, 80, 110],
+                         'confidence': 95.0, 'optical_line': [0, 1, 1, 1, 1]}]] * 2
     assert vision_pixels.words(display, tmp_path / 'optical') == results[0]
     assert len(calls) == 1
 
