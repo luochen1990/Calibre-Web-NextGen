@@ -113,7 +113,7 @@ def _terminal_word_view(model, words):
     return result
 
 
-def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False):
+def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False, source_print=False):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
     Empty alternatives require both adjacent anchors, so a missing edge cannot
@@ -150,6 +150,23 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                                   for n,m in zip(range(i,k),range(j,l)))
             else:operations.append(('replace',a+i,a+k,b+j,b+l))
     for kind,a,z,b,y in operations:
+        if source_print:
+            # This occurrence is reliably decoded visible native paint, even
+            # when a page uses the vision route for layout or other units.
+            # Recognition settings cannot turn punctuation into words, remove
+            # authored text, or change its spelling. The first reader's real
+            # lexical edits remain recorded one word at a time.
+            lexical=any(c.isalnum()for token in source_tokens[a:z]+proposed[b:y] for c in token)
+            changed=kind!='equal' and lexical
+            record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=source_tokens[a:z],
+                status='RESOLVED',method='visible_mapped_native_glyphs',source_range=[a,z],model_range=[b,y])
+            if changed:decisions.append(record)
+            for j,word in enumerate(source[a:z]):
+                note=(dict(record,source=[word['text']],chosen=[word['text']],
+                    model=proposed[b+j:b+j+1] if z-a==y-b else []) if changed else None)
+                chosen.append((word['text'],word['bbox'],note))
+            if changed and a==z:changes.append((len(chosen),record,None))
+            continue
         if kind=='equal':
             for token,index in zip(proposed[b:y],range(a,z)):
                 own=[word for word in witness if _same_occurrence(source[index],word)]
@@ -285,6 +302,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     translation=SequenceMatcher(None,proposed,tokens,autojunk=False)
     verified=[]
     for kind,a,z,b,y in translation.get_opcodes():
+        if source_print:continue
         affected=([i for j,i in zip(range(a,z),range(b,y)) if visible[j][0] in pending]
             if kind=='equal' else list(range(b,y)) if any(visible[j][0] in pending for j in range(a,z)) else [])
         for i in affected:

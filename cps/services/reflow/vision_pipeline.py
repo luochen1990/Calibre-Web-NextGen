@@ -2248,11 +2248,15 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             if note_context and note_context.get('cache') and not local_ocr:
                 from . import pixel_adjudication
                 with unit_recovery.guard(pno,'pixel_adjudication',block=bid):
-                    witness=pixel_adjudication.read_crop(display,territories,
-                        Path(note_context['cache'])/'adjudication')
+                    from .native_text import drawn_word_authority
+                    native_occurrences=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix)) for w in local]
+                    source_print=drawn_word_authority(display.page,native_occurrences)
+                    witness=(pixel_adjudication.CropWitness([dict(w,confidence=100)for w in local]) if source_print else
+                        pixel_adjudication.read_crop(display,territories,Path(note_context['cache'])/'adjudication'))
                     from difflib import SequenceMatcher
                     baseline=(optical_local if independent_optical_fallback else local or optical_local)
-                    if local and optical_local and not independent_optical_fallback:
+                    if source_print:baseline=local
+                    if not source_print and local and optical_local and not independent_optical_fallback:
                         overlap=sum(n for _,_,n in SequenceMatcher(None,
                             [vision_reading.normalized(w['text']) for w in local],
                             [vision_reading.normalized(w['text']) for w in optical_local],autojunk=False).get_matching_blocks())
@@ -2283,7 +2287,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             baseline,witness,uncertain=pending,corroboration=marker_corroboration,
                             # Inconclusive OCR cannot revive a model passage already
                             # rejected by the source-conservation alignment guard.
-                            unresolved_source=bool(result['fallback']),
+                            unresolved_source=bool(result['fallback']),source_print=source_print,
                             absence_proof=lambda left,right:pixel_adjudication.blank_between(display,left,right,territories))
                         def printed_space(left,right):
                             a,b=left['bbox'],right['bbox'];h=min(a[3]-a[1],b[3]-b[1])
@@ -4306,6 +4310,11 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
             source=_pixel_line_order([w for w in physical if any(owned_words([w],box) for box in territories)])
             tokens=_seam_text(page['body'][position]).split()
             record['published_tokens']=tokens
+            from .native_text import drawn_word_authority
+            original=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix)) for w in source]
+            if drawn_word_authority(doc[page['pno']],original):
+                record['pixel_adjudication_status']='VISIBLE_NATIVE_PRINT'
+                continue
             witness=pixel_adjudication.read_crop(display,territories,Path(cache)/'adjudication')
             if [w['text'] for w in source]!=tokens:
                 # The native factory already proved its formatting/wrap joins.

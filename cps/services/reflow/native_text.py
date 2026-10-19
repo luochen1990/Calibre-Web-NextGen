@@ -34,6 +34,39 @@ def text_layer_overpainted(page, traces):
         for seq,box in carriers) for trace in traces)
 
 
+def drawn_word_authority(page, words):
+    """Prove that these decoded words are the page's visible mapped glyphs.
+
+    OCR layers, invisible paint, overpainted text, unknown font encodings and
+    replacement/private-use characters cannot earn this authority. A crop OCR
+    disagreement cannot change reliably decoded text that actually draws ink.
+    Geometry selects occurrences, never another copy of the same spelling.
+    """
+    import unicodedata
+    if not words:return False
+    traces=page.get_texttrace()
+    bad_fonts=unresolved_fonts(page)
+    def safe(text):
+        return all(c!='\ufffd' and unicodedata.category(c) not in ('Co','Cs','Cn') for c in text)
+    relevant=[]
+    for word in words:
+        box=word['bbox'];chars=[];owners=[]
+        for trace in traces:
+            own=[char for char in trace.get('chars',()) if char[0]>32 and
+                 box[0]-.2 <= (char[3][0]+char[3][2])/2 <= box[2]+.2 and
+                 box[1]-.2 <= (char[3][1]+char[3][3])/2 <= box[3]+.2]
+            if not own:continue
+            if (trace.get('type') not in (0,1) or trace.get('opacity',1)<.99 or
+                    trace.get('font','').split('+')[-1] in bad_fonts):return False
+            owners.append(trace);chars.extend(own)
+        if not owners or text_layer_overpainted(page,owners):return False
+        value=''.join(chr(char[0])for char in sorted(chars,key=lambda char:char[2][0]))
+        literal=''.join(c for c in word['text'] if not c.isspace())
+        if not safe(value+literal) or unicodedata.normalize('NFKC',value)!=unicodedata.normalize('NFKC',literal):return False
+        relevant.extend(owners)
+    return bool(relevant)
+
+
 def synthetic_spacing_uncertain(spans):
     """Repeated inserted spaces in short native glyph groups are not word proof.
 

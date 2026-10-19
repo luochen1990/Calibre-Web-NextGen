@@ -155,6 +155,9 @@ def test_fragment_binding_keeps_inline_ordinals_and_typed_references_intact():
 
 
 def test_native_conflict_next_to_inline_ordinal_keeps_live_text_and_style(tmp_path,monkeypatch):
+    # Exercise the damaged-layer audit independently of visible-font proof.
+    from cps.services.reflow import native_text
+    monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
     import re
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
@@ -180,6 +183,9 @@ def test_native_conflict_next_to_inline_ordinal_keeps_live_text_and_style(tmp_pa
 
 
 def test_native_layer_pixel_conflict_is_visible_at_its_own_occurrence(tmp_path,monkeypatch):
+    # Exercise the damaged-layer audit independently of visible-font proof.
+    from cps.services.reflow import native_text
+    monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
     import pymupdf
     from types import SimpleNamespace
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
@@ -215,6 +221,9 @@ def test_unique_high_confidence_pixel_agreement_settles_unchanged_uncertain_word
 
 
 def test_native_ocr_misspelling_is_corrected_only_with_contextual_pixel_support(tmp_path,monkeypatch):
+    # Exercise the damaged-layer audit independently of visible-font proof.
+    from cps.services.reflow import native_text
+    monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
     import pymupdf,zipfile
     from types import SimpleNamespace
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
@@ -249,6 +258,9 @@ def test_adjacent_disjoint_row_cannot_certify_the_source_occurrence():
 
 
 def test_native_factory_joined_wrap_still_receives_an_independent_pixel_read(tmp_path,monkeypatch):
+    # Exercise the damaged-layer audit independently of visible-font proof.
+    from cps.services.reflow import native_text
+    monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
     with pymupdf.open() as doc:
@@ -559,6 +571,9 @@ def test_pixel_word_boundary_survives_an_adjacent_unresolved_punctuation_read():
 
 
 def test_native_unknown_spelling_uses_two_pixel_reads_and_remains_marked(tmp_path,monkeypatch):
+    # Exercise the damaged-layer audit independently of visible-font proof.
+    from cps.services.reflow import native_text
+    monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
     import pymupdf,zipfile
     from types import SimpleNamespace
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,vision_pixels
@@ -627,6 +642,9 @@ def test_local_two_pixel_views_cannot_certify_accent_absence():
 
 
 def test_native_footnote_receives_its_own_independent_pixel_audit(tmp_path,monkeypatch):
+    # Exercise the damaged-layer audit independently of visible-font proof.
+    from cps.services.reflow import native_text
+    monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
     import pymupdf,zipfile
     from types import SimpleNamespace
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
@@ -978,6 +996,9 @@ def test_split_terminal_punctuation_does_not_create_a_word_or_duplicate_symbol(p
 
 @pytest.mark.parametrize('notice_kind',['punctuation','source_context','source_raster'])
 def test_generated_native_notice_is_not_an_unbound_authored_paragraph(tmp_path,monkeypatch,notice_kind):
+    # Exercise the damaged-layer audit independently of visible-font proof.
+    from cps.services.reflow import native_text
+    monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
     import pymupdf
     from cps.services.reflow import assemble,build_epub,vision_pipeline as vp,pixel_adjudication as pa
     text='The clear sample remains readable beside the quiet window.'
@@ -1072,6 +1093,9 @@ def test_separate_printed_words_keep_their_boundary_across_a_row_change():
 
 @pytest.mark.parametrize('word',['<em>remalns</em>','re<em>malns</em>'])
 def test_native_pixel_correction_preserves_inline_word_formatting(tmp_path,monkeypatch,word):
+    # Exercise the damaged-layer audit independently of visible-font proof.
+    from cps.services.reflow import native_text
+    monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
     import re
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,vision_pixels
@@ -1444,6 +1468,9 @@ def test_fallback_extra_ink_survives_the_real_publication_as_its_own_image(tmp_p
 
 
 def test_native_pixel_abort_discloses_only_its_unit_and_keeps_siblings_and_later_pages(tmp_path,monkeypatch):
+    # Exercise the damaged-layer audit independently of visible-font proof.
+    from cps.services.reflow import native_text
+    monkeypatch.setattr(native_text,'drawn_word_authority',lambda *args:False)
     import pymupdf,zipfile
     from types import SimpleNamespace
     from xml.etree import ElementTree as E
@@ -1540,3 +1567,96 @@ def test_resampling_cannot_override_a_confident_primary_spelling_conflict():
                                  words('The clear sample remains readable today.', 95)]
     result = adjudicate('The clear sample remains readable today.'.split(), source, witness)
     assert result['word_notes'][1]['status'] == 'UNRESOLVED'
+
+
+@pytest.mark.parametrize('transformed',[False,True])
+def test_drawn_native_print_wins_over_conflicting_crop_ocr(tmp_path,monkeypatch,transformed):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,vision_pixels
+    class Package:
+        def disclosure_image(self,*args):pass
+    with pymupdf.open() as doc:
+        leaf=doc.new_page(width=400,height=500)
+        leaf.insert_text((30,70),'This does not change the clear sam-' if transformed else
+                         'This does not change the clear sample.',fontsize=10)
+        if transformed:leaf.insert_text((30,85),'ple.',fontsize=10)
+        original=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in leaf.get_text('words')]
+        witness=[dict(w,text='mot'if w['text']=='not'else w['text'])for w in original]
+        calls=[]
+        def recognize(*args):calls.append(True);return witness
+        monkeypatch.setattr(pa,'read_crop',recognize)
+        monkeypatch.setattr(vision_pixels,'words',lambda *args:witness)
+        text='This does not change the clear sample.'
+        page=dict(pno=0,body=['<p>'+text+'</p>'],asides=[])
+        records=[dict(id='native-0',role='body',source_regions=[[25,55,390,90]])]
+        vp._audit_native_pixels(doc,page,records,tmp_path,Package(),{})
+    assert vp._seam_text(page['body'][0])==text
+    assert page['asides']==[]
+    assert not records[0].get('marked')
+    assert records[0]['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
+    assert calls==[], 'Visible mapped print is not a second OCR transcription'
+
+
+@pytest.mark.parametrize('kind',['hidden','transparent','overpainted','unmapped'])
+def test_unreliable_native_layer_does_not_earn_drawn_print_authority(kind):
+    import pymupdf
+    from cps.services.reflow import native_text
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=300,height=200)
+        leaf.insert_text((30,70),'A clear sample.',fontsize=10,
+            render_mode=3 if kind=='hidden'else 0,fill_opacity=0 if kind=='transparent'else 1)
+        if kind=='overpainted':
+            from PIL import Image
+            import io
+            stream=io.BytesIO();Image.new('RGB',(300,200),'white').save(stream,format='PNG')
+            leaf.insert_image(leaf.rect,stream=stream.getvalue())
+        physical=[dict(text=w[4],bbox=list(w[:4]))for w in leaf.get_text('words')]
+        if kind=='unmapped':physical[1]['text']='\ufffd'
+        assert not native_text.drawn_word_authority(leaf,physical)
+
+
+
+
+
+
+
+
+def test_visible_native_words_remain_authoritative_in_a_vision_layout_unit(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=400,height=300)
+        page.insert_text((30,70),'The clear sample remains readable today.',fontsize=10)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        optical=[dict(w,text='readab1e'if w['text']=='readable'else w['text'])for w in source]
+        monkeypatch.setattr(pa,'read_crop',lambda *args:optical)
+        result,record=vp.compile_page({'blocks':[block('The clear sample readable today.',bbox=(0,0,1000,1000))]},source,
+            SourceDisplay(doc,0),0,Package(),{},pixel_words=optical,
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    assert record['blocks'][0]['published_tokens']=='The clear sample remains readable today.'.split()
+    assert all(d['status']=='RESOLVED'for d in record['blocks'][0]['adjudication'])
+    assert record['blocks'][0]['marked']==[3], 'Only the real reader deletion earns a correction'
+
+
+@pytest.mark.parametrize('rotation',[90,180,270])
+def test_visible_native_print_authority_uses_unrotated_glyph_coordinates(tmp_path,monkeypatch,rotation):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=300)
+        leaf.insert_text((30,70),'The clear sample remains readable today.',fontsize=10)
+        leaf.set_rotation(rotation)
+        display=SourceDisplay(doc,0)
+        box=list(display.reading_rect([25,55,390,80]))
+        monkeypatch.setattr(pa,'read_crop',lambda *args:pytest.fail('Native paint must remain authoritative'))
+        page=dict(pno=0,body=['<p>The clear sample remains readable today.</p>'],asides=[])
+        records=[dict(id='native-0',role='body',source_regions=[box])]
+        vp._audit_native_pixels(doc,page,records,tmp_path,object(),{})
+    assert records[0]['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
+    assert page['asides']==[]
