@@ -118,13 +118,26 @@ class SourceDisplay:
         except (KeyError,TypeError,OSError,IndexError) as error:
             raise SourceIntegrityError('Invalid original source frame provenance') from error
 
-    def roi_jpeg(self,rect=None,scale=3,quality=90,max_bytes=2*1024*1024):
+    def roi_jpeg(self,rect=None,scale=3,quality=90,max_bytes=2*1024*1024,*,optimize=False):
         """Bounded original detail; default rendering and cache inputs are unchanged."""
-        if self.provenance.get('original_frame') is None:
+        if self.provenance.get('original_frame') is None and not optimize:
             return self.jpeg(rect,scale,quality,max_bytes)
         for requested in extract._scale_ladder(scale):
             pix=self.roi_pixmap(rect,requested)
-            data=pix.tobytes('jpg',jpg_quality=quality)
+            if optimize:
+                # Inspection pages use the same samples and quality cap as
+                # other evidence, without redundant color channels on gray ink.
+                import io
+                from PIL import Image,ImageChops
+                image=Image.frombytes('RGB',(pix.width,pix.height),pix.samples)
+                red,green,blue=image.split()
+                if ImageChops.difference(red,green).getbbox() is None and ImageChops.difference(red,blue).getbbox() is None:
+                    image=red
+                stream=io.BytesIO()
+                image.save(stream,format='JPEG',quality=quality,optimize=True,subsampling=2)
+                data=stream.getvalue()
+            else:
+                data=pix.tobytes('jpg',jpg_quality=quality)
             if len(data)<=max_bytes:return data
         raise extract.RasterTooLarge('original source detail exceeds encoded-byte bound')
 

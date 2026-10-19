@@ -15,6 +15,7 @@ MIN_BOOK_BYTES = 150 * 1024 * 1024
 SOURCE_MULTIPLIER = 3
 EVIDENCE_PIXELS = 6_000_000
 EVIDENCE_QUALITY = 75
+EVIDENCE_PREVIEW_QUALITY = 45
 EVIDENCE_SIDE = 4096
 
 
@@ -167,8 +168,9 @@ class EvidenceRaster:
         if ImageChops.difference(r,g).getbbox() is None and ImageChops.difference(r,b).getbbox() is None:
             crop = r
         stream = io.BytesIO()
-        crop.save(stream, format='JPEG', quality=EVIDENCE_QUALITY, optimize=True,
-                  subsampling=0)
+        preview=not detail and reading.get_area() >= display.rect.get_area()/4
+        crop.save(stream, format='JPEG', quality=EVIDENCE_PREVIEW_QUALITY if preview else EVIDENCE_QUALITY, optimize=True,
+                  subsampling=2 if preview else 0)
         data = stream.getvalue()
         if whole:
             self.preview = data

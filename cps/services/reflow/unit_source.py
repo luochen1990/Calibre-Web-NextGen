@@ -66,12 +66,13 @@ def source_unit(display, pno, bid, role, package, image_records, reason, bbox=No
     ref = "r-" + target
     src = f"images/{target}.jpg"
     from . import unit_recovery
+    from .image_budget import EVIDENCE_PREVIEW_QUALITY
     with unit_recovery.guard(pno, "source_unit_render", block=None if role == "page" else bid):
         raster = getattr(package, '_evidence_raster', None)
         data = raster.cached_preview(display) if raster is not None else None
         if data is None:
             try:
-                data = display.roi_jpeg(display.rect, scale=2, quality=90)
+                data = display.roi_jpeg(display.rect, scale=2, quality=EVIDENCE_PREVIEW_QUALITY, optimize=True)
             except Exception as error:
                 controller = unit_recovery.current()
                 if controller is None or unit_recovery.fatal(error):
@@ -83,7 +84,7 @@ def source_unit(display, pno, bid, role, package, image_records, reason, bbox=No
                     try:
                         # Repeat the same proved original page and bounded encoder,
                         # never a prepared-image substitution or a model request.
-                        data = display.roi_jpeg(display.rect, scale=2, quality=90)
+                        data = display.roi_jpeg(display.rect, scale=2, quality=EVIDENCE_PREVIEW_QUALITY, optimize=True)
                     except Exception as repeated:
                         if unit_recovery.fatal(repeated):
                             raise

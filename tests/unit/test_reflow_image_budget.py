@@ -7,6 +7,34 @@ from PIL import Image
 from cps.services.reflow import build_epub
 
 
+def test_uncached_complete_page_fallback_stays_within_preview_byte_budget():
+    import random
+    from types import SimpleNamespace
+    from PIL import ImageDraw
+    from cps.services.reflow import unit_source
+    # Deterministic pale scanner grain, with sharp authored lettering. This is
+    # generated here; no source page or recognition response is captured.
+    grain=random.Random(771).randbytes(1200*1600)
+    palette=bytes(232+i%24 for i in range(256))
+    original=Image.frombytes('L',(1200,1600),grain.translate(palette))
+    draw=ImageDraw.Draw(original)
+    for y in range(40,1560,30):draw.text((30,y),'A clear synthetic page remains legible.',fill=0)
+    from cps.services.reflow.source_display import SourceDisplay
+    stream=io.BytesIO();original.save(stream,'PNG')
+    packaged={}
+    package=SimpleNamespace(aliases={},source_image=lambda name,data:packaged.setdefault(name,data))
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=600,height=800)
+        page.insert_image(page.rect,stream=stream.getvalue())
+        unit_source.source_unit(SourceDisplay(doc,0),0,'sample','page',package,{},'Synthetic unresolved unit')
+    data=next(iter(packaged.values()))
+    assert len(data)<=200_000,'Fallback pages must not bypass bounded preview encoding'
+    with Image.open(io.BytesIO(data))as image:
+        assert image.size==(1200,1600)
+        assert image.mode=='L','Gray original ink does not need three encoded channels'
+        assert image.convert('L').crop((30,40,300,60)).getextrema()[0]<50
+
+
 def test_identical_region_resources_share_one_archive_member(tmp_path):
     doc = pymupdf.open()
     page = doc.new_page(width=240, height=320)
