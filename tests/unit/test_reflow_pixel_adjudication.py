@@ -2523,3 +2523,35 @@ def test_complete_native_territory_requires_every_original_occurrence_and_owner(
         if failure=='reordered_prior':local=list(reversed(local))
         if failure=='note_role':own['role']='footnote';own['marker']='1'
         assert vp._complete_native_reading_territory(own,answer,source,SourceDisplay(doc,0),regions,owners,local)is None
+
+
+@pytest.mark.parametrize('spelling',['kept_hyphen','joined_wrap','punctuated_ordinal'])
+def test_native_complete_print_owns_rows_beyond_a_cached_first_line(tmp_path,monkeypatch,spelling):
+    import pymupdf
+    from types import SimpleNamespace
+    from cps.services.reflow import vision_pipeline as vp,assemble,pixel_adjudication as pa
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=250)
+        if spelling=='punctuated_ordinal':
+            leaf.insert_text((25,70),'The sample (6',fontsize=12)
+            box=leaf.get_text('words')[-1][:4]
+            leaf.insert_text((box[2],64),'th',fontsize=7)
+            leaf.insert_text((box[2]+14,70),'row) remains clear.',fontsize=12)
+            published='The sample (6<sup>th</sup> row) remains clear.'
+        else:
+            leaf.insert_text((25,70),'A quiet sample stays well-',fontsize=12)
+            leaf.insert_text((25,90),'formed and readable.',fontsize=12)
+            published='A quiet sample stays '+('well-formed'if spelling=='kept_hyphen'else'wellformed')+' and readable.'
+        first=[25,54,360,74]
+        element=assemble.Element('p',runs=[['t',vp._seam_text(published)]],pno=0,bbox=first)
+        book=assemble.Book(pages={0:[element]},elements=[element])
+        page=dict(pno=0,body=['<p>'+published+'</p>'],asides=[])
+        records=vp._native_seam_blocks(doc,book,0,page)
+        monkeypatch.setattr(pa,'read_crop',lambda *args:pytest.fail('Complete mapped print must not be replaced by optical spelling'))
+        vp._audit_native_pixels(doc,page,records,tmp_path,object(),{})
+        assert records[0]['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
+        assert not records[0].get('marked')
+        assert page['body']==['<p>'+published+'</p>']
+        if spelling!='punctuated_ordinal':
+            assert records[0]['native_geometry_binding']=='unique_complete_source_text'
+            assert records[0]['source_regions'][0][3]>90

@@ -109,7 +109,7 @@ def lexical_word_view(page, words, marker_prefixes=()):
             min(a[3],b[3],c[3][3])>max(a[1],b[1],c[3][1])
             for trace in traces for c in trace.get('chars',()))
     for i,head in enumerate(words):
-        if not re.fullmatch('[A-Z]|[0-9]+',head['text']) or not bound(head):continue
+        if not re.fullmatch(r'[A-Z]|[([{\"‘“]*[0-9]+',head['text']) or not bound(head):continue
         a=head['bbox'];height=a[3]-a[1];targets=[]
         for j,tail in enumerate(words):
             if i==j:continue
@@ -119,7 +119,7 @@ def lexical_word_view(page, words, marker_prefixes=()):
                  0<=b[0]-a[2]<=small*.4 and any(
                      b[1]<w['bbox'][1]<a[3] and abs(w['bbox'][0]-b[0])<small*.4
                      for k,w in enumerate(words)if k not in(i,j)))
-            ordinal=(head['text'].isdigit() and tail['text']in('st','nd','rd','th')
+            ordinal=(bool(re.fullmatch(r'[([{\"‘“]*[0-9]+',head['text'])) and tail['text']in('st','nd','rd','th')
                      and small<height*.9 and b[3]<a[3]-height*.15 and
                      min(a[3],b[3])>max(a[1],b[1]) and
                      0<=b[0]-a[2]<=small*.4)

@@ -424,9 +424,9 @@ def _native_wrap_view(words,tokens):
         left,right=words[a:z];x,q=left['bbox'],right['bbox']
         height=min(x[3]-x[1],q[3]-q[1])
         joined=left['text'][:-1]+right['text']
-        if (left['text'].endswith('-') and key(joined)==key(proposed[b])
+        if (left['text'].endswith('-') and key(proposed[b])in(key(joined),key(left['text']+right['text']))
                 and (q[1]+q[3]-x[1]-x[3])/2>height*.5 and q[0]<=x[0]+height*.5):
-            changes[a]=dict(left,text=joined,bbox=vision_reading.union([x,q]),
+            changes[a]=dict(left,text=proposed[b],bbox=vision_reading.union([x,q]),
                 native_parts=[dict(text=w['text'],bbox=w['bbox'])for w in (left,right)])
     return [changes[i]if i in changes else word for i,word in enumerate(words)if i-1 not in changes]
 
@@ -4416,22 +4416,33 @@ def _native_seam_blocks(doc,book,pno,page):
     # emitted glyph/span can make element-text equality unavailable. Bind the
     # complete emitted reading to unique source words before trusting that box.
     compact=lambda text:re.sub(r'\s+','',vision_reading.normalized(text))
-    source='';starts={};ends={}
-    for index,word in enumerate(physical):
-        value=compact(word['text'])
-        if not value:continue
-        starts[len(source)]=index;source+=value;ends[len(source)]=index+1
+    display=SourceDisplay(doc,pno)
+    lexical=_native_lexical_view(display,physical)
     def complete_occurrences(text):
         target=compact(text)
         if not target:return []
-        found=[];offset=source.find(target)
-        while offset>=0:
-            end=offset+len(target)
-            if offset in starts and end in ends:
-                words=physical[starts[offset]:ends[end]]
-                if len(words)>1:found.append(words)
-            offset=source.find(target,offset+1)
-        return found
+        # The emitted native paragraph can join an original line-end division
+        # and a drawn raised suffix. Match those exact physical components
+        # before allowing a stale first-line rectangle to truncate its owner.
+        views=[physical,_native_wrap_view(lexical,text.split())]
+        found={}
+        for words in views:
+            source='';starts={};ends={}
+            for index,word in enumerate(words):
+                value=compact(word['text'])
+                if not value:continue
+                starts[len(source)]=index;source+=value;ends[len(source)]=index+1
+            offset=source.find(target)
+            while offset>=0:
+                end=offset+len(target)
+                if offset in starts and end in ends:
+                    owned=words[starts[offset]:ends[end]]
+                    if len(owned)>1:
+                        components=tuple(tuple(part['bbox'])for word in owned
+                            for part in word.get('native_parts',[word]))
+                        found[components]=owned
+                offset=source.find(target,offset+1)
+        return list(found.values())
     # A typed native note atom has a literal rendered symbol, whereas its
     # inventory uses a bracketed semantic token. Compare the actual factory
     # rendering, never strip brackets from source text or guess an owner.
