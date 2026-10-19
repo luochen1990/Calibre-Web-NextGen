@@ -1535,6 +1535,7 @@ class DeviceSleepScreen(Base):
     state = Column(String(24), nullable=False, default='waiting_for_device')
     source_png = Column(LargeBinary, nullable=True)
     prepared_png = Column(LargeBinary, nullable=True)
+    fit = Column(String(8), nullable=True)
     updated_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     applied_revision = Column(String(36), nullable=True)
     applied_status = Column(String(16), nullable=True)
@@ -4662,6 +4663,7 @@ def migrate_device_sleep_screen(engine, _session):
     _add_column_if_missing(engine, "device", "sleep_screen_capability",
                            "sleep_screen_capability JSON")
     DeviceSleepScreen.__table__.create(engine, checkfirst=True)
+    _add_column_if_missing(engine, "device_sleep_screen", "fit", "fit VARCHAR(8)")
 
 
 def migrate_device_share_place(engine, _session):

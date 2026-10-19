@@ -20426,3 +20426,27 @@ msgstr "Toon gelezen/niet gelezen selectie"
 
 #~ msgid "Calibre library rating (1-10)"
 #~ msgstr "Calibre-bibliotheekbeoordeling (1–10)"
+
+#: cps/spa_strings.py
+msgid "Image fit"
+msgstr "Afbeeldingsweergave"
+
+#: cps/spa_strings.py
+msgid "Automatic"
+msgstr "Automatisch"
+
+#: cps/spa_strings.py
+msgid "Fill the screen"
+msgstr "Scherm vullen"
+
+#: cps/spa_strings.py
+msgid "Show the whole image"
+msgstr "Hele afbeelding tonen"
+
+#: cps/spa_strings.py
+msgid "Automatic fills the screen when only a thin edge would be cut off."
+msgstr "Automatisch vult het scherm als er alleen een smalle rand zou wegvallen."
+
+#: cps/spa_strings.py
+msgid "Could not change image fit. Try again."
+msgstr "De afbeeldingsweergave kon niet worden gewijzigd. Probeer het opnieuw."

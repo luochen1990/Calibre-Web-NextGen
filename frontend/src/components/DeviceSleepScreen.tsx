@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiDelete, apiGet, apiUpload, resourceUrl } from '../lib/api';
+import { apiDelete, apiGet, apiPatch, apiUpload, resourceUrl } from '../lib/api';
 import { useFocusTrap } from '../lib/a11y/useFocusTrap';
 import { AnnouncerProvider, useAnnouncer } from '../lib/a11y/announcer';
 import { useT, type TFunction } from '../lib/i18n';
@@ -10,6 +10,7 @@ import type { Device } from './DeviceInventory';
 import styles from './DeviceSleepScreen.module.css';
 
 export interface SleepScreenMetadata {
+  fit: 'auto' | 'fill' | 'whole';
   desired_revision: string;
   state: 'none' | 'waiting_for_device' | 'image' | 'remove';
   support: 'unknown' | 'supported' | 'unsupported';
@@ -76,6 +77,7 @@ function SleepScreenDialog({ device, onClose }: { device: Device; onClose: () =>
   const [file, setFile] = useState<File | null>(null);
   const [localPreview, setLocalPreview] = useState<string | null>(null);
   const [inputError, setInputError] = useState(false);
+  const [fitError, setFitError] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const close = useCallback(() => { if (!busyRef.current) onClose(); }, [onClose]);
   useEffect(() => {
@@ -126,7 +128,18 @@ function SleepScreenDialog({ device, onClose }: { device: Device; onClose: () =>
     onSuccess: (data) => { publish(data); setConfirmRemove(false); },
     onError: () => { setConfirmRemove(false); setInputError(true); },
   });
-  const busy = save.isPending || removal.isPending;
+  const fitChange = useMutation({
+    onMutate: () => queryClient.cancelQueries({ queryKey }),
+    mutationFn: (fit: SleepScreenMetadata['fit']) => apiPatch<SleepScreenMetadata>(path, { fit }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKey, data);
+      void queryClient.invalidateQueries({ queryKey: ['annotation-devices'] });
+      setFitError(false);
+      announce(statusText(data, t));
+    },
+    onError: () => setFitError(true),
+  });
+  const busy = save.isPending || removal.isPending || fitChange.isPending;
   busyRef.current = busy;
   const cancelRemove = useCallback(() => { if (!busyRef.current) setConfirmRemove(false); }, []);
   const data = metadata.data;
@@ -139,6 +152,7 @@ function SleepScreenDialog({ device, onClose }: { device: Device; onClose: () =>
   const titleId = `sleep-screen-title-${device.public_id}`;
   const helpId = `sleep-screen-help-${device.public_id}`;
   const errorId = `sleep-screen-error-${device.public_id}`;
+  const fitId = `sleep-screen-fit-${device.public_id}`;
 
   return <div className={styles.scrim}>
     <div ref={dialogRef} className={styles.dialog} role="dialog" aria-modal="true" tabIndex={-1}
@@ -164,6 +178,28 @@ function SleepScreenDialog({ device, onClose }: { device: Device; onClose: () =>
         {data.support === 'unknown' && <p className={styles.help}>{t('Update the CWNG plugin on this device, then sync.')}</p>}
         <p className={styles.help}>{t('Last seen {when}', { when: relativeWhen(device.last_seen) })}</p>
         <p className={styles.help}>{t('Connect this device and use Sync now in KOReader.')}</p>
+        <fieldset className={styles.fit} role="radiogroup" aria-labelledby={`${fitId}-label`}
+          aria-describedby={`${fitId}-help${fitError ? ` ${fitId}-error` : ''}`}
+          aria-invalid={fitError} aria-busy={fitChange.isPending}
+          // Disabling the group mid-change would drop a keyboard user's focus to the page.
+          disabled={save.isPending || removal.isPending || unsupported}>
+          <legend id={`${fitId}-label`}>{t('Image fit')}</legend>
+          {([
+            ['auto', t('Automatic')],
+            ['fill', t('Fill the screen')],
+            ['whole', t('Show the whole image')],
+          ] as const).map(([value, label]) => <label key={value} className={styles.fitOption}>
+            <input type="radio" name={fitId} value={value} checked={data.fit === value}
+              onChange={() => { if (!busyRef.current && !unsupported) fitChange.mutate(value); }} />
+            {label}
+          </label>)}
+          <p id={`${fitId}-help`} className={styles.help}>
+            {t('Automatic fills the screen when only a thin edge would be cut off.')}
+          </p>
+        </fieldset>
+        <p id={`${fitId}-error`} className={fitError ? styles.error : undefined} role="alert">
+          {fitError ? t('Could not change image fit. Try again.') : ''}
+        </p>
         <form onSubmit={(event) => {
           event.preventDefault();
           if (file && !busy && !unsupported) save.mutate(file);
