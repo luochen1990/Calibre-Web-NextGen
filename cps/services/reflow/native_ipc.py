@@ -212,6 +212,9 @@ class NativeDocument:
             if extract.document_fingerprint(source) != self.fingerprint:
                 raise ValueError('Source changed while preparing native worker')
             environment = ocr._env()
+            alternate_data = os.environ.get('REFLOW_LATIN_TESSDATA')
+            if alternate_data is not None:
+                environment['REFLOW_LATIN_TESSDATA'] = alternate_data
             environment.update(TMPDIR=self.root, PYTHONNOUSERSITE='1', PYTHONFAULTHANDLER='1')
             environment['REFLOW_NATIVE_LEASE_FD'] = str(self.resource_lease.fd)
             # Fixed installed script and -I exclude cwd, user site and PYTHONPATH.
