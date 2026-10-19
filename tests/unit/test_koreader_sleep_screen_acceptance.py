@@ -847,7 +847,7 @@ def test_image_fit_choice_sets_each_device_rendition_and_survives_new_uploads(wo
     kept_state, kept_image = _prepared(world, owner, reader)
     whole = _set_fit(owner, reader.public_id, {"fit": "whole"})
     whole_state, whole_image = _prepared(world, owner, reader)
-    _report(world, "alice", "fit-reader", width=90, height=120)
+    _report(world, "alice", "fit-reader", width=90, height=130)
     resized_state, resized_image = _prepared(world, owner, reader)
     back = _set_fit(owner, reader.public_id, {"fit": "auto"})
     back_state, back_image = _prepared(world, owner, reader)
@@ -874,7 +874,7 @@ def test_image_fit_choice_sets_each_device_rendition_and_survives_new_uploads(wo
     assert kept_state["fit"] == "fill" and not _has_bands(kept_image)
     assert whole.status_code == 200 and whole_state["fit"] == "whole"
     assert _has_bands(whole_image), "the whole image is shown even when the bands are thin"
-    assert resized_image.size == (90, 120) and _has_bands(resized_image)
+    assert resized_image.size == (90, 130) and _has_bands(resized_image), "whole holds where automatic would fill"
     assert resized_state["fit"] == "whole"
     assert back.status_code == 200 and back_state["fit"] == "auto" and not _has_bands(back_image)
     assert early.status_code == 200 and early_body.get("fit") == "fill" and early_body.get("state") == "none"

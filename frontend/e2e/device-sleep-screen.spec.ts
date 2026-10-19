@@ -300,6 +300,7 @@ test('a reader can choose how the image fits the screen, by pointer and by keybo
   await page.keyboard.press('ArrowDown');
   await expect.poll(api.fitBodies).toEqual([{ fit: 'fill' }, { fit: 'whole' }, { fit: 'whole' }]);
   await expect(fit.getByRole('radio', { name: 'Show the whole image' })).toBeChecked();
+  await expect(fit.getByRole('radio', { name: 'Show the whole image' }), 'a keyboard change keeps focus in the group').toBeFocused();
   await expect(editor.getByText('Could not change image fit. Try again.')).toHaveCount(0);
   await expect.poll(api.savedCount).toBe(1);
 
