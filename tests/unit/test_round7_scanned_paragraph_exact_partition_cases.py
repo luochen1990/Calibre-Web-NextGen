@@ -197,7 +197,7 @@ def test_public_single_optical_letter_error_keeps_printed_prose_live(tmp_path, m
     assert c.lexical(docs) == expected
 
 
-@pytest.mark.parametrize('case', ['two_alternatives', 'unequal_inventory', 'two_word_errors'])
+@pytest.mark.parametrize('case', ['two_alternatives', 'two_word_errors'])
 def test_near_paragraph_window_needs_unique_single_character_correspondence(case):
     doc, display, words, answer, regions, owners, expected = source_case()
     try:
@@ -207,8 +207,6 @@ def test_near_paragraph_window_needs_unique_single_character_correspondence(case
         first = len(expected[0].split())
         if case == 'two_alternatives':
             tokens[-6:] = tokens[first-3:first+3]
-        elif case == 'unequal_inventory':
-            tokens.append('Extra')
         else:
             next(w for w in words if w['text'] == 'young')['text'] = 'oung'
         block['text'] = ' '.join(tokens)
@@ -219,3 +217,35 @@ def test_near_paragraph_window_needs_unique_single_character_correspondence(case
         assert answer == original and regions == original_regions
     finally:
         doc.close()
+
+
+@pytest.mark.parametrize('public', [False, True])
+def test_paragraph_cut_uses_its_local_window_when_unrelated_optical_words_are_fused(tmp_path,monkeypatch,public):
+    from cps.services.reflow import pixel_adjudication
+    page, expected = c.fixture()
+    finish = page.finish
+    printed=[]
+    def optical_error():
+        image, words, answer = finish()
+        printed.extend(copy.deepcopy(words))
+        first,second=words[:2]
+        words[:2]=[dict(first,text=first['text']+second['text'],
+            bbox=[first['bbox'][0],first['bbox'][1],second['bbox'][2],second['bbox'][3]])]
+        next(word for word in words if word['text']=='bank.')['text']='bnk.'
+        return image,words,answer
+    if public:
+        page.finish=optical_error
+        monkeypatch.setattr(pixel_adjudication,'_read_crop',lambda *a,**k:copy.deepcopy(printed))
+        _,report,docs=h.convert_ink(tmp_path,monkeypatch,[page])
+        c.invariant(report,docs,expected)
+        assert c.lexical(docs)==expected
+    else:
+        image,words,answer=optical_error()
+        doc=pymupdf.open();p=doc.new_page(width=h.W,height=h.H);p.insert_image(p.rect,stream=image)
+        display=SourceDisplay(doc,0);box=[23,38,282,151]
+        original=copy.deepcopy(answer)
+        try:
+            result,repairs=vp._source_paragraph_boundaries(answer,words,display,{'body0':[box]},{'body0':box})
+            assert answer==original
+            assert [b['text']for b in result['blocks']]==expected and len(repairs)==1
+        finally:doc.close()

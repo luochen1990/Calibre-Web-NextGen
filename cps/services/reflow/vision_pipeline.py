@@ -5096,9 +5096,9 @@ def _source_paragraph_boundaries(answer,optical,display,regions,body_owners):
             sequence=keys[position-3:position+3]
             candidates=[i for i in range(3,len(values)-2) if values[i-3:i+3]==sequence]
             source_candidates=[i for i in range(3,len(keys)-2) if keys[i-3:i+3]==sequence]
-            if not candidates and len(keys)==len(values):
+            if not candidates:
                 # A one-character optical defect cannot erase otherwise proved
-                # prose. Five exact surrounding words, equal inventories and a
+                # prose. Five exact surrounding words and a
                 # reciprocal unique window locate only the structural cut.
                 # The differing word stays untouched for pixel adjudication.
                 near=near_windows(values,sequence)
