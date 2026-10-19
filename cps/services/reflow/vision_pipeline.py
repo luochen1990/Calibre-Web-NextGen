@@ -104,6 +104,29 @@ def _pixel_lines(words):
     """
     import statistics
     if not words:return []
+    # The recognizer sees curved printed baselines that horizontal center
+    # sorting cannot represent. Retain its line instances only when their
+    # original word boxes form coherent, moderately sloped physical rows.
+    labelled={};valid=True
+    for word in words:
+        key=word.get('optical_line')
+        if (not isinstance(key,(list,tuple)) or len(key)!=5
+                or any(type(v)is not int for v in key) or key[0]<0 or min(key[1:])<=0):
+            valid=False;break
+        labelled.setdefault(tuple(key),[]).append(word)
+    if valid:
+        rows=[]
+        for key,row in sorted(labelled.items()):
+            row=sorted(row,key=lambda w:w['bbox'][0])
+            height=statistics.median(w['bbox'][3]-w['bbox'][1]for w in row)
+            centers=[((w['bbox'][0]+w['bbox'][2])/2,(w['bbox'][1]+w['bbox'][3])/2)for w in row]
+            width=centers[-1][0]-centers[0][0]
+            slope=(centers[-1][1]-centers[0][1])/width if width>0 else 0
+            intercept=statistics.median(y-slope*x for x,y in centers)
+            if abs(slope)>.15 or any(abs(y-slope*x-intercept)>max(2,height*.8)for x,y in centers):
+                valid=False;break
+            rows.append(row)
+        if valid:return rows
     tolerance=max(2,statistics.median(w['bbox'][3]-w['bbox'][1] for w in words)*.55)
     lines=[]
     center=lambda w:(w['bbox'][1]+w['bbox'][3])/2
@@ -4988,6 +5011,20 @@ def _source_paragraph_boundaries(answer,optical,display,regions,body_owners):
     identities={b['id'] for b in answer['blocks']}
     norm=lambda value:vision_reading.normalized(value).casefold()
     word_key=lambda value:re.sub(r'[^\w]','',norm(value))
+    def one_character_edit(left,right):
+        if abs(len(left)-len(right))>1:return False
+        at=next((i for i,(a,b) in enumerate(zip(left,right)) if a!=b),min(len(left),len(right)))
+        if at==min(len(left),len(right)):return abs(len(left)-len(right))==1
+        if len(left)==len(right):return left[at+1:]==right[at+1:]
+        if len(left)>len(right):return left[at+1:]==right[at:]
+        return left[at:]==right[at+1:]
+    def near_windows(words,window):
+        positions=[]
+        for i in range(3,len(words)-2):
+            other=words[i-3:i+3]
+            different=[(a,b)for a,b in zip(other,window)if a!=b]
+            if not different or len(different)==1 and one_character_edit(*different[0]):positions.append(i)
+        return positions
     for block in answer['blocks']:
         bid=block['id'];territories=regions.get(bid,[])
         if block['role']!='body' or len(territories)!=1:
@@ -5059,6 +5096,14 @@ def _source_paragraph_boundaries(answer,optical,display,regions,body_owners):
             sequence=keys[position-3:position+3]
             candidates=[i for i in range(3,len(values)-2) if values[i-3:i+3]==sequence]
             source_candidates=[i for i in range(3,len(keys)-2) if keys[i-3:i+3]==sequence]
+            if not candidates and len(keys)==len(values):
+                # A one-character optical defect cannot erase otherwise proved
+                # prose. Five exact surrounding words, equal inventories and a
+                # reciprocal unique window locate only the structural cut.
+                # The differing word stays untouched for pixel adjudication.
+                near=near_windows(values,sequence)
+                if len(near)==1 and near_windows(keys,values[near[0]-3:near[0]+3])==[position]:
+                    candidates=near
             if len(candidates)!=1 or source_candidates!=[position]:
                 reject('Original paragraph start has ambiguous response ownership')
             boundary=visible[candidates[0]][0]

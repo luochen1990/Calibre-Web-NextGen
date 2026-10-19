@@ -11,11 +11,14 @@ import uuid
 from pathlib import Path
 
 
+CACHE_PREFIX='literal-tsv-v3-'
+
+
 def words(display,cache):
     pix=display.pixmap(scale=3,max_pixels=8_000_000)
     image=pix.tobytes('png');identity=hashlib.sha256(image).hexdigest()
     root=Path(cache);root.mkdir(parents=True,exist_ok=True)
-    target=root/('literal-tsv-v2-'+('split-landscape-v1-' if pix.width>=pix.height*1.2 else '')+identity+'.json')
+    target=root/(CACHE_PREFIX+('split-landscape-v1-' if pix.width>=pix.height*1.2 else '')+identity+'.json')
     with (root/(identity+'.lock')).open('a') as handle:
         fcntl.flock(handle,fcntl.LOCK_EX)
         if target.exists():return json.loads(target.read_text())
@@ -46,7 +49,16 @@ def _recognize(display,pix,image,target):
         for row in csv.DictReader(io.StringIO(proc.stdout.decode('utf-8')),delimiter='\t',quoting=csv.QUOTE_NONE):
             if row['level']!='5' or not row['text'].strip():continue
             x,y,w,h=[int(row[k]) for k in ('left','top','width','height')];x+=offset
-            output.append({'text':row['text'],'bbox':[x*sx,y*sy,(x+w)*sx,(y+h)*sy]})
+            word={'text':row['text'],'bbox':[x*sx,y*sy,(x+w)*sx,(y+h)*sy]}
+            try:
+                confidence=float(row.get('conf',''))
+                if 0<=confidence<=100:word['confidence']=confidence
+            except (ValueError,TypeError):pass
+            try:
+                line=[int(row[name]) for name in ('page_num','block_num','par_num','line_num')]
+                if all(value>0 for value in line):word['optical_line']=[offset,*line]
+            except (KeyError,ValueError,TypeError):pass
+            output.append(word)
     temp=target.with_suffix('.tmp');temp.write_text(json.dumps(output,ensure_ascii=False));os.replace(temp,target)
     return output
 

@@ -147,3 +147,75 @@ def test_new_recovered_paragraph_failure_retains_its_geometry_and_healthy_text(t
     assert ' '.join(h.body_texts(docs)).count(healthy) == 1
     assert c.source_returns(docs)
     assert not any(e.get('class') == 'source-original' for root in docs.values() for e in root.iter())
+
+
+@pytest.mark.parametrize('side', ['before', 'after'])
+def test_one_optical_character_error_does_not_discard_proved_paragraphs(side):
+    doc, display, words, answer, regions, owners, expected = source_case()
+    try:
+        target = 'bank.' if side == 'before' else 'young'
+        changed = 'bnk.' if side == 'before' else 'oung'
+        occurrence = next(word for word in words if word['text'] == target)
+        occurrence['text'] = changed
+        original = copy.deepcopy(answer)
+        result, repairs = vp._source_paragraph_boundaries(answer, words, display, regions, owners)
+        assert answer == original, 'Boundary inference cannot rewrite the cached reading'
+        assert [b['text'] for b in result['blocks'] if b['role'] == 'body'] == expected
+        assert len(repairs) == 1
+        assert ' '.join(b['text'] for b in result['blocks']).split() == original['blocks'][0]['text'].split()
+    finally:
+        doc.close()
+
+
+@pytest.mark.parametrize('side', ['before', 'after'])
+def test_public_single_optical_letter_error_keeps_printed_prose_live(tmp_path, monkeypatch, side):
+    from cps.services.reflow import pixel_adjudication
+    page, expected = c.fixture()
+    finish = page.finish
+    printed = []
+    target = 'bank.' if side == 'before' else 'young'
+    changed = 'bnk.' if side == 'before' else 'oung'
+
+    def optical_error():
+        image, words, answer = finish()
+        printed.extend(copy.deepcopy(words))
+        next(word for word in words if word['text'] == target)['text'] = changed
+        return image, words, answer
+
+    page.finish = optical_error
+    # The second synthetic observer reads the independently printed inventory,
+    # including the letter omitted only from the first observer's word record.
+    def second_read(display, boxes, cache, **options):
+        return copy.deepcopy([w for w in printed if any(
+            box[0] <= (w['bbox'][0] + w['bbox'][2]) / 2 <= box[2] and
+            box[1] <= (w['bbox'][1] + w['bbox'][3]) / 2 <= box[3]
+            for box in boxes)])
+
+    monkeypatch.setattr(pixel_adjudication, '_read_crop', second_read)
+    _, report, docs = h.convert_ink(tmp_path, monkeypatch, [page])
+    c.invariant(report, docs, expected)
+    assert c.lexical(docs) == expected
+
+
+@pytest.mark.parametrize('case', ['two_alternatives', 'unequal_inventory', 'two_word_errors'])
+def test_near_paragraph_window_needs_unique_single_character_correspondence(case):
+    doc, display, words, answer, regions, owners, expected = source_case()
+    try:
+        next(w for w in words if w['text'] == 'bank.')['text'] = 'bnk.'
+        block = answer['blocks'][0]
+        tokens = block['text'].split()
+        first = len(expected[0].split())
+        if case == 'two_alternatives':
+            tokens[-6:] = tokens[first-3:first+3]
+        elif case == 'unequal_inventory':
+            tokens.append('Extra')
+        else:
+            next(w for w in words if w['text'] == 'young')['text'] = 'oung'
+        block['text'] = ' '.join(tokens)
+        original = copy.deepcopy(answer)
+        original_regions = copy.deepcopy(regions)
+        with pytest.raises(ValueError, match='ambiguous response ownership'):
+            vp._source_paragraph_boundaries(answer, words, display, regions, owners)
+        assert answer == original and regions == original_regions
+    finally:
+        doc.close()

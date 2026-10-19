@@ -2220,3 +2220,57 @@ def test_repeated_native_column_labels_bind_only_complete_factory_occurrences(tm
         else:
             assert records[0]['source_regions']==[elements[0].bbox]
             assert records[1]['source_regions']==[], 'An element box with different printed words cannot earn occurrence proof'
+
+
+def test_curved_optical_line_instances_keep_complete_printed_row_order():
+    from cps.services.reflow.vision_pipeline import _pixel_lines
+    rows=[]
+    for line, tokens in enumerate([['A', 'careful', 'keeper', 'waits.'], ['Another', 'clear', 'sample', 'follows.']],1):
+        for index, token in enumerate(tokens):
+            x=20+index*60; y=30+line*15-x*.08
+            rows.append(dict(text=token,bbox=[x,y,x+40,y+8],confidence=98,
+                             optical_line=[0,1,1,1,line]))
+    actual=_pixel_lines(list(reversed(rows)))
+    assert [[w['text']for w in row]for row in actual]==[
+        ['A','careful','keeper','waits.'],['Another','clear','sample','follows.']]
+
+
+def test_optical_line_label_cannot_join_geometrically_unrelated_rows():
+    from cps.services.reflow.vision_pipeline import _pixel_lines
+    source=[dict(text='Upper',bbox=[20,20,60,30],optical_line=[0,1,1,1,1]),
+            dict(text='Lower',bbox=[80,200,120,210],optical_line=[0,1,1,1,1])]
+    assert [[w['text']for w in row]for row in _pixel_lines(source)]==[['Upper'],['Lower']]
+
+
+def test_optical_tsv_keeps_observed_line_identity_and_word_confidence(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from cps.services.reflow import vision_pixels
+    header='level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n'
+    tsv=header+'5\t1\t2\t3\t4\t1\t10\t20\t30\t8\t94.5\tClear\n'
+    monkeypatch.setattr(vision_pixels.shutil,'which',lambda name:'/synthetic/tesseract')
+    monkeypatch.setattr(vision_pixels.subprocess,'run',lambda *a,**k:SimpleNamespace(returncode=0,stdout=tsv.encode(),stderr=b''))
+    pix=SimpleNamespace(width=100,height=200)
+    display=SimpleNamespace(rect=SimpleNamespace(width=100,height=200))
+    result=vision_pixels._recognize(display,pix,b'procedural pixels',tmp_path/'fresh.json')
+    assert result[0]['text']=='Clear' and result[0]['bbox']==[10,20,40,28]
+    assert result[0]['confidence']==94.5
+    assert result[0]['optical_line']==[0,1,2,3,4]
+
+
+def test_pre_metadata_optical_cache_is_preserved_and_replaced_by_a_new_receipt(tmp_path,monkeypatch):
+    import hashlib,json
+    from types import SimpleNamespace
+    from cps.services.reflow import vision_pixels
+    image=b'procedural portrait pixels';identity=hashlib.sha256(image).hexdigest()
+    old=tmp_path/('literal-tsv-v2-'+identity+'.json')
+    before=json.dumps([dict(text='Unproved',bbox=[0,0,10,10])]).encode();old.write_bytes(before)
+    pix=SimpleNamespace(width=100,height=200,tobytes=lambda kind:image)
+    display=SimpleNamespace(rect=SimpleNamespace(width=100,height=200),pixmap=lambda **k:pix)
+    calls=[]
+    def recognize(*args):
+        calls.append(1);result=[dict(text='Clear',bbox=[10,20,40,28],confidence=94.5,optical_line=[0,1,2,3,4])]
+        args[-1].write_text(json.dumps(result));return result
+    monkeypatch.setattr(vision_pixels,'_recognize',recognize)
+    first=vision_pixels.words(display,tmp_path);second=vision_pixels.words(display,tmp_path)
+    assert first==second and first[0]['text']=='Clear' and len(calls)==1
+    assert old.read_bytes()==before
