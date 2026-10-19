@@ -61,3 +61,36 @@ def test_global_markup_helper_failure_reconstructs_exact_admitted_fragments(tmp_
     assert h.body_texts(docs)==[FIRST,LAST]
     assert sum(GOOD in ''.join(n.itertext()) for _,n in h.refs_and_notes(docs)[1])==1
     assert all('Uncommitted replacement' not in ''.join(root.itertext()) for root in docs.values())
+
+
+def test_native_unit_source_replacement_keeps_its_proved_note_origin(tmp_path,monkeypatch):
+    """Synthetic admitted reference survives when its paragraph becomes ink."""
+    import hashlib
+    from types import SimpleNamespace
+    from cps.services.reflow import unit_source
+    original=('<p>Independently written body text.'
+              '<a class="noteref" epub:type="noteref" id="fnref_p0000_1" '
+              'href="#fn_p0000_1"><sup>1</sup></a></p>')
+    note=('<aside class="footnote" epub:type="footnote" id="fn_p0000_1"><p>'
+          '<a class="note-return" href="#fnref_p0000_1" aria-label="Return to note reference">1</a>'
+          ' The synthetic supporting note.</p></aside>')
+    def retained(*args,**kwargs):
+        return ('<div class="source-disclosure"><p>View original source page</p></div>',
+                ['<aside id="source-pixels"><img src="images/source.jpg" alt="Original page"/></aside>'],
+                dict(blocks=[dict(id='native-0',role='body')]))
+    monkeypatch.setattr(unit_source,'source_unit',retained)
+    digest=hashlib.sha256(original.encode()).hexdigest()
+    page=dict(pno=0,body=[original],asides=[note])
+    record=dict(id='native-0',role='body',native_source=True,fragment_sha256=digest)
+    build_epub.degrade_native_units(page,dict(blocks=[record]),
+        {'native-0':dict(fragment_sha256=digest,stage='native_pixel_adjudication',reason='Synthetic unresolved word')},
+        SimpleNamespace(),SimpleNamespace(),{})
+    from cps.services.reflow import unit_recovery
+    chapter=build_epub.Chapter(index=1,title='Synthetic page',blocks=page['body']+page['asides'])
+    unit_recovery.bind_links([chapter])
+    markup=''.join(chapter.blocks)
+    assert markup.count('id="fnref_p0000_1"')==1
+    assert original[original.index('<a '):original.index('</a>')+4] in markup
+    assert note in markup
+    assert 'Independently written body text.' not in markup
+    assert 'images/source.jpg' in markup

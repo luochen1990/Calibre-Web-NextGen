@@ -523,6 +523,24 @@ def degrade_native_units(page, report, blocked, display, package, image_records)
         fragment, asides, unit = source_unit(display, page['pno'], record['id'], role,
                                             package, image_records, case['reason'])
         unit['stage'] = case['stage'];case.update(unit)
+        # Transcription rejection does not revoke a separately admitted printed
+        # note action. Keep its exact number, origin and uniquely present note
+        # target beside the retained paragraph's inspection control. Never infer
+        # a note association from a number or manufacture a missing destination.
+        actions = []
+        current = page['body'][index]
+        publication = '\n'.join(page['body'] + page['asides'])
+        for action in re.findall(r'<a\b[^>]*>.*?</a>', current, re.S):
+            node = ElementTree.fromstring('<root xmlns:epub="http://www.idpf.org/2007/ops">' + action + '</root>')[0]
+            origin, target = node.get('id'), node.get('href', '')
+            if ('noteref' in node.get('class', '').split() and
+                    node.get('{http://www.idpf.org/2007/ops}type') == 'noteref' and
+                    origin and target.startswith('#') and len(target) > 1 and
+                    _ID.findall(publication).count(origin) == 1 and
+                    _ID.findall(publication).count(target[1:]) == 1):
+                actions.append(action)
+        if actions:
+            fragment = fragment.replace('</p>', ' ' + ' '.join(actions) + '</p>', 1)
         page['body'][index] = fragment
         page['asides'].extend(asides)
         alignment[index] = dict(unit['blocks'][0], native_source=True)
