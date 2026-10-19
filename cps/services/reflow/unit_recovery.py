@@ -461,6 +461,10 @@ class Controller:
                           if unit.get('block') is not None
                           and (unit['page'], unit['block']) not in self.degraded
                           and (unit['page'], None) not in self.degraded}
+        # This failed assembly can only reject fallbacks it actually used.
+        # Overlapping block/page owners may schedule one original page twice;
+        # a fallback first created in this handler has not been rendered yet.
+        previous_source_pages = self.source_pages()
         for unit in failure.units:
             key = (unit['page'], unit.get('block'))
             if (key in self.degraded and unit.get('block') is not None
@@ -470,6 +474,8 @@ class Controller:
                 continue
             if key in self.degraded:
                 if unit.get('block') is None:
+                    if unit['page'] not in previous_source_pages:
+                        continue
                     raise SourceIntegrityError('Original source fallback itself is unusable') from failure.cause
                 previous=[copy.deepcopy(v) for k,v in self.degraded.items() if k[0]==unit['page']]
                 self.degraded={k:v for k,v in self.degraded.items() if k[0]!=unit['page']}

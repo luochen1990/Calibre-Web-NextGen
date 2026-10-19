@@ -141,3 +141,23 @@ def test_unproved_note_link_discloses_locally_beside_an_existing_page_fallback(t
     disclosed=[a for a in links if a.get('aria-label')=='Note association unresolved; view original source page']
     assert len(disclosed)==1
     assert ''.join(disclosed[0].itertext()).strip()==('Return' if direction=='origin' else '1')
+
+
+@pytest.mark.parametrize('page_first',[False,True])
+def test_same_failure_cannot_reject_a_page_fallback_it_has_not_rendered(tmp_path,page_first):
+    """Synthetic overlapping note ownership cannot fail its own new fallback."""
+    from types import SimpleNamespace
+    from cps.services.reflow import unit_recovery as ur
+    c=ur.Controller(SimpleNamespace(key=None),[0,1],tmp_path/'staging')
+    c.degraded[(0,'body')]=dict(page=0,block='body',reason='Earlier synthetic unit failure')
+    units=[dict(page=0,block='body'),dict(page=0,block=None)]
+    if page_first:units.reverse()
+    failure=ur.UnitFailure(units,'link_reference',ValueError('Synthetic unproved note association'))
+    c.recover(failure)
+    assert set(c.degraded)=={(0,None)}
+    assert c.events[-1]['transition']=='VISIBLE_SOURCE_DEGRADATION'
+    assert c.source_pages()=={0}
+    # A later attempt really using this page fallback must still be fatal if
+    # its original source cannot be used. No original-source gate is weakened.
+    with pytest.raises(ur.SourceIntegrityError,match='Original source fallback itself is unusable'):
+        c.recover(failure)
