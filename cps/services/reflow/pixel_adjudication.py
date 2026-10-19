@@ -674,7 +674,8 @@ def _verified_latin_directory(roots):
 def _resampled_model_choice(source,index,witness,model_word):
     """Corroborate one model spelling without trusting an enlarged OCR guess.
 
-    The primary crop must already read that spelling at the same occurrence.
+    The primary crop must locate the same occurrence without a confident
+    conflicting spelling. Its weak spelling need not repeat the model's.
     Two additional bounded frames must independently print it with confidence
     and a common neighboring anchor. English cannot establish accent changes.
     The caller retains the correction's source-linked mark after settlement.
@@ -683,7 +684,9 @@ def _resampled_model_choice(source,index,witness,model_word):
     if reader is None:return None
     if any(c.isalpha() and not c.isascii() for c in source[index]['text']+model_word):return None
     own=[w for w in witness if _complete_word_occurrence(source[index],w)]
-    if len(own)!=1 or _key(own[0]['text'])!=_key(model_word):return None
+    if len(own)!=1:return None
+    if (_key(own[0]['text'])!=_key(model_word)
+            and own[0].get('confidence',0)>=85):return None
     choice=_alternate_pair_choice(source,index,witness,model_word,reader())
     if choice is None or _key(choice['text'])!=_key(model_word):return None
     return choice

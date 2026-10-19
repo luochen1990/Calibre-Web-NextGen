@@ -1516,3 +1516,27 @@ def test_english_resampling_cannot_certify_a_changed_accent():
                                  words('Please read calm beside the window.')]
     result = adjudicate('Please read calm beside the window.'.split(), source, witness)
     assert result['word_notes'][2]['status'] == 'UNRESOLVED'
+
+
+def test_two_corroborated_frames_can_settle_a_different_weak_primary_spelling():
+    from cps.services.reflow import pixel_adjudication as pa
+    source = words('The claar sample remains readable today.')
+    model = 'The clear sample remains readable today.'.split()
+    witness = pa.CropWitness(words('The lear sample remains readable today.', 39))
+    witness.resampled = lambda: [words('The clear sample remains readable today.', 96),
+                                 words('The clear sample remains readable today.', 95)]
+    result = adjudicate(model, source, witness)
+    assert result['tokens'] == model
+    assert result['marked'] == {1}
+    assert result['word_notes'][1]['status'] == 'RESOLVED'
+    assert result['word_notes'][1]['method'] == 'corroborated_resampled_pixel_readings'
+
+
+def test_resampling_cannot_override_a_confident_primary_spelling_conflict():
+    from cps.services.reflow import pixel_adjudication as pa
+    source = words('The claar sample remains readable today.')
+    witness = pa.CropWitness(words('The lear sample remains readable today.', 96))
+    witness.resampled = lambda: [words('The clear sample remains readable today.', 96),
+                                 words('The clear sample remains readable today.', 95)]
+    result = adjudicate('The clear sample remains readable today.'.split(), source, witness)
+    assert result['word_notes'][1]['status'] == 'UNRESOLVED'
