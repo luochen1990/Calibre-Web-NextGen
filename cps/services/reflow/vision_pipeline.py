@@ -4218,7 +4218,10 @@ def _native_seam_blocks(doc,book,pno,page):
     """Bind published native paragraphs to their own physical source rows."""
     import statistics
     elements=book.pages.get(pno,[])
-    physical=[{'text':w[4],'bbox':list(w[:4])} for w in doc[pno].get_text('words')]
+    # Paint-object order can serialize a raised note label after its line.
+    # Complete occurrence identity follows the printed spatial word order.
+    physical=_pixel_line_order([{'text':w[4],'bbox':list(w[:4])}
+                                for w in doc[pno].get_text('words')])
     # Cached native elements can retain a removed running title's box, or an
     # emitted glyph/span can make element-text equality unavailable. Bind the
     # complete emitted reading to unique source words before trusting that box.
@@ -4385,9 +4388,21 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 # Bind unchanged occurrences through that transform instead of
                 # treating one unreliable glyph as a failure of all its peers.
                 from difflib import SequenceMatcher
-                mapping={a+i:b+i for kind,a,z,b,y in SequenceMatcher(None,
-                    [w['text']for w in source],tokens,autojunk=False).get_opcodes()
-                    if kind=='equal'for i in range(z-a)}
+                mapping={};joined_sources={}
+                for kind,a,z,b,y in SequenceMatcher(None,
+                        [w['text']for w in source],tokens,autojunk=False).get_opcodes():
+                    if kind=='equal':
+                        mapping.update({a+i:b+i for i in range(z-a)})
+                    elif (kind=='replace' and y-b==1 and z>a and
+                            ''.join(w['text']for w in source[a:z])==tokens[b]):
+                        # Native inline markup can join an expression across a
+                        # wrap. Exact unchanged letters bind its original parts
+                        # to one output word; no neighboring prose is rejected.
+                        parts=[part for w in source[a:z]for part in w.get('native_parts',[w])]
+                        joined_sources[b]=dict(text=tokens[b],
+                            bbox=vision_reading.union([part['bbox']for part in parts]),
+                            native_parts=parts)
+                        mapping.update({i:b for i in range(a,z)})
                 conflicts=pixel_adjudication.audit_agreement([w['text']for w in source],source,witness)
                 for i in legacy:
                     conflicts[i]=dict(source=[source[i]['text']],model=[source[i]['text']],
@@ -4396,7 +4411,11 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 if any(i not in mapping for i in conflicts):
                     raise ValueError('Unreliable native occurrence has no unique published word binding')
                 output_sources={mapping[i]:source[i]for i in mapping}
+                output_sources.update(joined_sources)
                 conflicts={mapping[i]:d for i,d in conflicts.items()}
+                for i in conflicts.keys() & joined_sources.keys():
+                    conflicts[i]=dict(source=[tokens[i]],model=[tokens[i]],chosen=[tokens[i]],
+                        status='UNRESOLVED',method='unproved_native_character_map')
                 legacy={mapping[i]for i in legacy if i in mapping}
                 record['pixel_adjudication_status']='SOURCE_OCCURRENCES_CHECKED_BEFORE_NATIVE_TRANSFORM'
             else:

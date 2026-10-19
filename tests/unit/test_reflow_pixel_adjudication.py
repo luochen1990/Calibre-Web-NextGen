@@ -1944,3 +1944,60 @@ def test_native_fused_raised_reference_cannot_become_a_second_body_number(tmp_pa
     assert record['blocks'][0]['published_tokens']==['A','clear','sample','<n:n1>']
     assert record['blocks'][0]['marked']==[]
     assert len(record['note_marker_disclosures'])==1
+
+
+def test_native_raised_reference_serialization_cannot_discard_its_paragraph(tmp_path):
+    import pymupdf
+    from cps.services.reflow import assemble,build_epub,vision_pipeline as vp
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=200)
+        leaf.insert_text((30,70),'Ordinary sample,',fontsize=12)
+        last=leaf.get_text('words')[-1]
+        leaf.insert_text((last[2]+8,70),'remains readable.',fontsize=12)
+        leaf.insert_text((last[2]+.1,65),'7',fontsize=7)
+        # The renderer paints the reference after the body text in PDF object
+        # order, while its physical origin remains inside the first line.
+        runs=[('t','Ordinary sample,'),('sup',7),('t',' remains readable.')]
+        element=assemble.Element('p',runs=runs,pno=0,bbox=[30,55,300,75])
+        book=assemble.Book(elements=[element],pages={0:[element]})
+        fragment=build_epub.page_fragment(book,0)
+        native=dict(pno=0,body=[fragment],asides=[])
+        records=vp._native_seam_blocks(doc,book,0,native)
+        assert records[0]['native_occurrence_count']==1
+        assert records[0]['source_regions']
+        vp._audit_native_pixels(doc,native,records,tmp_path,object(),{})
+    assert native['body']==[fragment]
+    assert 'Ordinary sample,'in native['body'][0]
+    assert 'remains readable.'in native['body'][0]
+    assert 'noteref-unresolved'in native['body'][0]
+    assert not records[0].get('marked')
+
+
+def test_native_wrapped_symbol_expression_discloses_only_its_own_word(tmp_path,monkeypatch):
+    import pymupdf,re
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    class Package:
+        def __init__(self):self.images={}
+        def image(self,name,data):self.images[name]=data
+        def disclosure_image(self,*args):pass
+    package=Package();images={}
+    monkeypatch.setattr(pa,'read_crop',lambda *args:[])
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=300,height=200)
+        leaf.insert_text((30,70),'not',fontsize=12)
+        leaf.insert_text((70,70),'x',fontname='cour',fontsize=12)
+        leaf.insert_text((80,70),'-',fontsize=12)
+        leaf.insert_text((30,100),'z.',fontname='cour',fontsize=12)
+        leaf.insert_text((60,100),'sample',fontsize=12)
+        xref=next(f[0]for f in leaf.get_fonts()if f[3]=='Courier')
+        doc.xref_set_key(xref,'BaseFont','/CustomMarks');leaf=doc.reload_page(leaf)
+        native=dict(pno=0,body=['<p>not x-z. sample</p>'],asides=[])
+        records=[dict(id='native-0',role='body',source_regions=[[25,55,130,110]])]
+        vp._audit_native_pixels(doc,native,records,tmp_path,package,images)
+    body=native['body'][0]
+    assert vp._seam_text(re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',body))=='not sample'
+    assert body.count('class="source-word-image"')==1
+    assert records[0]['marked']==[1]
+    assert records[0]['source_image_words']==[1]
+    assert len(native['asides'])==1
+    assert len(package.images)==1
