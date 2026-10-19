@@ -112,7 +112,18 @@ def local_ocr_visible(path, report, printed_phrases, *, non_local_pages=(), no_n
                 units = [unit for unit in page['local_ocr_units'] if unit['id'] == block['id']]
                 assert len(units) == 1, 'the local block has exactly one source-word owner'
                 source_words = units[0]['words']
-                assert [word['text'] for word in source_words] == tokens, 'source-word geometry maps exactly to the published local tokens'
+                originals = [word['text'] for word in source_words]
+                assert len(originals) == len(tokens), 'a local repair preserves one source occurrence per word'
+                corrected = set()
+                for index, (original, chosen) in enumerate(zip(originals, tokens)):
+                    if original == chosen:
+                        continue
+                    assert units[0].get('published_words') == tokens
+                    decisions = [d for d in block['adjudication']
+                                 if d['status'] == 'RESOLVED'
+                                 and d['source'] == [original] and d['chosen'] == [chosen]]
+                    assert len(decisions) == 1, 'each changed local word requires its own positive pixel receipt'
+                    corrected.add(index)
                 marked = set(block['marked'])
                 lexical_indices = {i for i, token in enumerate(tokens) if lexical.search(token)}
                 assert lexical_indices and lexical_indices <= marked, 'every local lexical token is marked unverified'
@@ -124,7 +135,8 @@ def local_ocr_visible(path, report, printed_phrases, *, non_local_pages=(), no_n
                 uncertain = [node for node in owner.iter()
                              if 'uncertain' in (node.get('class') or '').split()]
                 text = ''.join(owner.itertext())
-                live_text.append(text)
+                from tests.unit.test_round4_defects import plain
+                live_text.append(plain(owner))
                 assert Counter(lexical.findall(text)) == Counter(
                     word for token in tokens for word in lexical.findall(token)
                 ), 'the live reading preserves every recorded local lexical token'
@@ -134,7 +146,8 @@ def local_ocr_visible(path, report, printed_phrases, *, non_local_pages=(), no_n
                 assert all(node.get('title') == 'Unverified local OCR reading' for node in uncertain)
                 # Each contiguous marked run owns its own control and return;
                 # checking any unrelated link elsewhere would miss misbinding.
-                ends = [i for i in sorted(marked) if i + 1 not in marked]
+                ends = [i for i in sorted(marked)
+                        if i + 1 not in marked or i in corrected or i + 1 in corrected]
                 for end in ends:
                     ident = f'v4-d-{number}-{block["id"]}-{end}'
                     origin = (name, 'r-' + ident)
@@ -145,9 +158,13 @@ def local_ocr_visible(path, report, printed_phrases, *, non_local_pages=(), no_n
                     assert target in indexed and target[1] == ident
                     aside = indexed[target]
                     assert aside.tag.endswith('}aside') and 'vision-disclosure' in (aside.get('class') or '').split()
-                    assert 'Unverified local OCR reading' in ''.join(aside.itertext())
+                    note_text = ''.join(aside.itertext())
+                    assert 'Unverified local OCR reading' in note_text
+                    if end in corrected:
+                        assert 'pixel-supported correction' in note_text
+                        assert originals[end] + ' → ' + tokens[end] in note_text
                     start = end
-                    while start > 0 and start - 1 in marked:
+                    while start > 0 and start not in corrected and start - 1 in marked and start - 1 not in corrected:
                         start -= 1
                     centroids = [((word['bbox'][0] + word['bbox'][2]) / 2,
                                   (word['bbox'][1] + word['bbox'][3]) / 2)
