@@ -1441,3 +1441,40 @@ def test_fallback_extra_ink_survives_the_real_publication_as_its_own_image(tmp_p
     for word in source[2:4]:
         x=(word['bbox'][0]+word['bbox'][2])/2;y=(word['bbox'][1]+word['bbox'][3])/2
         assert box[0]<=x<=box[2]and box[1]<=y<=box[3], 'The image owns the omitted stroke and following word'
+
+
+def test_native_pixel_abort_discloses_only_its_unit_and_keeps_siblings_and_later_pages(tmp_path,monkeypatch):
+    import pymupdf,zipfile
+    from types import SimpleNamespace
+    from xml.etree import ElementTree as E
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from tests.unit.test_round4_defects import plain
+    first='Quiet readers compare the first printed sample beside the window.'
+    sibling='Careful workers keep the second printed sample beside the doorway.'
+    later='The next page retains its complete independently printed sentence.'
+    failures=[]
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=430,height=500)
+        page.insert_text((30,70),first,fontsize=10)
+        page.insert_text((30,180),sibling,fontsize=10)
+        page=doc.new_page(width=430,height=500)
+        page.insert_text((30,70),later,fontsize=10)
+        physical={n:[dict(text=w[4],bbox=list(w[:4]),confidence=99)
+                     for w in doc[n].get_text('words')]for n in range(2)}
+        def read(display,regions,cache):
+            if display.pno==0 and max(box[3]for box in regions)<120:
+                failures.append(list(regions))
+                raise ValueError('Synthetic native crop recognition failure')
+            return physical[display.pno]
+        monkeypatch.setattr(pa,'read_crop',read)
+        output=tmp_path/'native-scope.epub'
+        report=vp.convert(doc,str(output),SimpleNamespace(cache=tmp_path/'cache/readings',key=None))
+    with zipfile.ZipFile(output)as archive:
+        text=' '.join(plain(E.fromstring(archive.read(n)))for n in archive.namelist()if n.endswith('.xhtml'))
+    assert sibling in text and later in text, 'A failed native unit must not consume healthy printed siblings'
+    assert first not in text, 'The failed unit must publish its own source image rather than unaudited live text'
+    assert report['pages'][0]['source']==report['pages'][1]['source']=='native'
+    assert len(failures)==1, 'Recovery must not rerun pixel recognition on an already blocked native unit'
+    units=report['pages'][0]['degraded_units']
+    assert len(units)==1 and units[0]['block'] is not None
+    assert units[0]['reason']=='Synthetic native crop recognition failure'

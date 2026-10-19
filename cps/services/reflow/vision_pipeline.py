@@ -4263,12 +4263,19 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
     from . import pixel_adjudication,vision_pixels
     display=SourceDisplay(doc,page['pno'])
     optical=None
+    controller=unit_recovery.current()
     physical=[dict(text=w[4],bbox=list(display.reading_rect(w[:4])))
               for w in doc[page['pno']].get_text('words')]
     for position,record in enumerate(records):
         if record.get('role') not in ('body','heading','caption'):continue
+        # The caller replaces blocked native units after auditing their healthy
+        # siblings. Rechecking the same failed unit would escalate its page
+        # before that bounded source replacement can be published.
+        if controller and record['id'] in controller.blocked(page['pno']):continue
         territories=record.get('source_regions')
-        with unit_recovery.guard(page['pno'],'native_pixel_adjudication',block=record['id']):
+        unit=dict(page=page['pno'],block=record['id'],
+                  fragment_sha256=hashlib.sha256(page['body'][position].encode()).hexdigest())
+        with unit_recovery.guard(page['pno'],'native_pixel_adjudication',units=[unit]):
             if not territories:
                 if 'native_occurrence_count' not in record or unit_recovery.current() is None:
                     raise ValueError('Native live text has no uniquely bound source occurrence')
