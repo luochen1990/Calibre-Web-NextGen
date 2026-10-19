@@ -91,10 +91,10 @@ def lexical_word_view(page, words, marker_prefixes=()):
                 return [min(c[3][0]for c in group),min(c[3][1]for c in group),
                         max(c[3][2]for c in group),max(c[3][3]for c in group)]
             a,b=bounds(before),bounds(after);height=a[3]-a[1]
-            if b[3]-b[1]<height*.8 and b[3]<a[3]-height*.15:
+            if b[3]-b[1]<height*.9 and b[3]<a[3]-height*.15:
                 # Reserve independently raised ink for the existing marker
                 # verifier; neither its identity nor note owner is proved here.
-                expanded.extend([dict(word,text=match[1],bbox=a),dict(word,text=match[2],bbox=b)])
+                expanded.extend([dict(word,text=match[1],bbox=a),dict(word,text=match[2],bbox=b,native_reference_ink=True)])
                 continue
         expanded.append(word)
     words=expanded

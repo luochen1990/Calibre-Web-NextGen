@@ -1910,7 +1910,8 @@ def test_native_raised_ordinal_is_one_printed_word_without_a_correction(tmp_path
     assert record['blocks'][0]['marked']==[]
 
 
-def test_native_fused_raised_reference_cannot_become_a_second_body_number(tmp_path,monkeypatch):
+@pytest.mark.parametrize('marker_size',[7,10])
+def test_native_fused_raised_reference_cannot_become_a_second_body_number(tmp_path,monkeypatch,marker_size):
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
     from cps.services.reflow.source_display import SourceDisplay
@@ -1924,8 +1925,8 @@ def test_native_fused_raised_reference_cannot_become_a_second_body_number(tmp_pa
         page=doc.new_page(width=400,height=300)
         page.insert_text((30,70),'A clear sample',fontsize=12)
         physical=page.get_text('words');last=physical[-1]
-        page.insert_text((last[2]+.1,65),'7',fontsize=7)
-        label=next(c[3]for t in page.get_texttrace()if t['size']==7 for c in t['chars'])
+        page.insert_text((last[2]+.1,65),'7',fontsize=marker_size)
+        label=next(c[3]for t in page.get_texttrace()if t['size']==marker_size for c in t['chars'])
         source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in physical[:-1]]
         source.append(dict(text='sample7',bbox=[last[0],min(last[1],label[1]),label[2],max(last[3],label[3])],confidence=99))
         page.insert_text((30,160),'7 Words below remain readable.',fontsize=12)
@@ -2041,3 +2042,76 @@ def test_unmapped_native_phrase_cannot_discard_its_proved_prose_neighbors(tmp_pa
     assert html.count('class="source-word-image"')==2
     assert vp._seam_text(re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',html))=='The quiet remains readable.'
     assert not any(word in html for word in reading.split())
+
+
+@pytest.mark.parametrize('separate_columns',[False,True])
+def test_partial_native_row_cannot_move_its_last_word_before_the_row(separate_columns):
+    from cps.services.reflow import vision_pipeline as vp
+    from tests.unit.test_reflow_vision_pilot import block
+    import pymupdf
+    class Display:
+        rect=pymupdf.Rect(0,0,300,200)
+    first=dict(text='Opening',bbox=[10,10,60,20])
+    final=dict(text='ending',bbox=[92,29,130,41])
+    lower=[dict(text='The',bbox=[10,32,30,42]),dict(text='clear',bbox=[35,32,65,42])]
+    territories=[[0,0,140,32],[0,31,85,45]]
+    if separate_columns:
+        lower=[dict(w,bbox=[w['bbox'][0]+170,12,w['bbox'][2]+170,22])for w in lower]
+        territories[1]=[170,0,260,45]
+    b=block('Opening ending The clear'if separate_columns else'Opening The clear ending',bbox=(0,0,1000,1000))
+    result=vp._owned_block_words(b,{'blocks':[b]},[first,final,*lower],Display(),{'b1':territories},ordered=True)
+    assert [w['text']for w in result]==b['text'].split()
+
+
+def test_native_print_at_a_partial_row_boundary_keeps_its_order_and_ink_extent(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    monkeypatch.setattr(pa,'read_crop',lambda *args:[])
+    printed='The clear sample stays readable. Careful readers keep every word.'
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=400,height=250)
+        page.insert_text((30,60),'The clear sample stays readable.',fontsize=12)
+        page.insert_text((30,90),'Careful readers keep every word.',fontsize=12)
+        raw=page.get_text('words')
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in raw]
+        last=source[-1]['bbox']
+        territories=[[20,30,350,83],[20,84,last[0]-1,100]]
+        body,record=vp.compile_page({'blocks':[block(printed,bbox=(0,0,1000,1000))]},source,
+            SourceDisplay(doc,0),0,Package(),{},pixel_words=[],regions={'b1':territories},
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    own=record['blocks'][0]
+    assert own['published_tokens']==printed.split()
+    assert own['marked']==[]
+    assert any(b[0]<=last[0] and b[1]<=last[1] and b[2]>=last[2] and b[3]>=last[3]
+               for b in own['source_regions']), 'Stored native evidence must contain the actual last word ink'
+
+
+@pytest.mark.parametrize('wrapped',[True,False])
+def test_known_native_wrap_join_is_formatting_not_a_word_correction(tmp_path,monkeypatch,wrapped):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    monkeypatch.setattr(pa,'read_crop',lambda *args:[])
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=400,height=250)
+        page.insert_text((30,60),'Please read care-',fontsize=12)
+        x=30 if wrapped else page.get_text('words')[-1][2]+5
+        y=90 if wrapped else 60
+        page.insert_text((x,y),'fully.',fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        _,record=vp.compile_page({'blocks':[block('Please read carefully.',bbox=(0,0,1000,1000))]},source,
+            SourceDisplay(doc,0),0,Package(),{},pixel_words=[],
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    own=record['blocks'][0]
+    assert own['published_tokens']==('Please read carefully.'.split()if wrapped else'Please read care- fully.'.split())
+    if wrapped:assert own['marked']==[], 'Conserved letters joined across a printed line break are not a model rewrite'
+    else:assert own['marked'], 'A real same-line space cannot be removed as a line-wrap normalization'

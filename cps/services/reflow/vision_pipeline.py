@@ -389,6 +389,39 @@ def _native_lexical_view(display,words,marker_prefixes=()):
     return result
 
 
+def _native_wrap_view(words,tokens):
+    """Conserve native letters across a geometrically proved line-end wrap."""
+    from difflib import SequenceMatcher
+    proposed=[t for t in tokens if not t.startswith('<n:')]
+    key=vision_reading.normalized
+    changes={}
+    for kind,a,z,b,y in SequenceMatcher(None,[key(w['text'])for w in words],
+                                      [key(t)for t in proposed],autojunk=False).get_opcodes():
+        if kind!='replace' or z-a!=2 or y-b!=1:continue
+        left,right=words[a:z];x,q=left['bbox'],right['bbox']
+        height=min(x[3]-x[1],q[3]-q[1])
+        joined=left['text'][:-1]+right['text']
+        if (left['text'].endswith('-') and key(joined)==key(proposed[b])
+                and (q[1]+q[3]-x[1]-x[3])/2>height*.5 and q[0]<=x[0]+height*.5):
+            changes[a]=dict(left,text=joined,bbox=vision_reading.union([x,q]),
+                native_parts=[dict(text=w['text'],bbox=w['bbox'])for w in (left,right)])
+    return [changes[i]if i in changes else word for i,word in enumerate(words)if i-1 not in changes]
+
+
+def _native_ink_regions(territories,words):
+    """Cover only already-owned, positively proved native word components."""
+    boxes=[list(box)for box in territories]
+    for word in words:
+        for part in word.get('native_parts',[word]):
+            ink=part['bbox']
+            if any(b[0]<=ink[0] and b[1]<=ink[1] and b[2]>=ink[2] and b[3]>=ink[3]for b in boxes):continue
+            enlarged=[vision_reading.union([box,ink])for box in boxes]
+            index=min(range(len(boxes)),key=lambda i:(enlarged[i][2]-enlarged[i][0])*(enlarged[i][3]-enlarged[i][1])-
+                      (boxes[i][2]-boxes[i][0])*(boxes[i][3]-boxes[i][1]))
+            boxes[index]=enlarged[index]
+    return boxes
+
+
 def _word_disclosure_image(package,name,display,clip,parts=None):
     if not parts:
         if hasattr(package,'disclosure_image'):package.disclosure_image(name,display,clip)
@@ -420,7 +453,7 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
         x=(word['bbox'][0]+word['bbox'][2])/2
         y=(word['bbox'][1]+word['bbox'][3])/2
         return box[0]<=x<=box[2] and box[1]<=y<=box[3]
-    seen=set();result=[]
+    seen=set();result=[];ordered_groups=[]
     for territory in territories:
         local=[]
         for word in owned_words(items,territory):
@@ -446,7 +479,21 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
                     if other['id']!=block['id'] and other['role'] in ('footnote','running_head','folio')
                     for box in (regions or {}).get(other['id'],[block_rect(other,display)])):continue
             if id(word) not in seen:local.append(word);seen.add(id(word))
-        result.extend(_pixel_line_order(local) if ordered else local)
+        if not ordered:result.extend(local)
+        elif local:
+            import statistics
+            prior=ordered_groups[-1][0] if ordered_groups else None
+            height=statistics.median(w['bbox'][3]-w['bbox'][1]for w in local)
+            overlap=(min(prior[2],territory[2])-max(prior[0],territory[0]) if prior else 0)
+            same_column=(prior is not None and overlap>=.5*min(prior[2]-prior[0],territory[2]-territory[0])
+                         and prior[1]<=territory[1]<=prior[3]+2*height)
+            # Rounding can admit the last word of a split row through the first
+            # territory. Order the connected column as one occurrence inventory;
+            # a following column keeps its supplied reading-flow position.
+            if same_column:
+                ordered_groups[-1][0]=territory;ordered_groups[-1][1].extend(local)
+            else:ordered_groups.append([territory,list(local)])
+    if ordered:result=[word for _,group in ordered_groups for word in _pixel_line_order(group)]
     if block['role']=='heading' and result and body_owners:
         # A run-in heading can share a physical row with the following
         # paragraph. Its broad rectangle must not let a damaged recognition
@@ -1773,6 +1820,8 @@ def _lexical_marker_view(tokens,source,proofs):
     if proofs:
         for word in source:
             if not re.fullmatch(r'[0-9*†‡§¶]+',word['text']):continue
+            if word.get('native_reference_ink'):
+                raised.append(word);continue
             box=word['bbox'];height=max(.1,box[3]-box[1])
             key=lambda text:re.sub(r'[^a-z]','',vision_reading.normalized(text).casefold())
             before={key(tokens[i-1])for i in proofs if i>0}
@@ -2282,7 +2331,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 raise _DisclosureQualityRejection('Aligned reading has no admitted source or reader inventory')
             # Decide lexical disagreements against an independently recognized
             # upright crop before rendering any live text or disclosure note.
-            adjudication=None;witness=None;legacy_native_words=[]
+            adjudication=None;witness=None;legacy_native_words=[];native_geometry=None
             if note_context and note_context.get('cache') and not local_ocr:
                 from . import pixel_adjudication
                 with unit_recovery.guard(pno,'pixel_adjudication',block=bid):
@@ -2293,6 +2342,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     legacy_native_words=[w for w,physical_word in zip(local,native_occurrences)if unproved_legacy_word(display.page,physical_word)]
                     native_print_words=[w for w,proved in zip(local,native_proof)if proved]
                     source_print=bool(local) and all(native_proof)
+                    if source_print:territories=_native_ink_regions(territories,local)
                     witness=(pixel_adjudication.CropWitness([dict(w,confidence=100)for w in local]) if source_print else
                         pixel_adjudication.read_crop(display,territories,Path(note_context['cache'])/'adjudication'))
                     from difflib import SequenceMatcher
@@ -2323,6 +2373,13 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             first_tokens,baseline=_lexical_marker_view(first_tokens,baseline,physical)
                             _,witness=_lexical_marker_view(first_tokens,witness,physical)
                             _,marker_corroboration=_lexical_marker_view(first_tokens,optical_local,physical)
+                        if source_print:
+                            native_geometry=list(baseline)
+                            normalized_baseline=_native_wrap_view(baseline,first_tokens)
+                            if normalized_baseline!=baseline:
+                                baseline=normalized_baseline;native_print_words=list(baseline)
+                                witness=pixel_adjudication.CropWitness([dict(w,confidence=100)for w in baseline])
+                                result['guard'].append(dict(kind='native_line_wrap_normalization'))
                         # Conservation failure and interpolated alignment are
                         # block-level routing evidence, not reader uncertainty in
                         # every neighboring word. Actual lexical alternatives
@@ -2709,14 +2766,16 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 asides.append((bid,f'<aside id="v4-note-{pno}-{bid}" class="footnote" epub:type="footnote"><p>{label_html} {text}</p>'))
             elif role=='caption':body.append(f'<p class="caption">{text}</p>')
             else:body.append(html)
-            printed=owned_words(optical_local,territories[0])
+            geometry_words=native_geometry if native_geometry is not None else optical_local
+            geometry_rows=_pixel_row_ids(geometry_words) if native_geometry is not None else pixel_rows
+            printed=owned_words(geometry_words,territories[0])
             rows=_pixel_lines(printed)
             # Column skew far below the opening is not a paragraph indent. Compare
             # the opening with nearby subsequent line starts in its own territory.
             import statistics
             opening_left=(statistics.median(min(w['bbox'][0] for w in row) for row in rows[1:4])
                           if len(rows)>1 else None)
-            printed_head,printed_tail=_published_pixel_edges(result['tokens'],optical_local)
+            printed_head,printed_tail=_published_pixel_edges(result['tokens'],geometry_words)
             head_variant=None
             visible=[t for t in result['tokens'] if not t.startswith('<n:')]
             if printed_head is None and visible and optical_local:
@@ -2751,17 +2810,17 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     art_gap={'object':art['id'],'bbox':bound}
             alignment.append(dict(id=bid,role=role,bbox=box,source_regions=territories,
                 source_rows=[vision_reading.union([w['bbox'] for w in row])
-                             for territory in territories for row in _pixel_lines(owned_words(optical_local,territory))],
+                             for territory in territories for row in _pixel_lines(owned_words(geometry_words,territory))],
                 first_line_x=min((w['bbox'][0] for w in rows[0]),default=None) if rows else None,
                 opening_column_left=opening_left,
                 printed_tail=printed_tail['text'] if printed_tail is not None else None,
                 printed_head=printed_head['text'] if printed_head is not None else None,
                 printed_tail_box=printed_tail['bbox'] if printed_tail is not None else None,
                 printed_head_box=printed_head['bbox'] if printed_head is not None else None,
-                printed_tail_row=pixel_rows.get(id(printed_tail.get('_source_word',printed_tail))) if printed_tail is not None else None,
-                printed_head_row=pixel_rows.get(id(printed_head.get('_source_word',printed_head))) if printed_head is not None else None,
-                physical_head=(dict(text=optical_local[0]['text'],bbox=optical_local[0]['bbox']) if optical_local else None),
-                physical_tail=(dict(text=optical_local[-1]['text'],bbox=optical_local[-1]['bbox']) if optical_local else None),
+                printed_tail_row=geometry_rows.get(id(printed_tail.get('_source_word',printed_tail))) if printed_tail is not None else None,
+                printed_head_row=geometry_rows.get(id(printed_head.get('_source_word',printed_head))) if printed_head is not None else None,
+                physical_head=(dict(text=geometry_words[0]['text'],bbox=geometry_words[0]['bbox']) if geometry_words else None),
+                physical_tail=(dict(text=geometry_words[-1]['text'],bbox=geometry_words[-1]['bbox']) if geometry_words else None),
                 disputed_head_prefix=head_variant,source_art_gap=art_gap,
                 punctuation_source_anchors=[dict(source_word_index=i,
                     lexical_whitespace_token_index=j,source_bbox=optical_evidence[i]['bbox'])
