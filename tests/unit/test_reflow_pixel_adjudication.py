@@ -1827,3 +1827,16 @@ def test_unmapped_native_word_ink_keeps_its_separately_proved_note_action(tmp_pa
     assert '<sup>1</sup>'in body
     assert next(iter(images.values()))['bbox'][2]<=label[0]+1e-3
     assert vp._seam_text(re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',body))=='not 1'
+
+
+def test_mapped_embedded_font_aliases_do_not_lose_native_character_authority():
+    import pymupdf
+    from cps.services.reflow import native_text
+    assert native_text._face_authority({'Embedded Text Face Regular':True},'EmbeddedTextFace-Regular')
+    assert not native_text._face_authority({'Embedded Text Face Regular':True,'EmbeddedTextFace-Regular':False},'Embedded Text Face Regular')
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=300,height=200)
+        page.insert_font(fontname='embedded',fontbuffer=pymupdf.Font('helv').buffer)
+        page.insert_text((30,60),'clear sample',fontname='embedded')
+        words=[dict(text=w[4],bbox=list(w[:4]))for w in page.get_text('words')]
+        assert native_text.drawn_word_authority(page,words)

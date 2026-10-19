@@ -53,10 +53,14 @@ def _text_font_authorities(page):
 
 
 def _face_authority(faces,name):
-    if name in faces:return faces[name]
-    # MuPDF may abbreviate an embedded PostScript face name in text traces.
-    # Only a long, unambiguous prefix of mapped/standard resources is usable.
-    matches=[value for key,value in faces.items()if len(name)>=15 and key.startswith(name)]
+    # Embedded resource names and PostScript trace names may differ only in
+    # separators. Every colliding resource must have the same reliable map.
+    canonical=lambda value:re.sub(r'[^a-z0-9]','',value.casefold())
+    name=canonical(name)
+    matches=[value for key,value in faces.items()if canonical(key)==name]
+    if matches:return all(matches)
+    # MuPDF may also abbreviate an embedded PostScript face in text traces.
+    matches=[value for key,value in faces.items()if len(name)>=15 and canonical(key).startswith(name)]
     return bool(matches) and all(matches)
 
 
