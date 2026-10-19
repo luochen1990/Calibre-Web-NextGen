@@ -70,6 +70,25 @@ def unproved_legacy_word(page,word):
         for trace in page.get_texttrace())
 
 
+def word_prefix_ink(page,word,suffix):
+    """Locate original prefix ink without copying a separately proved action.
+
+    Exact character order binds geometry only; it does not certify the custom
+    font's decoded spelling. Ambiguous or transformed character inventories
+    decline this cut rather than duplicate or delete a reference label.
+    """
+    box=word['bbox']
+    chars=sorted([c for trace in page.get_texttrace()for c in trace.get('chars',())
+        if c[0]>32 and box[0]<= (c[3][0]+c[3][2])/2 <=box[2] and
+        box[1]<= (c[3][1]+c[3][3])/2 <=box[3]],key=lambda c:c[2][0])
+    text=''.join(chr(c[0])for c in chars)
+    if not suffix or text!=word['text'] or not text.endswith(suffix) or len(text)<=len(suffix):return None
+    def bounds(group):
+        return (min(c[3][0]for c in group),min(c[3][1]for c in group),
+            max(c[3][2]for c in group),max(c[3][3]for c in group))
+    return bounds(chars[:-len(suffix)]),bounds(chars[-len(suffix):])
+
+
 def drawn_word_authority(page, words):
     """Every occurrence must have reliable, visible native character proof."""
     return bool(words) and all(drawn_word_authorities(page,words))

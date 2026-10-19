@@ -4424,7 +4424,24 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                         status='UNRESOLVED',method='formatted_native_word_requires_typed_edit')
                 ident=f"v4-native-d-{page['pno']}-{record['id']}-{index}";origin='r-'+ident
                 src='images/'+ident+'.jpg';box=output_sources[index]['bbox']
+                retained_action='';label_box=None
+                if index in legacy:
+                    action=re.search(r'<a\b[^>]*class="noteref"[^>]*>.*?</a>',fragment[a:z],re.S)
+                    if action:
+                        from .native_text import word_prefix_ink
+                        physical_word=dict(output_sources[index],bbox=list(display.source_rect(box)*display.page.derotation_matrix))
+                        cut=word_prefix_ink(doc[page['pno']],physical_word,_seam_text(action[0]))
+                        if cut is None:
+                            raise ValueError('Unmapped glyph cannot be separated from its proved note action')
+                        box=list(display.reading_rect(cut[0]));label_box=display.reading_rect(cut[1])
+                        retained_action=action[0]
                 clip=extract.pymupdf.Rect(box);clip.x0-=2;clip.y0-=2;clip.x1+=2;clip.y1+=2;clip &= display.rect
+                if label_box is not None:
+                    if box[2]<=label_box.x0+1e-3:clip.x1=min(clip.x1,label_box.x0)
+                    elif box[0]>=label_box.x1-1e-3:clip.x0=max(clip.x0,label_box.x1)
+                    elif box[3]<=label_box.y0+1e-3:clip.y1=min(clip.y1,label_box.y0)
+                    elif box[1]>=label_box.y1-1e-3:clip.y0=max(clip.y0,label_box.y1)
+                    else:raise ValueError('Unmapped glyph overlaps its proved note action')
                 package.disclosure_image(src,display,clip)
                 images[src]=dict(page=page['pno'],bbox=list(clip),kind='vision_disclosure')
                 label='Pixel-verified correction' if decision['status']=='RESOLVED' else 'Unresolved source reading'
@@ -4437,7 +4454,7 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 legacy_ink=(decision['status']=='UNRESOLVED' and
                             index in legacy)
                 if legacy_ink:
-                    edits.append((a,z,f'<a class="source-word-image" href="#{ident}"><img src="{src}" alt="Unmapped printed glyph; inspect original"/></a>'))
+                    edits.append((a,z,f'<a class="source-word-image" href="#{ident}"><img src="{src}" alt="Unmapped printed glyph; inspect original"/></a>'+retained_action))
                     decision['source_image_only']=True
                 elif chosen!=tokens[index]:edits.append((a,z,formatted if formatted is not None else escape(chosen)))
                 # Add the control after any enclosing inline action closes;

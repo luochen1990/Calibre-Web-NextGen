@@ -1802,3 +1802,28 @@ def test_partial_image_overpaint_cannot_borrow_an_uncovered_neighbor_trace(cover
         box=pymupdf.Rect(words[1]['bbox']);box.x1=box.x0+box.width*coverage
         page.insert_image(box,stream=picture.getvalue())
         assert native_text.drawn_word_authorities(page,words)==[True,False]
+
+
+def test_unmapped_native_word_ink_keeps_its_separately_proved_note_action(tmp_path,monkeypatch):
+    import pymupdf,re
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    class Package:
+        def disclosure_image(self,*args):pass
+    monkeypatch.setattr(pa,'read_crop',lambda *args:[])
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=300,height=200)
+        leaf.insert_text((30,70),'not',fontsize=12)
+        leaf.insert_text((70,70),'w1',fontname='cour',fontsize=12)
+        xref=next(f[0]for f in leaf.get_fonts()if f[3]=='Courier')
+        doc.xref_set_key(xref,'BaseFont','/CustomMarks');leaf=doc.reload_page(leaf)
+        label=next(c[3]for t in leaf.get_texttrace()for c in t['chars']if c[0]==ord('1'))
+        page=dict(pno=0,body=['<p>not w<a id="origin" class="noteref" href="#note"><sup>1</sup></a></p>'],asides=[])
+        images={}
+        vp._audit_native_pixels(doc,page,[dict(id='native-0',role='body',source_regions=[[25,55,110,85]])],tmp_path,Package(),images)
+    body=page['body'][0]
+    assert body.count('id="origin"')==1
+    assert body.count('href="#note"')==1
+    assert body.count('class="source-word-image"')==1
+    assert '<sup>1</sup>'in body
+    assert next(iter(images.values()))['bbox'][2]<=label[0]+1e-3
+    assert vp._seam_text(re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',body))=='not 1'
