@@ -1478,3 +1478,41 @@ def test_native_pixel_abort_discloses_only_its_unit_and_keeps_siblings_and_later
     units=report['pages'][0]['degraded_units']
     assert len(units)==1 and units[0]['block'] is not None
     assert units[0]['reason']=='Synthetic native crop recognition failure'
+
+
+@pytest.mark.parametrize('failure', [None, 'weak', 'different', 'distant', 'unavailable'])
+def test_resampled_pixels_settle_only_the_same_supported_model_occurrence(failure):
+    from cps.services.reflow import pixel_adjudication as pa
+    source = words('The claar sample remains readable today.')
+    model = 'The clear sample remains readable today.'.split()
+    witness = pa.CropWitness(words('The clear sample remains readable today.', 39))
+    views = [words('The clear sample remains readable today.', 96),
+             words('The clear sample remains readable today.', 95)]
+    if failure == 'weak':
+        views[1][1]['confidence'] = 84
+    elif failure == 'different':
+        views[1][1]['text'] = 'claar'
+    elif failure == 'distant':
+        for word in views[1]:
+            word['bbox'] = [v + 200 for v in word['bbox']]
+    elif failure == 'unavailable':
+        views = []
+    witness.resampled = lambda: views
+    result = adjudicate(model, source, witness)
+    assert result['tokens'] == model
+    assert result['marked'] == {1}, 'A model correction always retains its source mark.'
+    decision = result['word_notes'][1]
+    assert decision['status'] == ('RESOLVED' if failure is None else 'UNRESOLVED')
+    if failure is None:
+        assert decision['source'] == ['claar'] and decision['chosen'] == ['clear']
+        assert decision['method'] == 'corroborated_resampled_pixel_readings'
+
+
+def test_english_resampling_cannot_certify_a_changed_accent():
+    from cps.services.reflow import pixel_adjudication as pa
+    source = words('Please read cạlm beside the window.')
+    witness = pa.CropWitness(words('Please read calm beside the window.', 39))
+    witness.resampled = lambda: [words('Please read calm beside the window.'),
+                                 words('Please read calm beside the window.')]
+    result = adjudicate('Please read calm beside the window.'.split(), source, witness)
+    assert result['word_notes'][2]['status'] == 'UNRESOLVED'

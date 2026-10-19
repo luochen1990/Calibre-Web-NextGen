@@ -106,9 +106,10 @@ def _terminal_word_view(model, words):
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
         else:result.append(word)
-    if hasattr(words,'alternates'):
-        result=CropWitness(result);result.alternates=words.alternates
-        if hasattr(words,'mark_absence'):result.mark_absence=words.mark_absence
+    if any(hasattr(words,name) for name in ('alternates','resampled')):
+        result=CropWitness(result)
+        for name in ('alternates','resampled','mark_absence'):
+            if hasattr(words,name):setattr(result,name,getattr(words,name))
     return result
 
 
@@ -247,16 +248,19 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             and placement(proposed[b]).startswith(placement(source_tokens[a]))
             and len(placement(proposed[b]))>len(placement(source_tokens[a])))
         if wrapped or partial_wrap:supported=[];boundary=None
-        alternate=None
+        alternate=None;resampled=None
         if len(supported)!=1 and z-a==y-b==1 and not partial_wrap:
-            alternate=_alternate_choice(source,a,witness,proposed[b])
-            if alternate:supported=[('alternate',[alternate['text']],[alternate])]
+            resampled=_resampled_model_choice(source,a,witness,proposed[b])
+            if resampled:supported=[('resampled',[resampled['text']],[resampled])]
+            else:
+                alternate=_alternate_choice(source,a,witness,proposed[b])
+                if alternate:supported=[('alternate',[alternate['text']],[alternate])]
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
             boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or not proposed[b:y] else ('model',proposed[b:y],[]))
         record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=list(literal),
                     status='RESOLVED' if resolved else 'UNRESOLVED',
-                    method=('two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
+                    method=('corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
                     source_range=[a,z],model_range=[b,y])
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
@@ -371,6 +375,15 @@ def read_crop(display, regions, cache):
                 return [_read_crop(display,frame,cache,language='LatinRaw',scale=scale,tessdata=directory)
                         for frame in frames for scale in (base,base*1.25)]
             except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
+        @lru_cache(maxsize=1)
+        def resampled():
+            # Upscaling a small raster can reduce recognition confidence.
+            # Two smaller frames may corroborate the model's own spelling;
+            # neither frame alone can certify it or introduce another word.
+            try:
+                return [_read_crop(display,regions,cache,scale=scale) for scale in (1.5,2)]
+            except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
+        result.resampled=resampled
         result.alternates=alternatives
         result.mark_absence=lambda word:below_dot_absent(display,word)
         return result
@@ -656,6 +669,24 @@ def _verified_latin_directory(roots):
         for path in (Path(root)/'LatinRaw.traineddata',Path(root)/'tessdata/LatinRaw.traineddata'):
             if path.is_file() and hashlib.sha256(path.read_bytes()).digest()==_latin_digest():return path.parent
     return None
+
+
+def _resampled_model_choice(source,index,witness,model_word):
+    """Corroborate one model spelling without trusting an enlarged OCR guess.
+
+    The primary crop must already read that spelling at the same occurrence.
+    Two additional bounded frames must independently print it with confidence
+    and a common neighboring anchor. English cannot establish accent changes.
+    The caller retains the correction's source-linked mark after settlement.
+    """
+    reader=getattr(witness,'resampled',None)
+    if reader is None:return None
+    if any(c.isalpha() and not c.isascii() for c in source[index]['text']+model_word):return None
+    own=[w for w in witness if _complete_word_occurrence(source[index],w)]
+    if len(own)!=1 or _key(own[0]['text'])!=_key(model_word):return None
+    choice=_alternate_pair_choice(source,index,witness,model_word,reader())
+    if choice is None or _key(choice['text'])!=_key(model_word):return None
+    return choice
 
 
 def _alternate_choice(source,index,witness,model_word):
