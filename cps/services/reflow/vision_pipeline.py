@@ -4364,10 +4364,24 @@ def _native_seam_blocks(doc,book,pno,page):
                     fragment_sha256=hashlib.sha256(fragment.encode()).hexdigest(),continues_previous=False,continues_next=False,
                     source_regions=[],first_line_x=None,printed_head=None,printed_tail=None)
         element=candidates[0] if len(candidates)==1 else None
+        repeated_source=None
+        if len(candidates)>1:
+            # Factory order disambiguates repeated labels only with equal
+            # fragment/element counts and complete text inside the own box.
+            # Global row-major text can interleave columns or even fabricate a
+            # matching sequence from the tail of one cell and another's head.
+            positions=[i for i,part in enumerate(page['body']) if _seam_text(part)==text]
+            if len(positions)==len(candidates):
+                proposed=candidates[positions.index(index)]
+                local=_pixel_line_order(owned_words(physical,proposed.bbox))
+                if compact(' '.join(w['text']for w in local))==compact(text):
+                    element=proposed;repeated_source=local
         occurrences=complete_occurrences(text)
-        owned=occurrences[0] if len(occurrences)==1 else []
+        owned=(repeated_source if repeated_source is not None else
+               occurrences[0] if len(occurrences)==1 and len(candidates)<=1 else [])
         record['native_occurrence_count']=len(occurrences)
-        binding='unique_complete_source_text' if owned else 'native_element_box'
+        binding=('factory_order_complete_local_source' if repeated_source is not None else
+                 'unique_complete_source_text' if owned else 'native_element_box')
         if not owned and element is not None:owned=owned_words(physical,element.bbox)
         if owned:
             owned=_pixel_line_order(owned)

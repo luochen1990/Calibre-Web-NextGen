@@ -2115,3 +2115,38 @@ def test_known_native_wrap_join_is_formatting_not_a_word_correction(tmp_path,mon
     assert own['published_tokens']==('Please read carefully.'.split()if wrapped else'Please read care- fully.'.split())
     if wrapped:assert own['marked']==[], 'Conserved letters joined across a printed line break are not a model rewrite'
     else:assert own['marked'], 'A real same-line space cannot be removed as a line-wrap normalization'
+
+
+@pytest.mark.parametrize('interleaving_tail',[True,False])
+@pytest.mark.parametrize('case',['complete','missing_fragment','wrong_box'])
+def test_repeated_native_column_labels_bind_only_complete_factory_occurrences(tmp_path,case,interleaving_tail):
+    import pymupdf
+    from cps.services.reflow import assemble,build_epub,vision_pipeline as vp
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=350,height=160)
+        columns=[(30,'Clear,','sample'),(120,'Other','label'),(220,'Clear,','sample')]
+        if interleaving_tail:columns.append((300,'Later','entry'))
+        for x,first,last in columns:
+            page.insert_text((x,70),first,fontsize=12)
+            page.insert_text((x,85),last,fontsize=12)
+        elements=[assemble.Element('p',runs=[('t','Clear, sample')],pno=0,bbox=[25,55,85,90]),
+                  assemble.Element('p',runs=[('t','Clear, sample')],pno=0,
+                    bbox=[115,55,180,90]if case=='wrong_box'else[215,55,280,90])]
+        book=assemble.Book(elements=elements,pages={0:elements})
+        native=build_epub._page_blocks({0:build_epub.page_fragment(book,0)})[0]
+        if case=='missing_fragment':native['body']=native['body'][:1]
+        original=list(native['body']);records=vp._native_seam_blocks(doc,book,0,native)
+        # Row-major text interleaves the three columns. Repeated factory text
+        # must bind its own proved element, not a global neighboring occurrence.
+        if interleaving_tail:assert all(r['native_occurrence_count']==0 for r in records)
+        if case=='complete':
+            assert [r['source_regions']for r in records]==[[elements[0].bbox],[elements[1].bbox]]
+            vp._audit_native_pixels(doc,native,records,tmp_path,object(),{})
+            assert native['body']==original
+            assert all(r['published_tokens']==['Clear,','sample']for r in records)
+            assert all(not r.get('marked')and not r.get('degraded_source_context')for r in records)
+        elif case=='missing_fragment':
+            assert records[0]['source_regions']==[], 'Unequal factory/fragment counts cannot assign a repeated occurrence'
+        else:
+            assert records[0]['source_regions']==[elements[0].bbox]
+            assert records[1]['source_regions']==[], 'An element box with different printed words cannot earn occurrence proof'
