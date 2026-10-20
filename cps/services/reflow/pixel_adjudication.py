@@ -507,6 +507,15 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             if not word_choice and not resampled:
                 alternate=_alternate_choice(source,a,witness,proposed[b])
                 if alternate:supported=[('alternate',[alternate['text']],[alternate])]
+        # Language networks can share a joined-stroke confusion even on the
+        # complete word: rn and m occupy the same physical extent. A later crop
+        # cannot certify that nonword substitution from consensus alone.
+        # This does not select the dictionary spelling: retain the printed ink.
+        if (z-a==y-b==1 and len(supported)==1 and len(supported[0][1])==1
+            and _dictionary_regression(proposed[b],supported[0][1][0])
+            and _key(proposed[b]).casefold().replace('rn','m')==
+                _key(supported[0][1][0]).casefold().replace('rn','m')):
+            lexical_conflict=True;supported=[];word_choice=None;resampled=None;alternate=None
         if ordinal_conflict:supported=[choice for choice in supported if len(choice[1])==1 and _ordinal(choice[1][0])]
         quote_conflict=(z-a==y-b==1 and _quote_conflict(source_tokens[a],proposed[b])
             and (len(supported)!=1 or len(supported[0][1])!=1

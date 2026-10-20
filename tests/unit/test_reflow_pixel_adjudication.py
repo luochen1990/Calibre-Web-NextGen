@@ -3326,3 +3326,22 @@ def test_a_first_readers_explicit_doubt_is_not_cleared_by_line_division_formatti
     witness=pa.CropWitness();witness.model_reading=True
     result=pa.adjudicate(['continuation'],source,witness,uncertain={0})
     assert result['marked']and result['word_notes'][0]['status']=='UNRESOLVED'
+
+
+@pytest.mark.parametrize('candidate',['moming','buming'])
+def test_agreement_between_word_crops_cannot_bypass_nonword_safety(candidate):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    printed='morning' if candidate=='moming' else 'burning'
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=240,height=100)
+        page.insert_text((20,50),'Read the '+printed+' sample now.',fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+    source[2]['text']=candidate
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda word:[[dict(w)for w in source],[dict(w)for w in source]]
+    result=pa.adjudicate(('Read the '+printed+' sample now.').split(),source,witness)
+    note=result['word_notes'][2]
+    assert note['status']=='UNRESOLVED','Repeated optical shape errors cannot certify a changed nonword'
+    assert note.get('source_image_only'),'The dictionary alone cannot prove either spelling against ink'
+    assert result['marked']=={2}
