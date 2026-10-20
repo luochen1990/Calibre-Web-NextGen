@@ -3516,3 +3516,84 @@ def test_omitted_initialism_dots_need_positive_print_evidence(
             assert note.get('source_image_only')
             assert note['method']=='unproved_initialism_punctuation'
         else:assert result['tokens'][2]==printed
+
+
+@pytest.mark.parametrize('printed,model,candidate,native,status',[
+    ('±','±','+',False,'UNRESOLVED'),
+    ('x±','x±','x+',False,'UNRESOLVED'),
+    ('⊕','⊕','+',False,'UNRESOLVED'),
+    ('+','±','+',True,'RESOLVED'),
+    ('±','+','±',False,'UNRESOLVED'),
+])
+def test_unchanged_alphanumeric_part_does_not_authorize_a_different_math_glyph(
+        printed,model,candidate,native,status):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the '+candidate+' sample now')
+    # Synthetic printed glyph identity is independent of the simulated optical
+    # mistake. A native mapped occurrence retains its earlier authority path.
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda word:[[dict(word,text=candidate,confidence=99)]]*2
+    result=pa.adjudicate(('Read the '+model+' sample now').split(),source,witness,source_print=native)
+    if native:
+        assert result['tokens'][2]==printed
+        assert not result.get('word_notes',{}).get(2,{}).get('source_image_only')
+        return
+    note=result['word_notes'][2]
+    assert note['status']==status
+    assert result['marked']=={2}
+    if status=='UNRESOLVED':
+        assert note.get('source_image_only')
+        assert note['method']=='unproved_mathematical_symbol_identity'
+    else:assert result['tokens'][2]==printed
+
+
+@pytest.mark.parametrize('printed,cropped,scope_failure',[
+    ('grain',True,False),('rain',False,False),('grain',True,True),
+])
+def test_a_truncated_source_box_cannot_certify_deleting_a_complete_model_prefix(
+        tmp_path,printed,cropped,scope_failure):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    drawing=pymupdf.open();page=drawing.new_page(width=300,height=100)
+    page.insert_text((20,50),'Read the '+printed+' sample now',fontsize=12)
+    source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+    complete=list(source[2]['bbox']);source[2]['text']='rain'
+    if cropped:source[2]['bbox'][0]+=(complete[2]-complete[0])*.25
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda word:[[dict(word,text='rain',confidence=99)]]*2
+    # Independent print geometry supplies the full occurrence, rather than
+    # accepting the repeated recognition of its truncated tail as that proof.
+    witness.word_scope=lambda word:None if scope_failure else complete
+    result=pa.adjudicate('Read the grain sample now'.split(),source,witness)
+    note=result['word_notes'][2]
+    if cropped:
+        assert note['status']=='UNRESOLVED'
+        assert note.get('source_image_only')
+        assert note['method']=='unproved_complete_word_scope'
+        if not scope_failure:assert note['source_bbox']==complete
+    else:
+        assert result['tokens'][2]=='rain'
+        assert note['status']=='RESOLVED','Complete printed evidence can still remove an invented prefix'
+    assert result['marked']=={2}
+    drawing.close()
+
+
+def test_lazy_scope_reads_original_ink_and_survives_the_terminal_token_view(monkeypatch,tmp_path):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=200,height=100)
+        page.insert_text((60,50),'grain',fontsize=14)
+        word=page.get_text('words')[0]
+        clipped=dict(text='rain',bbox=list(word[:4]),confidence=99)
+        clipped['bbox'][0]+=(clipped['bbox'][2]-clipped['bbox'][0])*.25
+        monkeypatch.setattr(pa,'_read_crop',lambda *a,**k:[dict(clipped)])
+        witness=pa.read_crop(SourceDisplay(drawing,0),[clipped['bbox']],tmp_path)
+        before=list(clipped['bbox'])
+        scope=witness.word_scope(clipped)
+        assert scope is not None and scope[0]<before[0]-1
+        assert clipped['bbox']==before,'Measuring surrounding ink cannot mutate the original occurrence'
+        normalized=pa._terminal_word_view(['grain'],witness)
+        assert normalized.word_scope is witness.word_scope
+        assert normalized.word_scope(clipped)==scope

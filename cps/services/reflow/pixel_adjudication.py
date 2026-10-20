@@ -242,9 +242,9 @@ def _terminal_word_view(model, words):
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
         else:result.append(word)
-    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','model_reading','failure')):
+    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','word_scope','word_separation','model_reading','failure')):
         result=CropWitness(result)
-        for name in ('alternates','resampled','mark_absence','word_readings','model_reading','failure'):
+        for name in ('alternates','resampled','mark_absence','word_readings','word_scope','word_separation','model_reading','failure'):
             if hasattr(words,name):setattr(result,name,getattr(words,name))
     return result
 
@@ -285,8 +285,9 @@ def _letter_number_identity(value):
 def _symbol_identity_conflict(original,chosen):
     """A mathematical glyph cannot be certified as alphabetic/numeric text."""
     symbols=lambda value:{c for c in value if unicodedata.category(c)in('Sm','So')}
-    return (symbols(original)!=symbols(chosen)
-            and _letter_number_identity(original)!=_letter_number_identity(chosen))
+    a,b=symbols(original),symbols(chosen)
+    return (a!=b and (bool(a and b) or
+            _letter_number_identity(original)!=_letter_number_identity(chosen)))
 
 
 def _proved_wrap(source,model,witness,same_reading=False):
@@ -580,6 +581,18 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             # that change. Agreement with the first reading's quote identity,
             # however, can reject an extra quote invented by the source OCR.
             supported=[];boundary=None
+        word_scope_conflict=False;word_scope=None
+        scope_reader=getattr(witness,'word_scope',None)
+        if (scope_reader is not None and z-a==y-b==1 and len(supported)==1
+                and len(supported[0][1])==1):
+            first=_letter_number_identity(proposed[b]).casefold()
+            settled=_letter_number_identity(supported[0][1][0]).casefold()
+            shortening=(len(first)>len(settled)>=2 and
+                        (first.startswith(settled)or first.endswith(settled)))
+            if shortening:
+                word_scope=scope_reader(source[a])
+                word_scope_conflict=not _covers_ink_scope(supported[0][2],word_scope)
+                if word_scope_conflict:supported=[];boundary=None
         symbol_conflict=(z-a==y-b==1 and _symbol_identity_conflict(
             proposed[b],source_tokens[a]))
         if symbol_conflict:
@@ -589,7 +602,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
             and visible[b][0]not in pending and source[a].get('confidence',0)<85
-            and not(ordinal_conflict or quote_conflict or symbol_conflict or stroke_conflict or initialism_conflict or incomplete_ink or partial_wrap
+            and not(ordinal_conflict or quote_conflict or symbol_conflict or stroke_conflict or initialism_conflict or incomplete_ink or partial_wrap or word_scope_conflict
                     or _small_mark_conflict(source_tokens[a],proposed[b]))
             and not _optical_counterread(source[a],witness,proposed[b]))
         if retained_vision:
@@ -609,6 +622,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             elif lexical_conflict:record['method']='unproved_shared_network_nonword'
             elif symbol_conflict:record['method']='unproved_mathematical_symbol_identity'
             elif network_conflict:record['method']='unproved_shared_network_word'
+        if word_scope_conflict and not resolved:
+            record.update(source_image_only=True,
+                source_bbox=list(word_scope or source[a]['bbox']),
+                method='unproved_complete_word_scope')
         if incomplete_ink and not resolved:
             record.update(source_image_only=True,source_bbox=list(source[a]['bbox']),
                 method='incomplete_vertical_word_ink')
@@ -772,6 +789,11 @@ def read_crop(display, regions, cache):
                     for scale in (3,4,6)for language,data in networks)
                 return views
             except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
+        @lru_cache(maxsize=128)
+        def word_scope(bounds):
+            try:return _word_ink_scope(display,dict(bbox=bounds))
+            except (RuntimeError,OSError,ValueError,KeyError):return None
+        result.word_scope=lambda word:word_scope(tuple(word['bbox']))
         result.word_readings=lambda word:own_word(tuple(word['bbox']))
         result.mark_absence=lambda word:below_dot_absent(display,word)
         return result
@@ -779,6 +801,50 @@ def read_crop(display, regions, cache):
         result = CropWitness()
         result.failure = f'{type(error).__name__}: {error}'
         return result
+
+
+def _word_ink_scope(display,word):
+    """Bound the adjacent original ink before certifying a shortened word.
+
+    The recognizer's own box can already exclude a prefix. Measure a bounded
+    surrounding raster instead; nearby connected ink is evidence against that
+    box, never authority for a different spelling. Ambiguous/clipped territory
+    declines the proof rather than treating repeated tail recognition as whole.
+    """
+    from . import extract,vision_pixels
+    a=word['bbox'];height=a[3]-a[1];width=a[2]-a[0]
+    if not(0<height<=80 and 0<width<=200):return None
+    bounds=extract.pymupdf.Rect(a[0]-2*height,a[1]-.75*height,
+                               a[2]+2*height,a[3]+.75*height)&display.rect
+    pix=display.pixmap(bounds,scale=6,max_pixels=200_000)
+    picture,components=vision_pixels._word_ink_components(pix)
+    if not components:return None
+    sx=bounds.width/picture.width;sy=bounds.height/picture.height
+    boxes=[[bounds.x0+c[0]*sx,bounds.y0+c[1]*sy,
+            bounds.x0+c[2]*sx,bounds.y0+c[3]*sy]for c in components]
+    selected=[b for b in boxes if min(a[2],b[2])>max(a[0],b[0])
+              and min(a[3],b[3])>max(a[1],b[1])]
+    if not selected:return None
+    left=min(b[0]for b in selected);right=max(b[2]for b in selected)
+    for _ in range(len(boxes)):
+        adjacent=[b for b in boxes if b[0]<=right+max(1.5,.45*height)
+                  and b[2]>=left-max(1.5,.45*height)]
+        new_left=min(b[0]for b in adjacent);new_right=max(b[2]for b in adjacent)
+        if new_left==left and new_right==right:break
+        left,right=new_left,new_right
+    if left<=bounds.x0+sx or right>=bounds.x1-sx:return None
+    if right-left>2.5*width:return None
+    ink=[b for b in boxes if b[0]<=right and b[2]>=left]
+    return [left,min(b[1]for b in ink),right,max(b[3]for b in ink)]
+
+
+def _covers_ink_scope(evidence,scope):
+    if not evidence or scope is None:return False
+    boxes=[w['bbox']for w in evidence]
+    box=[min(b[0]for b in boxes),min(b[1]for b in boxes),
+         max(b[2]for b in boxes),max(b[3]for b in boxes)]
+    return (min(box[2],scope[2])-max(box[0],scope[0])>=.9*(scope[2]-scope[0])
+            and min(box[3],scope[3])-max(box[1],scope[1])>=.55*(scope[3]-scope[1]))
 
 
 def _read_crop(display, regions, cache, language='eng', scale=4, tessdata=None,psm=6):
