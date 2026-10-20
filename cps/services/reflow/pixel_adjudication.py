@@ -247,7 +247,7 @@ def _symbol_identity_conflict(original,chosen):
             and _letter_number_identity(original)!=_letter_number_identity(chosen))
 
 
-def _proved_wrap(source,model,witness):
+def _proved_wrap(source,model,witness,same_reading=False):
     """Conserve exact letters across a positively read printed division."""
     if not 2<=len(source)<=3:return None
     hyphens=('-', '\u00ad', '\u2010', '\u2011')
@@ -260,12 +260,19 @@ def _proved_wrap(source,model,witness):
         next_row=(0<=b[1]-a[3]<=3*height and b[0]<a[0])
         next_column=(b[0]>a[2]+2*height and b[3]<a[1]-2*height)
         if not(next_row or next_column):return None
-    evidence=[]
-    for word in source:
-        own=[w for w in witness if _complete_word_occurrence(word,w)]
-        if (len(own)!=1 or own[0].get('confidence',0)<90
-                or _key(own[0]['text'])!=_key(word['text'])):return None
-        evidence.append(own[0])
+    # The first pixel reading and strong original occurrences already agree
+    # on every letter and on the explicit line division. Joining that exact
+    # inventory is formatting, as in the equal-token branch; a weak additional
+    # crop does not manufacture a lexical disagreement. Weak originals still
+    # require the separate positive recognition below.
+    evidence=(list(source)if same_reading and not getattr(witness,'failure',None)
+              and all(w.get('confidence',0)>=90 for w in source)else [])
+    if not evidence:
+        for word in source:
+            own=[w for w in witness if _complete_word_occurrence(word,w)]
+            if (len(own)!=1 or own[0].get('confidence',0)<90
+                    or _key(own[0]['text'])!=_key(word['text'])):return None
+            evidence.append(own[0])
     if len({id(w)for w in evidence})!=len(evidence):return None
     boxes=[w['bbox']for w in evidence]
     return [min(b[0]for b in boxes),min(b[1]for b in boxes),
@@ -326,7 +333,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 chosen.append((word['text'],word['bbox'],note))
             if changed and a==z:changes.append((len(chosen),record,None))
             continue
-        wrap=(_proved_wrap(source[a:z],proposed[b],witness)
+        wrap=(_proved_wrap(source[a:z],proposed[b],witness,
+                same_reading=bool(getattr(witness,'model_reading',False) and not unresolved_source
+                    and not any(visible[i][0]in pending for i in range(b,y))))
               if kind!='equal'and y-b==1 else None)
         if wrap is not None:
             formatting.add(len(chosen));chosen.append((proposed[b],wrap,None));continue

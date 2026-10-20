@@ -3288,3 +3288,41 @@ def test_full_length_counterreading_in_a_padded_source_box_still_disputes_vision
     result=pa.adjudicate('Read the clear sample now.'.split(),source,witness)
     assert result['word_notes'][2]['status']=='UNRESOLVED'
     assert result['marked']=={2}
+
+
+@pytest.mark.parametrize('confidence',[40,99])
+@pytest.mark.parametrize('literal',['continuation','con-tinuation'])
+@pytest.mark.parametrize('secondary_failed',[False,True])
+def test_identical_strong_source_letters_at_a_printed_line_division_are_formatting(confidence,literal,secondary_failed):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    with pymupdf.open()as page_source:
+        page=page_source.new_page(width=240,height=100)
+        page.insert_text((130,35),'con-',fontsize=12)
+        page.insert_text((20,52),'tinuation',fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=confidence)for w in page.get_text('words')]
+        assert [w['text']for w in source]==['con-','tinuation']
+        witness=pa.CropWitness();witness.model_reading=True
+        if secondary_failed:witness.failure='Synthetic recognition failed'
+        result=pa.adjudicate([literal],source,witness)
+    assert result['tokens']==[literal]
+    if confidence==99 and not secondary_failed:
+        assert not result['marked'],'No lexical letter changed at this source-proven line division'
+        assert not result['word_notes']
+    else:assert result['marked'],'Weak original letters still need independent proof'
+
+
+def test_an_in_row_hyphen_is_not_an_end_of_line_normalization():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('con- tinuation')
+    result=pa.adjudicate(['continuation'],source,pa.CropWitness())
+    assert result['marked'],'A same-row source division cannot be joined on this rule'
+
+
+def test_a_first_readers_explicit_doubt_is_not_cleared_by_line_division_formatting():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('con- tinuation')
+    source[0]['bbox']=[100,20,130,32];source[1]['bbox']=[0,40,60,52]
+    witness=pa.CropWitness();witness.model_reading=True
+    result=pa.adjudicate(['continuation'],source,witness,uncertain={0})
+    assert result['marked']and result['word_notes'][0]['status']=='UNRESOLVED'
