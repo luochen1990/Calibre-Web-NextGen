@@ -3918,3 +3918,41 @@ def test_printed_spaces_settle_complete_model_words_without_neighbor_uncertainty
     else:
         assert result['marked'],'Absent space proof or explicit reader doubt remains disclosed'
         assert any(d['status']=='UNRESOLVED'for d in result['decisions'])
+
+
+def test_late_alphabet_candidate_cannot_invent_an_unobserved_internal_quote(monkeypatch):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:{'clear','cear'})
+    source=words('Read the Cear sample now.')
+    witness=pa.CropWitness([dict(w)for w in source])
+    altered=dict(source[2],text="C'ear",confidence=99)
+    witness.word_readings=lambda word:[[altered],[altered]]
+    result=pa.adjudicate('Read the Clear sample now.'.split(),source,witness)
+    assert result['tokens'][2]=='Clear'
+    note=result['word_notes'][2]
+    assert note['status']=='UNRESOLVED'and note['source_image_only']
+    assert note['method']=='unproved_quote_identity'
+    assert not any(d['status']=='RESOLVED'and d['chosen']==["C'ear"]for d in result['decisions'])
+
+
+@pytest.mark.parametrize('first,candidate,vocabulary,unproved',[
+    ('conem','concem',{'concern'},True),
+    ('gardcn','garden',{'garden'},False),
+    ('conem','concem',{'concem'},False),
+])
+def test_unfamiliar_joined_stroke_candidate_keeps_possible_unseen_letters_unresolved(monkeypatch,first,candidate,vocabulary,unproved):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:vocabulary)
+    source=words('Read the '+candidate+' sample now.')
+    witness=pa.CropWitness([dict(w)for w in source])
+    witness.word_readings=lambda word:[[source[2]],[source[2]]]
+    result=pa.adjudicate(('Read the '+first+' sample now.').split(),source,witness)
+    note=result['word_notes'][2]
+    if unproved:
+        assert result['tokens'][2]==first
+        assert note['status']=='UNRESOLVED'and note['source_image_only']
+        assert note['method']=='unproved_shared_stroke_identity'
+        assert result['tokens'][2]!='concern','The dictionary supplies no replacement letters'
+    else:
+        assert result['tokens'][2]==candidate
+        assert note['status']=='RESOLVED'and not note.get('source_image_only')

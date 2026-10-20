@@ -294,7 +294,15 @@ def _joined_stroke_conflict(original,chosen):
     # This veto retains original ink; it never chooses a dictionary spelling.
     eroded=(len(a)==len(b)and all(x==y or (x,y)in(
         ('e','c'),('f','l'),('y','v'),('w','v'))for x,y in zip(a,b)))
-    return joined or eroded
+    # Both first guesses may already contain the same fused glyph. An
+    # unfamiliar changed candidate with a known rn alternative is not settled
+    # merely because two alphabet networks repeat m. The lexicon only vetoes
+    # certification; it never supplies those missing letters to the output.
+    from .text_quality import english_lexicon
+    vocabulary=english_lexicon()
+    unseen_join=(b not in vocabulary and any(
+        b[:i]+'rn'+b[i+1:]in vocabulary for i,c in enumerate(b)if c=='m'))
+    return joined or eroded or unseen_join
 
 
 def _letter_number_identity(value):
@@ -618,6 +626,14 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             source_tokens[a],proposed[b],supported[0][1][0]
             if len(supported)==1 and len(supported[0][1])==1 else None))
         if initialism_conflict:supported=[];boundary=None
+        if (z-a==y-b==1 and len(supported)==1 and len(supported[0][1])==1
+                and any((c in ('"',"'")or unicodedata.category(c)in('Pi','Pf'))
+                        and c not in _key(source_tokens[a])+_key(proposed[b])
+                        for c in _key(supported[0][1][0]))):
+            # A late alphabet candidate can turn a damaged capital stroke into
+            # a novel quote. Compare its punctuation after every candidate path,
+            # even when neither original reading contained that invented mark.
+            quote_conflict=True
         if quote_conflict:
             # Agreement between OCR settings can repeat a missing apostrophe or
             # collapse the first reading's double quote. It cannot authorize
