@@ -4537,7 +4537,14 @@ def _native_seam_blocks(doc,book,pno,page):
         # and a drawn raised suffix. Match those exact physical components
         # before allowing a stale first-line rectangle to truncate its owner.
         views=[(physical,False),(_native_wrap_view(lexical,text.split()),False)]
-        if (element is not None and not book.has_source_navigation(pno)
+        positions={i for i,item in enumerate(elements)if item is element}
+        own_navigation=any((link['pno']==pno and link.get('source_element')in positions)or
+                           (link['dest_page']==pno and link.get('dest_element')in positions)
+                           for link in navigation)
+        # A link on another element (including an incoming page link) cannot
+        # hide these complete original cells. Keep the semantic-action guard
+        # for every source/destination item belonging to this actual element.
+        if (element is not None and not own_navigation
                 and all(run[0]in('t','raised')for run in element.runs)):
             views.append((stream,True))
         found={}

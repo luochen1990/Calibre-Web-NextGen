@@ -2758,3 +2758,57 @@ def test_native_note_lexical_copy_keeps_its_original_occurrence_when_rotated(tmp
         spans=[node for node in tree.iter()if node.get('data-source-block')=='native-note-0']
         assert len(spans)==1 and ''.join(spans[0].itertext())=='1'
         assert json.loads(spans[0].get('data-source-regions'))==[expected]
+
+
+@pytest.mark.parametrize('link_scope',['none','incoming_other','outgoing_other','incoming_own','outgoing_own','unresolved_other'])
+def test_complete_native_cells_are_not_blocked_by_another_elements_navigation(tmp_path,monkeypatch,link_scope):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,assemble,build_epub,pixel_adjudication as pa
+    text='Upper sample continues quietly. Lower example remains readable.'
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=250)
+        leaf.insert_text((25,35),'Outside',fontsize=12)
+        leaf.insert_text((25,80),'Upper sample',fontsize=12)
+        leaf.insert_text((25,100),'continues quietly.',fontsize=12)
+        leaf.insert_text((240,80),'Lower example',fontsize=12)
+        leaf.insert_text((240,100),'remains readable.',fontsize=12)
+        leaf.insert_text((160,92),'Separate',fontsize=10)
+        doc.new_page(width=400,height=250).insert_text((25,35),'Outside',fontsize=12)
+        leaf=doc[0]
+        table=assemble.Element('p',runs=[['t',text]],pno=0,bbox=[20,64,380,84])
+        other=assemble.Element('p',runs=[['t','Outside']],pno=0,bbox=[20,19,150,39])
+        link=dict(id='source-target',status='resolved',pno=0,source_element=1,source_item=None,
+            source_offset=0,source_extent=7,dest_page=1,dest_element=0,dest_item=None,dest_offset=0)
+        if link_scope.startswith('incoming'):
+            link.update(pno=1,source_element=0,dest_page=0,dest_element=0 if link_scope.endswith('own')else 1)
+        elif link_scope=='outgoing_own':link.update(source_element=0,source_extent=5)
+        elif link_scope=='unresolved_other':link['status']='unresolved'
+        navigation=[]if link_scope=='none'else[link]
+        target=assemble.Element('p',runs=[['t','Outside']],pno=1,bbox=[20,19,150,39])
+        book=assemble.Book(pages={0:[table,other],1:[target]},elements=[table,other,target],source_navigation=navigation)
+        if navigation:
+            source=doc[link['pno']];wanted='Upper'if link_scope=='outgoing_own'else'Outside'
+            word=next(w for w in source.get_text('words')if w[4]==wanted)
+            source.insert_link(dict(kind=pymupdf.LINK_GOTO,**{'from':pymupdf.Rect(word[:4])},
+                page=link['dest_page'],to=pymupdf.Point(25,80 if link_scope=='incoming_own'else 35)))
+        active=[n for n in navigation if n['status']=='resolved']
+        fragments=['<p>'+build_epub._nav_runs_html(e.runs,
+            build_epub._source_nav_marks(active,0,index,None),set(),{},set())+'</p>'
+            for index,e in enumerate((table,other))]
+        page=dict(pno=0,body=list(fragments),asides=[])
+        records=vp._native_seam_blocks(doc,book,0,page)
+        if link_scope in('incoming_own','outgoing_own'):
+            assert records[0].get('native_geometry_binding')!='unique_complete_source_text'
+            return
+        assert records[0]['native_geometry_binding']=='unique_complete_source_text'
+        assert records[0]['native_occurrence_count']==1
+        monkeypatch.setattr(pa,'read_crop',lambda *args:pytest.fail('Complete original native cells require no optical spelling'))
+        vp._audit_native_pixels(doc,page,records,tmp_path,object(),{})
+        assert records[0]['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
+        assert records[0]['published_tokens']==text.split()and not records[0].get('marked')
+        assert page['body']==fragments
+        words=[dict(text=w[4],bbox=list(w[:4]))for w in leaf.get_text('words')]
+        selected=[w['text']for w in words if any(vp.owned_words([w],box)for box in records[0]['source_regions'])]
+        assert selected==text.split()and 'Separate'not in selected
+        if link_scope=='outgoing_other':assert page['body'][1].count('<a href="#source-target">Outside</a>')==1
+        if link_scope=='incoming_other':assert page['body'][1].count('<span id="source-target"></span>')==1
