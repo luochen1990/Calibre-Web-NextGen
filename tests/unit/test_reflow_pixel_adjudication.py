@@ -3566,7 +3566,11 @@ def test_a_truncated_source_box_cannot_certify_deleting_a_complete_model_prefix(
     witness.word_scope=lambda word:None if scope_failure else complete
     result=pa.adjudicate('Read the grain sample now'.split(),source,witness)
     note=result['word_notes'][2]
-    if cropped:
+    if cropped and not scope_failure:
+        assert result['tokens'][2]=='grain'
+        assert note['status']=='RESOLVED'and not note.get('source_image_only')
+        assert note['method']=='complete_vision_reading_without_optical_counterevidence'
+    elif cropped:
         assert note['status']=='UNRESOLVED'
         assert note.get('source_image_only')
         assert note['method']=='unproved_complete_word_scope'
@@ -3669,3 +3673,41 @@ def test_small_print_scope_excludes_the_following_separate_word(monkeypatch,tmp_
             assert note['status']=='UNRESOLVED'and note.get('source_image_only')
         scope=witness.word_scope(source[0])
         assert scope is not None and scope[2]<source[1]['bbox'][0]
+
+@pytest.mark.parametrize('doubt,complete_other',[(False,False),(True,False),(False,True)])
+def test_only_a_complete_competing_word_can_doubt_a_confident_vision_word(doubt,complete_other):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the rain sample now')
+    # A tall detached stroke is part of the same printed word; the optical
+    # token owns only its lower tail. Repeated confidence does not widen it.
+    tail=list(source[2]['bbox']);whole=[tail[0]-4,tail[1]-5,tail[2],tail[3]]
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_scope=lambda word:whole
+    witness.word_readings=lambda word:([[dict(word,confidence=99)]]*2 +
+        ([[dict(word,text='train',bbox=whole,confidence=99)]]*2 if complete_other else []))
+    result=pa.adjudicate('Read the grain sample now'.split(),source,witness,
+        uncertain=[2]if doubt else [])
+    note=result['word_notes'][2]
+    if not doubt and not complete_other:
+        assert result['tokens'][2]=='grain'
+        assert note['status']=='RESOLVED'and not note.get('source_image_only')
+        assert result['boxes'][2]==whole,'The retained occurrence must include its complete measured ink'
+    else:
+        assert note['status']=='UNRESOLVED','Real first-reader doubt or a complete alternative cannot be cleared by an incomplete tail'
+    assert result['marked']=={2},'An actual optical-to-model correction retains its word-level provenance'
+
+
+def test_original_ink_scope_keeps_detached_upper_and_leading_strokes():
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=150,height=100)
+        for box in ([45,48,46.5,60],[49,46,50.3,47],[50,52,56,60],
+                    [57,52,60,60],[66,52,70,60]):
+            page.draw_rect(box,color=None,fill=(0,0,0))
+        scope=pa._word_ink_scope(SourceDisplay(drawing,0),dict(bbox=[50,52,60,60]))
+        assert scope is not None
+        assert scope[0]<=45.5 and scope[1]<=46.5
+        assert scope[2]<66,'A separate following word must stay outside the occurrence'
+        assert not pa._covers_ink_scope([dict(bbox=[45,52,60,60])],scope), 'Complete horizontal coverage cannot compensate for missing upper strokes'

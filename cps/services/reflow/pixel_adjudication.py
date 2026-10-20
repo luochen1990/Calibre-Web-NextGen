@@ -122,7 +122,7 @@ def _model_word_choice(source,witness,model):
                  and w.get('confidence',0)>=90),None)
 
 
-def _optical_counterread(source,witness,model):
+def _optical_counterread(source,witness,model,scope=None):
     """Missing or split recognition is not a competing complete printed word."""
     views=[witness]
     for name in ('word_readings','resampled','alternates'):
@@ -143,7 +143,8 @@ def _optical_counterread(source,witness,model):
                     and _complete_word_occurrence(source,w)
                     and min(a[3],w['bbox'][3])-max(a[1],w['bbox'][1])>=.55*(a[3]-a[1])):
                     row=owned
-        if row and row[0].get('confidence',0)>=85 and _key(row[0]['text'])!=_key(model):return True
+        if (row and row[0].get('confidence',0)>=85 and _key(row[0]['text'])!=_key(model)
+                and (scope is None or _covers_ink_scope(row,scope))):return True
     return False
 
 
@@ -612,14 +613,18 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             # Neither alphabetic network is a mathematical-glyph classifier.
             # Keep the exact original ink rather than certify its digit guess.
             supported=[];boundary=None
+        partial_counter=word_scope_conflict and word_scope is not None
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
-            and visible[b][0]not in pending and source[a].get('confidence',0)<85
-            and not(ordinal_conflict or quote_conflict or symbol_conflict or stroke_conflict or initialism_conflict or incomplete_ink or partial_wrap or word_scope_conflict
+            and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter)
+            and not(ordinal_conflict or quote_conflict or symbol_conflict or stroke_conflict or initialism_conflict or incomplete_ink or partial_wrap or word_scope_conflict and not partial_counter
                     or _small_mark_conflict(source_tokens[a],proposed[b]))
-            and not _optical_counterread(source[a],witness,proposed[b]))
+            and not _optical_counterread(source[a],witness,proposed[b],word_scope if partial_counter else None))
         if retained_vision:
-            supported=[('model',proposed[b:y],[dict(source[a],text=proposed[b])])]
+            evidence=dict(source[a],text=proposed[b])
+            if partial_counter:
+                own=source[a]['bbox'];evidence['bbox']=[min(own[0],word_scope[0]),min(own[1],word_scope[1]),max(own[2],word_scope[2]),max(own[3],word_scope[3])]
+            supported=[('model',proposed[b:y],[evidence])]
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
             boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or not proposed[b:y] else ('model',proposed[b:y],[]))
@@ -871,19 +876,18 @@ def _word_ink_scope(display,word):
     selected=[b for b in boxes if min(a[2],b[2])>max(a[0],b[0])
               and min(a[3],b[3])>max(a[1],b[1])]
     if not selected:return None
-    from statistics import median
-    # A font's ascent/descent box can be much taller than its drawn letters.
-    # Using that metric as a gap would absorb the next small printed word.
-    tallest=max(b[3]-b[1]for b in selected)
-    ink_height=median(b[3]-b[1]for b in selected if b[3]-b[1]>=tallest*.4)
-    gap=max(.5,.3*min(height,ink_height))
+    # Font metrics can exceed the visible letters, while a cropped OCR box
+    # can exclude their ascenders. Use the complete selected ink envelope,
+    # including detached dots, rather than either misleading height.
     left=min(b[0]for b in selected);right=max(b[2]for b in selected)
     for _ in range(len(boxes)):
+        ink_height=max(b[3]for b in selected)-min(b[1]for b in selected)
+        gap=max(.5,.32*ink_height)
         adjacent=[b for b in boxes if b[0]<=right+gap
                   and b[2]>=left-gap]
         new_left=min(b[0]for b in adjacent);new_right=max(b[2]for b in adjacent)
         if new_left==left and new_right==right:break
-        left,right=new_left,new_right
+        left,right=new_left,new_right;selected=adjacent
     if left<=bounds.x0+sx or right>=bounds.x1-sx:return None
     if right-left>2.5*width:return None
     ink=[b for b in boxes if b[0]<=right and b[2]>=left]
@@ -896,7 +900,7 @@ def _covers_ink_scope(evidence,scope):
     box=[min(b[0]for b in boxes),min(b[1]for b in boxes),
          max(b[2]for b in boxes),max(b[3]for b in boxes)]
     return (min(box[2],scope[2])-max(box[0],scope[0])>=.9*(scope[2]-scope[0])
-            and min(box[3],scope[3])-max(box[1],scope[1])>=.55*(scope[3]-scope[1]))
+            and min(box[3],scope[3])-max(box[1],scope[1])>=.9*(scope[3]-scope[1]))
 
 
 def _read_crop(display, regions, cache, language='eng', scale=4, tessdata=None,psm=6):
