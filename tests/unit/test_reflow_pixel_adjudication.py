@@ -3175,3 +3175,11 @@ def test_lower_ink_only_cannot_certify_a_complete_changed_word(model,damaged):
     assert result['word_notes'][2]['status']=='UNRESOLVED'
     assert result['word_notes'][2].get('source_image_only')
     assert result['word_notes'][2]['source_bbox']==source[2]['bbox']
+
+
+def test_a_recognized_tail_without_its_prefix_is_not_complete_word_evidence():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=dict(text='cveral',bbox=[20,20,60,32],confidence=40)
+    tail=dict(text='veral',bbox=[28,20,60,32],confidence=99)
+    assert pa._paired_word_choice(source,[[tail],[tail]])is None
+    assert pa.audit_agreement(['several'],[source],[tail])=={}

@@ -848,8 +848,7 @@ def audit_agreement(tokens, source, witness, boundary_proof=None, word_boxes=Non
         # but a narrow glyph fragment cannot contradict its whole owner.
         overlapping=[w for w in witness if _same_occurrence(word,w) and
             (id(w)in fused.get(i,set()) or
-             min(word['bbox'][2],w['bbox'][2])-max(word['bbox'][0],w['bbox'][0])
-             >=.6*(word['bbox'][2]-word['bbox'][0]))]
+             _complete_word_occurrence(word,w))]
         if len(overlapping)!=1:continue
         other=overlapping[0]
         if other.get('confidence',0)<85 or _key(other['text'])==_key(token):continue
@@ -1155,5 +1154,5 @@ def _complete_word_occurrence(source,word):
             b[0]-.2<=(p['bbox'][0]+p['bbox'][2])/2<=b[2]+.2 and
             b[1]-.2<=(p['bbox'][1]+p['bbox'][3])/2<=b[3]+.2
             for p in source['native_parts']):return False
-    return (min(a[2],b[2])-max(a[0],b[0])>=.6*max(a[2]-a[0],b[2]-b[0])
+    return (min(a[2],b[2])-max(a[0],b[0])>=.9*max(a[2]-a[0],b[2]-b[0])
             and min(a[3],b[3])-max(a[1],b[1])>=.55*(a[3]-a[1]))
