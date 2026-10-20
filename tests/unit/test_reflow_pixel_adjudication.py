@@ -2907,3 +2907,57 @@ def test_false_optical_quote_cannot_hide_independently_agreed_model_letters():
     note=result['word_notes'][2]
     assert note['status']=='RESOLVED' and not note.get('source_image_only')
     assert result['marked']=={2}
+
+
+@pytest.mark.parametrize('independent',['missing','model','source'])
+def test_common_word_cannot_be_replaced_by_shared_network_letter_noise(independent):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the clcar sample beside the window.')
+    witness=pa.CropWitness([dict(w)for w in source])
+    if independent!='missing':
+        text='Please read the '+('clear'if independent=='model'else'clcar')+' sample beside the window.'
+        witness.word_readings=lambda word:[words(text),words(text)]
+    result=adjudicate('Please read the clear sample beside the window.'.split(),source,witness)
+    note=result['word_notes'][3]
+    assert result['marked']=={3}
+    if independent=='source':
+        assert result['tokens'][3]=='clcar'and note['status']=='RESOLVED'
+    elif independent=='model':
+        assert result['tokens'][3]=='clear'and note['status']=='RESOLVED'
+    else:
+        assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+
+
+@pytest.mark.parametrize('own_support',[False,True])
+def test_weak_other_network_cannot_hide_a_positive_own_pixel_word(own_support):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the clcar sample beside the window.',40)
+    witness=pa.CropWitness(words('Please read the '+('clear'if own_support else'clcar')+' sample beside the window.'))
+    witness.alternates=lambda:[words('Please read the clcar sample beside the window.',40)]*2
+    witness.source_occurrences=source
+    result=dict(tokens='Please read the clear sample beside the window.'.split(),marked={3},word_notes={3:dict(source=['clcar'],model=['clear'],chosen=['clear'],status='UNRESOLVED')})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert bool(result['word_notes'][3].get('source_image_only'))is(not own_support)
+    assert result['marked']=={3},'A genuine lexical conflict retains its local source control'
+
+
+@pytest.mark.parametrize('failure',['none','same_row','missing_hyphen','weak','missing_tail','other_occurrence'])
+def test_complete_independently_read_line_wrap_is_formatting(failure):
+    from cps.services.reflow import pixel_adjudication as pa
+    import copy
+    source=words('Please read care- fully beside the window.')
+    source[2]['bbox']=[100,20,130,32]
+    for i,w in enumerate(source[3:]):w['bbox']=[i*30,40,i*30+28,52]
+    if failure=='same_row':source=words('Please read care- fully beside the window.')
+    if failure=='missing_hyphen':source[2]['text']='care'
+    before=copy.deepcopy(source);witness=copy.deepcopy(source)
+    if failure=='weak':witness[2]['confidence']=30
+    if failure=='missing_tail':del witness[3]
+    if failure=='other_occurrence':
+        for w in witness:w['bbox']=[v+500 for v in w['bbox']]
+    result=adjudicate('Please read carefully beside the window.'.split(),source,witness,uncertain={2})
+    if failure=='none':
+        assert result['tokens']=='Please read carefully beside the window.'.split()
+        assert result['marked']==set(),'A proved layout division changes no printed letters'
+    else:assert result['marked'],'Unproved divisions cannot normalize away a real word boundary'
+    assert source==before

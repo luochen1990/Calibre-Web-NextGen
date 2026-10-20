@@ -157,6 +157,41 @@ def proved_native_occurrence(token,box,words):
                 _same_occurrence(dict(bbox=box),w)])==1
 
 
+def _dictionary_regression(original,chosen):
+    """A shared recognizer's nonword needs another network, not preference."""
+    from .text_quality import english_lexicon
+    letters=lambda value:''.join(c for c in _key(value).casefold()if c.isalpha())
+    a,b=letters(original),letters(chosen)
+    if not a or not b or not(a.isascii()and b.isascii()):return False
+    vocabulary=english_lexicon()
+    return a!=b and a in vocabulary and b not in vocabulary
+
+
+def _proved_wrap(source,model,witness):
+    """Conserve exact letters across a positively read printed division."""
+    if not 2<=len(source)<=3:return None
+    hyphens=('-', '\u00ad', '\u2010', '\u2011')
+    if not all(w['text'].endswith(hyphens)for w in source[:-1]):return None
+    joined=''.join(w['text'][:-1]for w in source[:-1])+source[-1]['text']
+    literal=''.join(w['text']for w in source)
+    if _key(model)not in(_key(joined),_key(literal)):return None
+    for left,right in zip(source,source[1:]):
+        a,b=left['bbox'],right['bbox'];height=max(a[3]-a[1],b[3]-b[1],1)
+        next_row=(0<=b[1]-a[3]<=3*height and b[0]<a[0])
+        next_column=(b[0]>a[2]+2*height and b[3]<a[1]-2*height)
+        if not(next_row or next_column):return None
+    evidence=[]
+    for word in source:
+        own=[w for w in witness if _complete_word_occurrence(word,w)]
+        if (len(own)!=1 or own[0].get('confidence',0)<90
+                or _key(own[0]['text'])!=_key(word['text'])):return None
+        evidence.append(own[0])
+    if len({id(w)for w in evidence})!=len(evidence):return None
+    boxes=[w['bbox']for w in evidence]
+    return [min(b[0]for b in boxes),min(b[1]for b in boxes),
+            max(b[2]for b in boxes),max(b[3]for b in boxes)]
+
+
 def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False, source_print=False, native_print_words=()):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
@@ -173,7 +208,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     original=[_key(t) for t in source_tokens]
     candidate=[_key(t) for t in proposed]
     pixels=[_key(w['text']) for w in witness]
-    changes=[];chosen=[];decisions=[];pending=set(uncertain)
+    changes=[];chosen=[];decisions=[];pending=set(uncertain);formatting=set()
     matcher=SequenceMatcher(None, original, candidate, autojunk=False)
     placement=lambda t:''.join(c for c in unicodedata.normalize('NFKD',t.casefold())
                                if c.isalnum())
@@ -211,6 +246,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 chosen.append((word['text'],word['bbox'],note))
             if changed and a==z:changes.append((len(chosen),record,None))
             continue
+        wrap=(_proved_wrap(source[a:z],proposed[b],witness)
+              if kind!='equal'and y-b==1 else None)
+        if wrap is not None:
+            formatting.add(len(chosen));chosen.append((proposed[b],wrap,None));continue
         if kind=='equal':
             for token,index in zip(proposed[b:y],range(a,z)):
                 own=[word for word in witness if _same_occurrence(source[index],word)]
@@ -322,6 +361,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             len(choice[1])==1 and not _ordinal(choice[1][0]) and _ordinal_noise(choice[1][0])
             for choice in supported))
         if ordinal_conflict:supported=[]
+        lexical_conflict=(z-a==y-b==1 and len(supported)==1
+            and len(supported[0][1])==1
+            and _dictionary_regression(proposed[b],supported[0][1][0]))
+        if lexical_conflict:supported=[]
         alternate=None;resampled=None;word_choice=None
         if len(supported)!=1 and z-a==y-b==1 and not partial_wrap:
             word_choice=_own_word_choice(source[a],witness)
@@ -351,9 +394,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                     status='RESOLVED' if resolved else 'UNRESOLVED',
                     method=('two_own_word_language_readings' if word_choice else 'corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
                     source_range=[a,z],model_range=[b,y])
-        if (ordinal_conflict or quote_conflict) and not resolved:
+        if (ordinal_conflict or quote_conflict or lexical_conflict) and not resolved:
             record.update(source_image_only=True,source_bbox=list(source[a]['bbox']))
             if quote_conflict:record['method']='unproved_quote_identity'
+            elif lexical_conflict:record['method']='unproved_shared_network_nonword'
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
                [w['bbox'] for w in source[a:z]])
@@ -381,6 +425,8 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         affected=([i for j,i in zip(range(a,z),range(b,y)) if visible[j][0] in pending]
             if kind=='equal' else list(range(b,y)) if any(visible[j][0] in pending for j in range(a,z)) else [])
         for i in affected:
+            if i in formatting:
+                verified.append(i);continue
             if proved_native_occurrence(tokens[i],bounds.get(i),native_print_words):continue
             # A reader's low-confidence flag is not permanent uncertainty when
             # the same occurrence has an exact, uniquely contextual pixel read.
@@ -898,6 +944,10 @@ def disclose_alternate_conflicts(result, boxes, witness, allow_clear=True):
         own_primary=[w for w in witness if _complete_word_occurrence(original,w)]
         letters=lambda value:''.join(c for c in _key(value).casefold()if c.isalpha())
         lexical=letters(token)
+        from .text_quality import english_lexicon
+        if (len(own_primary)==1 and own_primary[0].get('confidence',0)>=85
+                and lexical in english_lexicon()
+                and lexical and letters(own_primary[0]['text'])==lexical):continue
         if (note.get('source')==note.get('chosen')==[token]
                 and len(own_primary)==1 and lexical
                 and letters(own_primary[0]['text'])==lexical):continue
