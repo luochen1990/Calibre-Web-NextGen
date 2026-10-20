@@ -1,9 +1,10 @@
 """Settle individual transcription edits using an independent pixel witness.
 
 A native layer and a model can disagree without either one being authoritative.
-Only a uniquely context-bound reading from the second recognition can resolve an
-edit. Unresolved edits retain their source-linked uncertainty; dictionary words
-alone never certify a substitution, omission or insertion.
+Complete, occurrence-bound evidence may correct the first reading. Missing or
+partial recognition cannot dispute an otherwise confident complete vision word.
+Explicit doubt and conflicting complete evidence stay linked to the source; a
+dictionary word alone never certifies a substitution, omission or insertion.
 """
 from difflib import SequenceMatcher
 import unicodedata
