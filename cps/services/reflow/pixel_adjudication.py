@@ -380,7 +380,14 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                                if c.isalnum())
     operations=[]
     for kind,a,z,b,y in matcher.get_opcodes():
-        if kind!='replace' or max(z-a,y-b)>32:
+        # An unreserved literal reference is still part of its lexical token.
+        # Folding away that suffix would align the word while leaving the same
+        # glyph's OCR letter as a new insertion. Keep the source fragments in
+        # one edit until the dedicated reference verifier can place the glyph.
+        unplaced_reference=any(proposed[j].endswith(('*','†','‡'))
+            and visible[j][0]+1<len(model)
+            and model[visible[j][0]+1].startswith('<n:')for j in range(b,y))
+        if kind!='replace' or max(z-a,y-b)>32 or unplaced_reference:
             operations.append((kind,a,z,b,y));continue
         folded=SequenceMatcher(None,[placement(t) for t in original[a:z]],
             [placement(t) for t in candidate[b:y]],autojunk=False)

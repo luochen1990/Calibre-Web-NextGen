@@ -4207,3 +4207,15 @@ def test_a_whole_word_anchor_cannot_leave_its_own_source_suffix_as_an_extra_word
     assert result['word_notes'][2]['source']==['gardener','s']
     assert result['word_notes'][2]['status']=='RESOLVED'
     assert result['boxes'][2]==whole['bbox']
+
+
+@pytest.mark.parametrize('symbol',['*','†','‡'])
+def test_an_unplaced_reference_suffix_cannot_split_off_its_ocr_letter(symbol):
+    """Synthetic reference ink is t in OCR; the next lexical word is disputed."""
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Clear samples t but remain readable.')
+    witness=pa.CropWitness([dict(w,text='and'if w['text']=='but'else w['text'])
+        for w in source if w['text']!='t'])
+    result=pa.adjudicate(['Clear','samples'+symbol,'<n:note>','and','remain','readable.'],source,witness)
+    assert result['tokens']==['Clear','samples'+symbol,'<n:note>','and','remain','readable.']
+    assert 't'not in result['tokens'],'a glyph alternative cannot become an extra lexical occurrence'
