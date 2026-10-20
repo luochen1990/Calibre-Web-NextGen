@@ -486,7 +486,20 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         # establish their individual occurrences.
         fused_model=(z-a==1 and y-b>1 and
             placement(source_tokens[a])==''.join(placement(t)for t in proposed[b:y]))
-        if fused_model:supported=[]
+        if fused_model:
+            # Shared OCR segmentation cannot erase a plausible printed space.
+            # Joining broken first-reader fragments needs positive independent
+            # word networks and measured original ink at each proposed split.
+            # A dictionary can veto merging complete words; it supplies no text.
+            from .text_quality import english_lexicon
+            parts=proposed[b:y];vocabulary=english_lexicon()
+            separation=getattr(witness,'word_separation',None)
+            may_join=(separation is not None and
+                      not all(_key(t).casefold()in vocabulary for t in parts)
+                      and separation(source[a],tuple(parts))is False)
+            joined=_own_word_choice(source[a],witness)if may_join else None
+            supported=([('word',[joined['text']],[joined])]
+                if joined and _key(joined['text'])==_key(source_tokens[a])else [])
         incomplete_ink=(z-a==y-b==1 and source[a].get('confidence',0)<85
             and any(c.isalpha()for c in proposed[b])
             and not source_tokens[a].endswith(('-', '\u00ad')) and any(
@@ -793,6 +806,11 @@ def read_crop(display, regions, cache):
         def word_scope(bounds):
             try:return _word_ink_scope(display,dict(bbox=bounds))
             except (RuntimeError,OSError,ValueError,KeyError):return None
+        @lru_cache(maxsize=128)
+        def word_separation(bounds,parts):
+            try:return _word_separation(display,dict(bbox=bounds),parts)
+            except (RuntimeError,OSError,ValueError,KeyError):return None
+        result.word_separation=lambda word,parts:word_separation(tuple(word['bbox']),tuple(parts))
         result.word_scope=lambda word:word_scope(tuple(word['bbox']))
         result.word_readings=lambda word:own_word(tuple(word['bbox']))
         result.mark_absence=lambda word:below_dot_absent(display,word)
@@ -801,6 +819,34 @@ def read_crop(display, regions, cache):
         result = CropWitness()
         result.failure = f'{type(error).__name__}: {error}'
         return result
+
+
+def _word_separation(display,word,parts):
+    """Measure a proposed space only when individual ink runs are unambiguous.
+
+    Exact Latin letter counts bind component-column runs to the proposed split.
+    Touching/broken characters, punctuation and ambiguous gap sizes decline the
+    proof. The dictionary never supplies the joined spelling.
+    """
+    from . import extract,vision_pixels
+    if not(2<=len(parts)<=3 and all(p.isascii()and p.isalpha()for p in parts)):return None
+    a=word['bbox'];height=a[3]-a[1]
+    if not(0<height<=80 and 0<a[2]-a[0]<=200):return None
+    box=extract.pymupdf.Rect(a)&display.rect
+    pix=display.pixmap(box,scale=8,max_pixels=200_000)
+    picture,components=vision_pixels._word_ink_components(pix)
+    runs=[]
+    for left,right in sorted((c[0],c[2])for c in components):
+        if runs and left<=runs[-1][1]:runs[-1][1]=max(runs[-1][1],right)
+        else:runs.append([left,right])
+    if len(runs)!=sum(map(len,parts)):return None
+    cuts=[];at=0
+    for part in parts[:-1]:
+        at+=len(part)
+        cuts.append((runs[at][0]-runs[at-1][1])*box.width/picture.width)
+    if all(gap>=height*.25 for gap in cuts):return True
+    if all(gap<=height*.15 for gap in cuts):return False
+    return None
 
 
 def _word_ink_scope(display,word):

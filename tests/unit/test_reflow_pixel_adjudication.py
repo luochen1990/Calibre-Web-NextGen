@@ -3597,3 +3597,45 @@ def test_lazy_scope_reads_original_ink_and_survives_the_terminal_token_view(monk
         normalized=pa._terminal_word_view(['grain'],witness)
         assert normalized.word_scope is witness.word_scope
         assert normalized.word_scope(clipped)==scope
+
+
+@pytest.mark.parametrize('space,parts,paired',[
+    (False,['gar','den'],True),(True,['gar','den'],True),
+    (None,['gar','den'],True),(False,['gar','den'],False),
+    (False,['If','a'],True),
+])
+def test_complete_word_networks_need_printed_boundary_proof_to_join_model_parts(
+        monkeypatch,space,parts,paired):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset(
+        'inspect this garden example now if a ifa'.split()))
+    joined=''.join(parts)
+    source=words('Inspect this '+joined+' example now')
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda word:([[dict(word,confidence=99)]]*2 if paired else [])
+    witness.word_separation=lambda word,tokens:space
+    result=pa.adjudicate(['Inspect','this',*parts,'example','now'],source,witness)
+    if space is False and parts==['gar','den']and paired:
+        assert result['tokens']==['Inspect','this','garden','example','now']
+        assert result['word_notes'][2]['status']=='RESOLVED'
+        assert result['marked']=={2},'The actual lexical correction keeps its own source record'
+    else:
+        assert result['tokens']==['Inspect','this',*parts,'example','now']
+        assert all(note['status']=='UNRESOLVED'for note in result['word_notes'].values())
+
+
+@pytest.mark.parametrize('printed',['garden','gar den'])
+def test_lazy_word_boundary_measurement_declines_ambiguous_or_printed_spaces(monkeypatch,tmp_path,printed):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=200,height=100)
+        page.insert_text((60,50),printed,fontsize=14)
+        boxes=page.get_text('words')
+        word=dict(text='garden',confidence=99,bbox=[min(b[0]for b in boxes),min(b[1]for b in boxes),max(b[2]for b in boxes),max(b[3]for b in boxes)])
+        monkeypatch.setattr(pa,'_read_crop',lambda *a,**k:[word])
+        witness=pa.read_crop(SourceDisplay(drawing,0),[word['bbox']],tmp_path)
+        measure=pa._terminal_word_view(['gar','den'],witness).word_separation(word,['gar','den'])
+        if printed=='garden':assert measure is False
+        else:assert measure is not False,'A real or ambiguous space can never authorize a joined word'
