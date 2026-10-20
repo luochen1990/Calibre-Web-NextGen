@@ -167,10 +167,15 @@ def _dictionary_regression(original,chosen):
     return a!=b and a in vocabulary and b not in vocabulary
 
 
+def _letter_number_identity(value):
+    return ''.join(c for c in _key(value)if c.isalnum())
+
+
 def _symbol_identity_conflict(original,chosen):
-    """Alphabetic recognition cannot establish a mathematical glyph identity."""
+    """A mathematical glyph cannot be certified as alphabetic/numeric text."""
     symbols=lambda value:{c for c in value if unicodedata.category(c)in('Sm','So')}
-    return symbols(original)!=symbols(chosen)
+    return (symbols(original)!=symbols(chosen)
+            and _letter_number_identity(original)!=_letter_number_identity(chosen))
 
 
 def _proved_wrap(source,model,witness):
@@ -392,7 +397,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         # unavailable second network cannot silently reuse the first one.
         network_conflict=(z-a==y-b==1 and len(supported)==1
             and len(supported[0][1])==1 and hasattr(witness,'word_readings')
-            and _key(supported[0][1][0])!=_key(proposed[b])
+            and _letter_number_identity(supported[0][1][0])!=_letter_number_identity(proposed[b])
             and any(c.isalpha()for c in proposed[b]+supported[0][1][0]))
         if network_conflict:supported=[]
         alternate=None;resampled=None;word_choice=None

@@ -3073,3 +3073,14 @@ def test_agreeing_baselines_cannot_be_rewritten_by_one_dictionary_network(indepe
     assert result['tokens'][3]==('learn'if independent_agrees else'flarn')
     if independent_agrees:assert result['word_notes'][3]['status']=='RESOLVED'
     else:assert 3 not in result['marked'], 'The caller audits the original conflicting occurrence; no replacement was proved here'
+
+
+@pytest.mark.parametrize('suffix',[',','+)','‡'])
+def test_unchanged_lexical_word_keeps_its_proved_literal_suffix(suffix):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the clear'+suffix+' sample beside the window.')
+    witness=pa.CropWitness([dict(w)for w in source])
+    witness.word_readings=lambda word:[]
+    result=adjudicate('Please read the clear sample beside the window.'.split(),source,witness)
+    assert ''.join(c for c in result['tokens'][3]if c.isalnum())=='clear'
+    assert not result.get('word_notes',{}).get(3,{}).get('source_image_only'), 'Punctuation and a separately proved marker do not dispute the unchanged lexical word'
