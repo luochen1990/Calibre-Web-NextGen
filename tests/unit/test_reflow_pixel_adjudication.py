@@ -3024,3 +3024,52 @@ def test_unproved_horizontal_punctuation_cannot_claim_a_formatting_settlement(fa
         for word in witness:word['bbox']=[v+500 for v in word['bbox']]
     result=adjudicate('The clear sample – remains readable.'.split(),source,witness)
     assert 3 in result['marked']
+
+
+@pytest.mark.parametrize('independent',['missing','weak','model','source','remote'])
+def test_one_recognition_network_cannot_certify_a_conflicting_dictionary_word(independent):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the clean sample beside the window.')
+    witness=pa.CropWitness([dict(w)for w in source])
+    def second(word):
+        if independent=='missing':return []
+        text='Please read the '+('clear'if independent=='model'else'clean')+' sample beside the window.'
+        views=[words(text,40 if independent=='weak'else 99)for _ in range(2)]
+        if independent=='remote':
+            for view in views:
+                for item in view:item['bbox']=[v+500 for v in item['bbox']]
+        return views
+    witness.word_readings=second
+    result=adjudicate('Please read the clear sample beside the window.'.split(),source,witness)
+    note=result['word_notes'][3]
+    assert result['marked']=={3}
+    if independent in('source','model'):
+        assert result['tokens'][3]==('clean'if independent=='source'else'clear')
+        assert note['status']=='RESOLVED'and not note.get('source_image_only')
+    else:
+        assert note['status']=='UNRESOLVED'and note.get('source_image_only'), 'A repeated dictionary word from one network is not diverse pixel proof'
+
+
+@pytest.mark.parametrize('symbol',['□','◇','△','⊕'])
+def test_alphabetic_recognizers_cannot_certify_a_mathematical_symbol_as_a_digit(symbol):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the (0) symbol beside the sample.')
+    witness=pa.CropWitness([dict(w)for w in source])
+    witness.word_readings=lambda word:[[dict(w)for w in source]for _ in range(2)]
+    result=adjudicate(('Read the ('+symbol+') symbol beside the sample.').split(),source,witness)
+    note=result['word_notes'][2]
+    assert result['marked']=={2}
+    assert note['status']=='UNRESOLVED'and note.get('source_image_only'), 'An unsupported symbol remains original ink, never a certified numeral'
+
+
+@pytest.mark.parametrize('independent_agrees',[False,True])
+def test_agreeing_baselines_cannot_be_rewritten_by_one_dictionary_network(independent_agrees):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the flarn sample beside the window.')
+    optical=words('Please read the learn sample beside the window.')
+    witness=pa.CropWitness(optical)
+    witness.word_readings=lambda word:[optical, optical if independent_agrees else source]
+    result=adjudicate([w['text']for w in source],source,witness,corroboration=optical)
+    assert result['tokens'][3]==('learn'if independent_agrees else'flarn')
+    if independent_agrees:assert result['word_notes'][3]['status']=='RESOLVED'
+    else:assert 3 not in result['marked'], 'The caller audits the original conflicting occurrence; no replacement was proved here'

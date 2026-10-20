@@ -167,6 +167,12 @@ def _dictionary_regression(original,chosen):
     return a!=b and a in vocabulary and b not in vocabulary
 
 
+def _symbol_identity_conflict(original,chosen):
+    """Alphabetic recognition cannot establish a mathematical glyph identity."""
+    symbols=lambda value:{c for c in value if unicodedata.category(c)in('Sm','So')}
+    return symbols(original)!=symbols(chosen)
+
+
 def _proved_wrap(source,model,witness):
     """Conserve exact letters across a positively read printed division."""
     if not 2<=len(source)<=3:return None
@@ -276,6 +282,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                     and _key(word['text'])!=_key(token)
                     and _key(word['text']).rstrip('.,;:!?')!=_key(token).rstrip('.,;:!?')
                     and not _accent_conflict(word['text'],token))
+                if corrected and hasattr(witness,'word_readings'):
+                    diverse=_own_word_choice(source[index],witness)
+                    corrected=bool(diverse and _key(diverse['text'])==_key(word['text']))
                 if corrected:
                     record=dict(source=[token],model=[token],chosen=[word['text']],status='RESOLVED',
                         method='two_own_pixel_readings',source_range=[index,index+1])
@@ -375,6 +384,17 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             and len(supported[0][1])==1
             and _dictionary_regression(proposed[b],supported[0][1][0]))
         if lexical_conflict:supported=[]
+        # A page read and a differently cropped read of the same English
+        # network can repeat a confident error, including another dictionary
+        # word. The production witness supplies separate English/Latin word
+        # networks and Latin contextual frames. Require that diverse evidence
+        # before overriding the first reader's lexical word. An explicit
+        # unavailable second network cannot silently reuse the first one.
+        network_conflict=(z-a==y-b==1 and len(supported)==1
+            and len(supported[0][1])==1 and hasattr(witness,'word_readings')
+            and _key(supported[0][1][0])!=_key(proposed[b])
+            and any(c.isalpha()for c in proposed[b]+supported[0][1][0]))
+        if network_conflict:supported=[]
         alternate=None;resampled=None;word_choice=None
         if len(supported)!=1 and z-a==y-b==1 and not partial_wrap:
             word_choice=_own_word_choice(source[a],witness)
@@ -397,6 +417,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             # that change. Agreement with the first reading's quote identity,
             # however, can reject an extra quote invented by the source OCR.
             supported=[];boundary=None
+        symbol_conflict=(z-a==y-b==1 and _symbol_identity_conflict(
+            proposed[b],source_tokens[a]))
+        if symbol_conflict:
+            # Neither alphabetic network is a mathematical-glyph classifier.
+            # Keep the exact original ink rather than certify its digit guess.
+            supported=[];boundary=None
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
             boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or not proposed[b:y] else ('model',proposed[b:y],[]))
@@ -404,10 +430,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                     status='RESOLVED' if resolved else 'UNRESOLVED',
                     method=('two_own_word_language_readings' if word_choice else 'corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
                     source_range=[a,z],model_range=[b,y])
-        if (ordinal_conflict or quote_conflict or lexical_conflict) and not resolved:
+        if (ordinal_conflict or quote_conflict or lexical_conflict or network_conflict or symbol_conflict) and not resolved:
             record.update(source_image_only=True,source_bbox=list(source[a]['bbox']))
             if quote_conflict:record['method']='unproved_quote_identity'
             elif lexical_conflict:record['method']='unproved_shared_network_nonword'
+            elif symbol_conflict:record['method']='unproved_mathematical_symbol_identity'
+            elif network_conflict:record['method']='unproved_shared_network_word'
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
                [w['bbox'] for w in source[a:z]])
