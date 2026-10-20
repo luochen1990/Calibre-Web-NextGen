@@ -3865,3 +3865,36 @@ def test_missing_letter_strokes_cannot_be_certified_as_a_slash_or_half_letter(mo
     assert note['status']=='UNRESOLVED'and note.get('source_image_only')
     assert note['method']=='unproved_shared_stroke_identity'
     assert result['tokens'][2]==model and result['marked']=={2}
+
+
+@pytest.mark.parametrize('printed,first,cropped',[('rose','roset',False),('prose','prose',True)])
+def test_other_source_rows_cannot_enter_complete_word_ink_scope(tmp_path,monkeypatch,printed,first,cropped):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as drawing,pymupdf.open()as doc:
+        page=drawing.new_page(width=300,height=140)
+        for y,text in [(50,'Different green leaves fill this row'),(62,'Read the '+printed+' sample now'),(74,'Separate lines stay separate here')]:
+            page.insert_text((30,y),text,fontsize=8)
+        all_words=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        local=[w for w in all_words if 52<w['bbox'][1]<55]
+        assert len(local)==5
+        source=[dict(w)for w in local]
+        if cropped:
+            source[2]['bbox']=list(source[2]['bbox']);source[2]['bbox'][0]+=.2*(source[2]['bbox'][2]-source[2]['bbox'][0]);source[2]['text']='rose'
+        image=page.get_pixmap(matrix=pymupdf.Matrix(2,2),alpha=False).tobytes('png')
+        doc.new_page(width=300,height=140).insert_image(page.rect,stream=image)
+        monkeypatch.setattr(pa,'_read_crop',lambda *a,**k:[dict(w)for w in all_words])
+        display=SourceDisplay(doc,0);witness=pa.read_crop(display,[source[2]['bbox']],tmp_path)
+        witness.model_reading=True
+        witness.word_readings=lambda word:[[dict(word,text='rose',confidence=99)]]*2
+        result=pa.adjudicate(('Read the '+first+' sample now').split(),source,witness)
+        assert result['tokens'][2]==printed
+        if not cropped:
+            note=result['word_notes'][2]
+            assert note['status']=='RESOLVED'and not note.get('source_image_only')
+            assert 2 in result['marked'],'The corrected extra model letter retains provenance'
+        else:
+            assert not any(d['status']=='RESOLVED'and d['chosen']==['rose']for d in result['decisions'])
+        scope=witness.word_scope(source[2]);assert scope is not None
+        assert scope[1]>52 and scope[3]<65,'Other printed rows cannot enlarge this word scope'

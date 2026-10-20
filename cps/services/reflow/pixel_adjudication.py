@@ -827,7 +827,9 @@ def read_crop(display, regions, cache):
             except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
         @lru_cache(maxsize=128)
         def word_scope(bounds):
-            try:return _word_ink_scope(display,dict(bbox=bounds))
+            try:
+                limits=_neighbor_line_limits(bounds,result)
+                return _word_ink_scope(display,dict(bbox=bounds),line_limits=limits)
             except (RuntimeError,OSError,ValueError,KeyError):return None
         @lru_cache(maxsize=128)
         def word_separation(bounds,parts):
@@ -872,7 +874,33 @@ def _word_separation(display,word,parts):
     return None
 
 
-def _word_ink_scope(display,word):
+def _neighbor_line_limits(bounds,words):
+    """Separate nearby rows using two independently located words per row.
+
+    These positions only bound the ink search. They neither choose a spelling
+    nor let the recognizer's own shortened word box certify a cropped prefix.
+    No reliable neighboring row means the original larger search stays in use.
+    """
+    a=bounds;height=a[3]-a[1]
+    if height<=0:return None,None
+    neighbors=[w['bbox']for w in words if w.get('confidence',0)>=85
+        and w['bbox'][3]-w['bbox'][1]>=.4*height
+        and w['bbox'][0]<a[2]+2*height and w['bbox'][2]>a[0]-2*height]
+    above=[b for b in neighbors if b[3]<a[1]]
+    below=[b for b in neighbors if b[1]>a[3]]
+    top=bottom=None
+    if above:
+        edge=max(b[3]for b in above)
+        row=[b for b in above if edge-b[3]<=.5*height]
+        if len({tuple(b)for b in row})>=2:top=(edge+a[1])/2
+    if below:
+        edge=min(b[1]for b in below)
+        row=[b for b in below if b[1]-edge<=.5*height]
+        if len({tuple(b)for b in row})>=2:bottom=(edge+a[3])/2
+    return top,bottom
+
+
+def _word_ink_scope(display,word,*,line_limits=(None,None)):
     """Bound the adjacent original ink before certifying a shortened word.
 
     The recognizer's own box can already exclude a prefix. Measure a bounded
@@ -885,6 +913,9 @@ def _word_ink_scope(display,word):
     if not(0<height<=80 and 0<width<=200):return None
     bounds=extract.pymupdf.Rect(a[0]-2*height,a[1]-.75*height,
                                a[2]+2*height,a[3]+.75*height)&display.rect
+    top,bottom=line_limits
+    if top is not None:bounds.y0=max(bounds.y0,top)
+    if bottom is not None:bounds.y1=min(bounds.y1,bottom)
     pix=display.pixmap(bounds,scale=6,max_pixels=200_000)
     picture,components=vision_pixels._word_ink_components(pix)
     if not components:return None
@@ -909,6 +940,8 @@ def _word_ink_scope(display,word):
     if left<=bounds.x0+sx or right>=bounds.x1-sx:return None
     if right-left>2.5*width:return None
     ink=[b for b in boxes if b[0]<=right and b[2]>=left]
+    if top is not None and min(b[1]for b in ink)<=bounds.y0+sy:return None
+    if bottom is not None and max(b[3]for b in ink)>=bounds.y1-sy:return None
     return [left,min(b[1]for b in ink),right,max(b[3]for b in ink)]
 
 
