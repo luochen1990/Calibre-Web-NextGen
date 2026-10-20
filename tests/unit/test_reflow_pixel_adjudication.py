@@ -3152,3 +3152,26 @@ def test_complete_pixel_read_can_corroborate_model_when_other_network_splits_ink
     assert result['tokens'][2]=='example-book'
     assert result['word_notes'][2]['status']=='RESOLVED'
     assert result['marked']=={2},'An actual model correction keeps its source-linked record'
+
+
+def test_a_fused_optical_token_cannot_delete_a_model_word_boundary():
+    source=words('Read As a sample now.')
+    source[1]['text']='Asa';source[1]['bbox']=[20,20,58,32];del source[2]
+    witness=[dict(w)for w in source]
+    result=adjudicate('Read As a sample now.'.split(),source,witness)
+    assert result['tokens']=='Read As a sample now.'.split()
+    assert all(d['status']=='UNRESOLVED'for d in result['decisions'])
+    assert result['marked'],'The unproved boundary remains locally disclosed'
+
+
+@pytest.mark.parametrize('model,damaged',[('uv.','uv,'),('ex','cx')])
+def test_lower_ink_only_cannot_certify_a_complete_changed_word(model,damaged):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the '+damaged+' sample now.')
+    witness=pa.CropWitness(words('Read the '+model+' sample now.'))
+    witness[2]['bbox']=[40,26.5,58,32]
+    witness.word_readings=lambda word:[list(witness),list(witness)]
+    result=pa.adjudicate(('Read the '+model+' sample now.').split(),source,witness)
+    assert result['word_notes'][2]['status']=='UNRESOLVED'
+    assert result['word_notes'][2].get('source_image_only')
+    assert result['word_notes'][2]['source_bbox']==source[2]['bbox']

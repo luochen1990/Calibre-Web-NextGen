@@ -390,6 +390,18 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             if any(w.get('confidence',0)<85 for w in witness[locations[0]:locations[0]+len(left+seq+right)]):continue
             supported.append((name,literal,evidence))
         supported=direct or supported
+        # One fused optical token is not proof that a first reader invented a
+        # printed space. Keep both literal words unless the pixels independently
+        # establish their individual occurrences.
+        fused_model=(z-a==1 and y-b>1 and
+            placement(source_tokens[a])==''.join(placement(t)for t in proposed[b:y]))
+        if fused_model:supported=[]
+        incomplete_ink=(z-a==y-b==1 and any(
+            _same_occurrence(source[a],w) and w.get('confidence',0)>=85
+            and min(source[a]['bbox'][3],w['bbox'][3])-max(source[a]['bbox'][1],w['bbox'][1])
+                <.55*(source[a]['bbox'][3]-source[a]['bbox'][1])
+            for w in witness))
+        if incomplete_ink:supported=[]
         # A changed accent is not certified by an English recognizer's missing
         # or different mark. Preserve the first reader's codepoints and disclose
         # the unresolved choice, even when the bare letter sequence agrees.
@@ -473,6 +485,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             elif lexical_conflict:record['method']='unproved_shared_network_nonword'
             elif symbol_conflict:record['method']='unproved_mathematical_symbol_identity'
             elif network_conflict:record['method']='unproved_shared_network_word'
+        if incomplete_ink and not resolved:
+            record.update(source_image_only=True,source_bbox=list(source[a]['bbox']),
+                method='incomplete_vertical_word_ink')
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
                [w['bbox'] for w in source[a:z]])
@@ -1140,4 +1155,5 @@ def _complete_word_occurrence(source,word):
             b[0]-.2<=(p['bbox'][0]+p['bbox'][2])/2<=b[2]+.2 and
             b[1]-.2<=(p['bbox'][1]+p['bbox'][3])/2<=b[3]+.2
             for p in source['native_parts']):return False
-    return min(a[2],b[2])-max(a[0],b[0])>=.6*max(a[2]-a[0],b[2]-b[0])
+    return (min(a[2],b[2])-max(a[0],b[0])>=.6*max(a[2]-a[0],b[2]-b[0])
+            and min(a[3],b[3])-max(a[1],b[1])>=.55*(a[3]-a[1]))
