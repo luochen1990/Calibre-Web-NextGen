@@ -1450,10 +1450,23 @@ def disclose_alternate_conflicts(result, boxes, witness, allow_clear=True):
     if len(views)!=2:return
     for index in pending:
         original=dict(bbox=boxes[index])
+        token=result['tokens'][index];note=(result.get('word_notes')or{}).get(index,{})
+        # A contextual network can misread one intact word even when its own
+        # crop corroborates the unchanged source and page reading. Ask that
+        # occurrence before turning noisy alternate spellings into an image.
+        # Corrections retain their provenance; local-only OCR stays unverified.
+        from .text_quality import english_lexicon
+        lexical=''.join(c for c in _key(token).casefold()if c.isalpha())
+        if (allow_clear and lexical in english_lexicon()
+                and note.get('source')==note.get('model')==note.get('chosen')==[token]
+                and _model_word_choice(original,witness,token) is not None):
+            result['marked'].discard(index);result['word_notes'].pop(index)
+            result.setdefault('verified_unchanged',[]).append(index)
+            result['adjudication']=[d for d in result.get('adjudication',[])if d is not note]
+            continue
         own=[_whole_view_word(original,view)for view in views]
         if not all(len(row)==1 for row in own):continue
         a,b=own[0][0],own[1][0]
-        token=result['tokens'][index];note=(result.get('word_notes')or{}).get(index,{})
         if (allow_clear and all(_key(w['text'])==_key(token)and w.get('confidence',0)>=90 for w in (a,b))
                 and note.get('source')==note.get('model')==note.get('chosen')==[token]):
             result['marked'].discard(index);result['word_notes'].pop(index)

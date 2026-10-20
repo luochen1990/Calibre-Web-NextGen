@@ -4219,3 +4219,29 @@ def test_an_unplaced_reference_suffix_cannot_split_off_its_ocr_letter(symbol):
     result=pa.adjudicate(['Clear','samples'+symbol,'<n:note>','and','remain','readable.'],source,witness)
     assert result['tokens']==['Clear','samples'+symbol,'<n:note>','and','remain','readable.']
     assert 't'not in result['tokens'],'a glyph alternative cannot become an extra lexical occurrence'
+
+
+@pytest.mark.parametrize('evidence',['complete','partial','credible_competitor','local','correction'])
+def test_whole_word_corroboration_precedes_noisy_alternate_image_fallback(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The clear sample stays readable.',40)
+    noise=words('The clear sampie stays readable.',88)
+    witness=pa.CropWitness(noise)
+    witness.alternates=lambda:[noise,noise]
+    positive=words('The clear sample stays readable.',95)
+    other=words('The clear simple stays readable.',92)if evidence=='credible_competitor'else noise
+    if evidence=='partial':positive[2]['bbox']=[47,20,58,32]
+    witness.word_readings=lambda word:[positive,other]
+    note=dict(source=['sampie']if evidence=='correction'else['sample'],model=['sample'],
+        chosen=['sample'],alternative=['sampie'],status='UNRESOLVED',method='agreeing_readings_pixel_conflict')
+    result=dict(tokens=[w['text']for w in source],marked={2},word_notes={2:note})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness,
+        allow_clear=evidence!='local')
+    assert result['tokens']==[w['text']for w in source]
+    if evidence=='complete':
+        assert result['marked']==set()
+        assert result['word_notes']=={}
+        assert result['verified_unchanged']==[2]
+    else:
+        assert result['marked']=={2}
+        assert result['word_notes'][2]['status']=='UNRESOLVED'
