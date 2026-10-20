@@ -54,12 +54,20 @@ def _ordinal_noise(value):
 def _own_word_choice(source,witness):
     reader=getattr(witness,'word_readings',None)
     if reader is None:return None
-    views=reader(source)
-    if len(views)!=2:return None
-    own=[[w for w in view if _complete_word_occurrence(source,w)]for view in views]
-    if not all(len(row)==1 and row[0].get('confidence',0)>=85 for row in own):return None
-    first,second=own[0][0],own[1][0]
-    return first if _key(first['text'])==_key(second['text'])else None
+    return _paired_word_choice(source,reader(source))
+
+
+def _paired_word_choice(source,views):
+    """Each pair uses separate language networks on the complete occurrence."""
+    if not views or len(views)%2:return None
+    choices={}
+    for start in range(0,len(views),2):
+        own=[[w for w in view if _complete_word_occurrence(source,w)]
+             for view in views[start:start+2]]
+        if not all(len(row)==1 and row[0].get('confidence',0)>=85 for row in own):continue
+        first,second=own[0][0],own[1][0]
+        if _key(first['text'])==_key(second['text']):choices[_key(first['text'])]=first
+    return next(iter(choices.values()))if len(choices)==1 else None
 
 
 def _boundary_parts(model,source):
@@ -588,9 +596,18 @@ def read_crop(display, regions, cache):
                 if not directory:return []
                 width,height=bounds[2]-bounds[0],bounds[3]-bounds[1]
                 if not (0<width<=200 and 0<height<=80 and width/height<=18):return []
-                return [_read_crop(display,[bounds],cache,language=language,scale=6,
-                                  tessdata=data,psm=8)
-                        for language,data in [('eng',None),('LatinRaw',directory)]]
+                networks=[('eng',None),('LatinRaw',directory)]
+                views=[_read_crop(display,[bounds],cache,language=language,scale=6,
+                                  tessdata=data,psm=8)for language,data in networks]
+                if _paired_word_choice(dict(bbox=bounds),views):return views
+                # A recognizer's single-word mode can assign zero confidence
+                # to legible ink. Single-line mode has a separate segmentation
+                # path; it still needs both trained networks on the complete
+                # same occurrence. Conflicting positive frame pairs cannot win.
+                views.extend(_read_crop(display,[bounds],cache,language=language,
+                    scale=scale,tessdata=data,psm=7)
+                    for scale in (4,6)for language,data in networks)
+                return views
             except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
         result.word_readings=lambda word:own_word(tuple(word['bbox']))
         result.mark_absence=lambda word:below_dot_absent(display,word)

@@ -3084,3 +3084,34 @@ def test_unchanged_lexical_word_keeps_its_proved_literal_suffix(suffix):
     result=adjudicate('Please read the clear sample beside the window.'.split(),source,witness)
     assert ''.join(c for c in result['tokens'][3]if c.isalnum())=='clear'
     assert not result.get('word_notes',{}).get(3,{}).get('source_image_only'), 'Punctuation and a separately proved marker do not dispute the unchanged lexical word'
+
+
+@pytest.mark.parametrize('failure',['none','weak','remote','network_conflict','frame_conflict'])
+def test_complete_own_word_uses_diverse_single_line_proof_when_word_mode_is_weak(monkeypatch,tmp_path,failure):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    import shutil
+    source=words('Please read the clean sample beside the window.')
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:set('please read the clean clear sample beside window'.split()))
+    calls=[]
+    def recognize(display,regions,cache,language='eng',scale=4,tessdata=None,psm=6):
+        calls.append((language,scale,psm))
+        if psm==6:return [dict(w)for w in source]
+        text='clear'if (failure=='network_conflict'and language=='LatinRaw')or(failure=='frame_conflict'and scale==6)else'clean'
+        word=dict(source[3],text=text,confidence=40 if psm==8 or failure=='weak'else 99)
+        if failure=='remote'and psm==7:word['bbox']=[v+500 for v in word['bbox']]
+        return [word]
+    monkeypatch.setattr(pa,'_read_crop',recognize)
+    monkeypatch.setattr(pa,'_latin_directory',lambda engine:tmp_path)
+    original_which=shutil.which
+    monkeypatch.setattr(shutil,'which',lambda name:'synthetic-recognizer'if name=='tesseract'else original_which(name))
+    witness=pa.read_crop(None,[[0,0,200,40]],tmp_path)
+    witness.alternates=lambda:[]
+    witness.resampled=lambda:[]
+    result=adjudicate('Please read the clear sample beside the window.'.split(),source,witness)
+    note=result['word_notes'][3]
+    if failure=='none':
+        assert result['tokens'][3]=='clean'
+        assert note['status']=='RESOLVED'and not note.get('source_image_only')
+        assert ('eng',4,7)in calls and ('LatinRaw',4,7)in calls
+    else:assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+    assert result['marked']=={3},'Every settled correction retains its own provenance'
