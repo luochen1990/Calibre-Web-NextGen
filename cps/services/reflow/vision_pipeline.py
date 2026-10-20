@@ -445,6 +445,53 @@ def _native_ink_regions(territories,words):
     return boxes
 
 
+def _complete_note_tail_territory(block,answer,words,display,regions,local):
+    """Locate an exact reader tail on adjacent, otherwise unclaimed source ink.
+
+    This widens a crop, not transcription authority. The original source and
+    independent recognition still adjudicate every added word normally.
+    """
+    if block.get('role')!='footnote' or len(local)<6 or '<n:'in block['text']:return None
+    import statistics
+    from difflib import SequenceMatcher
+    key=lambda text:''.join(c for c in vision_reading.normalized(text).casefold()if c.isalnum())
+    model=block['text'].split();prefix=key(''.join(w['text']for w in local))
+    if len(model)<=len(local) or not prefix:return None
+    splits=[i for i in range(6,len(model)-1)
+            if abs(len(key(''.join(model[:i])))-len(prefix))<=2
+            and SequenceMatcher(None,prefix,key(''.join(model[:i]))).ratio()>=.95]
+    if not splits:return None
+    rank=lambda i:(abs(len(key(''.join(model[:i])))-len(prefix)),
+                   -SequenceMatcher(None,prefix,key(''.join(model[:i]))).ratio())
+    splits.sort(key=rank)
+    if len(splits)>1 and rank(splits[0])==rank(splits[1]):return None
+    tail=key(''.join(model[splits[0]:]))
+    if not tail or len(model)-splits[0]>20:return None
+    height=statistics.median(w['bbox'][3]-w['bbox'][1]for w in local)
+    last=max((w['bbox'][1]+w['bbox'][3])/2 for w in local)
+    left=min(w['bbox'][0]for w in local)-3*height
+    right=max(w['bbox'][2]for w in local)+3*height
+    existing={_source_instance(w)for w in local}
+    following=_pixel_line_order([w for w in words if _source_instance(w)not in existing
+        and left<=(w['bbox'][0]+w['bbox'][2])/2<=right
+        and last+.5*height<(w['bbox'][1]+w['bbox'][3])/2<=last+2.5*height])
+    selected=[];literal=''
+    for word in following:
+        selected.append(word);literal+=key(word['text'])
+        if not tail.startswith(literal):return None
+        if literal==tail:break
+    if literal!=tail:return None
+    for word in selected:
+        claim=(regions or {}).get('_instances',{}).get(_source_instance(word))
+        if claim is not None and claim!=block['id']:return None
+        x=(word['bbox'][0]+word['bbox'][2])/2;y=(word['bbox'][1]+word['bbox'][3])/2
+        for other in answer['blocks']:
+            if other['id']==block['id']:continue
+            if any(b[0]<=x<=b[2]and b[1]<=y<=b[3]
+                   for b in (regions or {}).get(other['id'],[block_rect(other,display)])):return None
+    return list(local)+selected
+
+
 def _complete_native_reading_territory(block,answer,words,display,regions,body_owners,local):
     """Restore a clipped optical territory only from complete original print."""
     if (not local or len(local)>=len(block['text'].split()) or '<n:'in block['text']
@@ -2455,6 +2502,22 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 from . import pixel_adjudication
                 with unit_recovery.guard(pno,'pixel_adjudication',block=bid):
                     from .native_text import drawn_word_authority,drawn_word_authorities,unproved_legacy_word
+                    note_tail=_complete_note_tail_territory(block,answer,words,display,regions,local)
+                    if note_tail is not None:
+                        result['guard'].append(dict(kind='complete_note_tail_territory',
+                            restored_words=len(note_tail)-len(local)))
+                        local=note_tail;territories=_native_ink_regions(territories,local)
+                        # Re-evaluate the conservation guard with the complete
+                        # owned inventory; its earlier missing-row fallback is
+                        # not word-level reader doubt. Pixel adjudication below
+                        # still checks the widened original crop normally.
+                        refreshed=vision_reading.align(block['text'],local,block['low_confidence'],
+                            has_layer=True,pixel_words=optical_local)
+                        if not refreshed['fallback']:
+                            independent_optical_fallback=False
+                            for key in ('tokens','marked','boxes','fallback','dropped_layer_words'):
+                                result[key]=refreshed[key]
+
                     complete=_complete_native_reading_territory(block,answer,words,display,
                         regions,body_owners,local)
                     if complete is not None:

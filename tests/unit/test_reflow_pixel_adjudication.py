@@ -3345,3 +3345,39 @@ def test_agreement_between_word_crops_cannot_bypass_nonword_safety(candidate):
     assert note['status']=='UNRESOLVED','Repeated optical shape errors cannot certify a changed nonword'
     assert note.get('source_image_only'),'The dictionary alone cannot prove either spelling against ink'
     assert result['marked']=={2}
+
+
+@pytest.mark.parametrize('conflict',['none','other_owner','different_tail'])
+def test_cropped_note_box_cannot_drop_a_source_confirmed_following_line(tmp_path,monkeypatch,conflict):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    first='The example data come from a printed reference'
+    tail='at noon near the wide open garden gate.'
+    with pymupdf.open()as drawing,pymupdf.open()as doc:
+        leaf=drawing.new_page(width=400,height=250)
+        leaf.insert_text((40,170),first,fontsize=10)
+        leaf.insert_text((25,183),tail,fontsize=10)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in leaf.get_text('words')]
+        original=leaf.get_pixmap().tobytes('png')
+        doc.new_page(width=400,height=250).insert_image(leaf.rect,stream=original)
+        assert not doc[0].get_text(),'The pixels are the fixture; supplied OCR is not native authority'
+        own=block(first+' '+(tail if conflict!='different_tail'else tail.replace('noon','dawn')),ident='n1',role='footnote',marker='1',bbox=(90,625,800,690))
+        answer={'blocks':[own]}
+        if conflict=='other_owner':answer['blocks'].append(block(tail,ident='b2',bbox=(50,690,900,750)))
+        monkeypatch.setattr(pa,'read_crop',lambda display,boxes,cache:pa.CropWitness([dict(w)for w in source if any(vp.owned_words([w],b)for b in boxes)]))
+        page,report=vp.compile_page(answer,source,SourceDisplay(doc,0),0,Package(),{},pixel_words=source,
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+        record=next(b for b in report['blocks']if b['id']=='n1')
+        expanded=any(g['kind']=='complete_note_tail_territory'for g in record['guard'])
+        if conflict=='none':
+            assert record['published_tokens']==(first+' '+tail).split()
+            assert expanded
+            assert not record['marked']
+            end=source[-1]['bbox']
+            assert any(b[0]<=end[0]and b[1]<=end[1]and b[2]>=end[2]and b[3]>=end[3]for b in record['source_regions'])
+        else:assert not expanded,'Different words or another source owner cannot expand this note'
