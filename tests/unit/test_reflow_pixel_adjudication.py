@@ -2895,3 +2895,15 @@ def test_quote_codepoint_normalization_does_not_invent_word_uncertainty():
     model="Please read we're beside the window.".split()
     result=adjudicate(model,original,original)
     assert result['tokens']==model and result['marked']==set()
+
+
+def test_false_optical_quote_cannot_hide_independently_agreed_model_letters():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read ‘Clear beside the window.')
+    witness=pa.CropWitness(words('Please read Clear beside the window.'))
+    witness.word_readings=lambda word:[words('Please read Clear beside the window.')for _ in range(2)]
+    result=adjudicate('Please read -Clear beside the window.'.split(),source,witness)
+    assert result['tokens']==['Please','read','Clear','beside','the','window.']
+    note=result['word_notes'][2]
+    assert note['status']=='RESOLVED' and not note.get('source_image_only')
+    assert result['marked']=={2}

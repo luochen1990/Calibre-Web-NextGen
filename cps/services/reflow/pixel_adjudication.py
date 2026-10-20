@@ -335,11 +335,14 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 alternate=_alternate_choice(source,a,witness,proposed[b])
                 if alternate:supported=[('alternate',[alternate['text']],[alternate])]
         if ordinal_conflict:supported=[choice for choice in supported if len(choice[1])==1 and _ordinal(choice[1][0])]
-        quote_conflict=(z-a==y-b==1 and _quote_conflict(source_tokens[a],proposed[b]))
+        quote_conflict=(z-a==y-b==1 and _quote_conflict(source_tokens[a],proposed[b])
+            and (len(supported)!=1 or len(supported[0][1])!=1
+                 or _quote_conflict(supported[0][1][0],proposed[b])))
         if quote_conflict:
             # Agreement between OCR settings can repeat a missing apostrophe or
-            # collapse a double quote. Neither spelling earns a live correction
-            # from that evidence; keep this exact word as original source ink.
+            # collapse the first reading's double quote. It cannot authorize
+            # that change. Agreement with the first reading's quote identity,
+            # however, can reject an extra quote invented by the source OCR.
             supported=[];boundary=None
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
