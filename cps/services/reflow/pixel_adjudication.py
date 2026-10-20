@@ -83,14 +83,22 @@ def _model_word_choice(source,witness,model):
     """An intact independent read can corroborate, rather than override, a model.
 
     Split fragments and unavailable networks supply no competing complete word.
-    Any confident complete alternative keeps the disagreement unresolved.
+    A credible complete alternative keeps the disagreement unresolved. Repeated
+    nonword noise from one trained network cannot veto positive complete pixel
+    support for the first reader; agreement from both networks still can.
     """
     reader=getattr(witness,'word_readings',None)
     if reader is None:return None
-    own=[row[0] for view in reader(source) if (row:=_whole_view_word(source,view))
+    views=reader(source)
+    own=[row[0] for view in views if (row:=_whole_view_word(source,view))
          and row[0].get('confidence',0)>=85]
-    if any(_key(w['text'])!=_key(model)for w in own):return None
-    return next((w for w in own if w.get('confidence',0)>=90),None)
+    if any(_key(w['text'])!=_key(model)and not _dictionary_regression(model,w['text'])
+           for w in own):return None
+    for start in range(0,len(views),2):
+        competing=_paired_word_choice(source,views[start:start+2])
+        if competing and _key(competing['text'])!=_key(model):return None
+    return next((w for w in own if _key(w['text'])==_key(model)
+                 and w.get('confidence',0)>=90),None)
 
 
 def _optical_counterread(source,witness,model):

@@ -3408,3 +3408,37 @@ def test_a_quote_like_source_mark_cannot_be_certified_as_invented_third_punctuat
     assert note['status']=='UNRESOLVED'and note.get('source_image_only')
     assert result['tokens'][2]=='sample','Recognition cannot invent punctuation from ambiguous raised ink'
     assert result['marked']=={2}
+
+
+@pytest.mark.parametrize('counter,latin_confidence,model_confidence,complete',[
+    ('clcar',40,94,True),('clcar',99,94,True),
+    ('clean',40,94,True),('clcar',40,89,True),('clcar',40,94,False),
+])
+def test_one_network_nonword_noise_cannot_veto_complete_pixel_support_for_model(
+        counter,latin_confidence,model_confidence,complete):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    printed='Read the clear sample now.'
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=300,height=100)
+        page.insert_text((20,50),printed,fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+    source[2]['text']='clcar'
+    primary=pa.CropWitness([dict(w)for w in source]);primary.model_reading=True
+    model=dict(source[2],text='clear',confidence=model_confidence)
+    if not complete:
+        a=model['bbox'];model['bbox']=[a[0]+.3*(a[2]-a[0]),a[1],a[2],a[3]]
+    weak=dict(source[2],text=counter,confidence=40)
+    contrary=dict(source[2],text=counter,confidence=99)
+    latin=dict(contrary,confidence=latin_confidence)
+    primary.word_readings=lambda word:[[model],[weak],[contrary],[latin]]
+    result=pa.adjudicate(printed.split(),source,primary)
+    note=result['word_notes'][2]
+    if counter=='clcar'and latin_confidence==40 and model_confidence>=90 and complete:
+        assert result['tokens'][2]=='clear'
+        assert note['status']=='RESOLVED'
+        assert note['method']=='intact_pixel_corroboration_of_model'
+        assert not note.get('source_image_only')
+    else:
+        assert note['status']=='UNRESOLVED'
+    assert result['marked']=={2},'The actual model correction retains its source-linked record'
