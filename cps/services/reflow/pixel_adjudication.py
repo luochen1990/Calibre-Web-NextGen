@@ -413,6 +413,13 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         for i in range(a,z):
             own=_whole_view_word(source[i],witness)
             if len(own)!=1:continue
+            box=own[0]['bbox']
+            # A recognized complete word can contain several source fragments.
+            # Anchoring just its stem would leave the same physical suffix as
+            # another inserted word. Keep that edit intact for conservation.
+            if any(k!=i and box[0]<=(source[k]['bbox'][0]+source[k]['bbox'][2])/2<=box[2]
+                    and box[1]<=(source[k]['bbox'][1]+source[k]['bbox'][3])/2<=box[3]
+                    for k in range(a,z)):continue
             matches=[j for j in range(b,y)if _key(own[0]['text'])==candidate[j]]
             if len(matches)==1:anchors.append((i,matches[0],id(own[0])))
         if (not anchors or len({j for i,j,w in anchors})!=len(anchors)
@@ -761,8 +768,15 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                [w['bbox'] for w in source[a:z]])
         box=( [min(x[0] for x in boxes),min(x[1] for x in boxes),
                max(x[2] for x in boxes),max(x[3] for x in boxes)] if boxes else None)
+        single_ink_word=(len(literal)==len(evidence)==1 and z-a>1 and
+            _covers_ink_scope(evidence,[min(w['bbox'][0]for w in source[a:z]),
+                min(w['bbox'][1]for w in source[a:z]),max(w['bbox'][2]for w in source[a:z]),
+                max(w['bbox'][3]for w in source[a:z])]))
         for j,token in enumerate(literal):
-            word_record=_word_note(record,j,len(decisions)-1)
+            # Several source fragments can belong to this one positively
+            # located word. Keep their transcription evidence on that word,
+            # rather than report a fabricated positional or unplaced mapping.
+            word_record=record if single_ink_word else _word_note(record,j,len(decisions)-1)
             if j in withheld:
                 own=list(source[a+j]['bbox'])
                 word_record=dict(word_record,source_image_only=True,

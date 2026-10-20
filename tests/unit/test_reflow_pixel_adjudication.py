@@ -4191,3 +4191,19 @@ def test_conserved_source_labels_require_separate_physical_occurrences(collision
         assert note['status']=='UNRESOLVED'
         if collision:assert note['source_bbox']==source[index]['bbox']
     assert all(i not in result['word_notes']for i in range(4))
+
+
+@pytest.mark.parametrize('confidence',[86,99])
+def test_a_whole_word_anchor_cannot_leave_its_own_source_suffix_as_an_extra_word(confidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the gardener s sample now.')
+    source[2]['bbox']=[40,20,86,32];source[3]['bbox']=[87,20,90,32]
+    source[4]['bbox']=[92,20,110,32];source[5]['bbox']=[112,20,130,32]
+    whole=dict(text='gardener’s',bbox=[40,20,90,32],confidence=confidence)
+    witness=pa.CropWitness([dict(source[0]),dict(source[1]),whole,dict(source[4]),dict(source[5])])
+    result=pa.adjudicate('Read the gardener’s sample now.'.split(),source,witness)
+    assert result['tokens']=='Read the gardener’s sample now.'.split()
+    assert 's'not in result['tokens'],'The same recognized word already accounts for its printed suffix'
+    assert result['word_notes'][2]['source']==['gardener','s']
+    assert result['word_notes'][2]['status']=='RESOLVED'
+    assert result['boxes'][2]==whole['bbox']
