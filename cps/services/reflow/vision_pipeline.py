@@ -2707,8 +2707,14 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                                     for i in affected:
                                         refined['marked'].add(i)
                                         prior=adjudication['word_notes'].get(a+i-b) if kind=='equal' else None
-                                        refined['word_notes'].setdefault(i,prior or dict(source=[refined['tokens'][i]],
-                                            chosen=[refined['tokens'][i]],status='UNRESOLVED',method='reader_uncertainty'))
+                                        if prior and prior.get('source_image_only'):
+                                            # This pass has not changed the word. Its own
+                                            # inconclusive note cannot certify a spelling
+                                            # already withheld from live publication.
+                                            refined['word_notes'][i]=prior
+                                        else:
+                                            refined['word_notes'].setdefault(i,prior or dict(source=[refined['tokens'][i]],
+                                                chosen=[refined['tokens'][i]],status='UNRESOLVED',method='reader_uncertainty'))
                                 refined['decisions']=adjudication['decisions']+refined['decisions']
                                 refined['verified_unchanged']=adjudication.get('verified_unchanged',[])
                                 adjudication=refined

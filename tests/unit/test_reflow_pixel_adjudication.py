@@ -4031,3 +4031,43 @@ def test_symbol_to_punctuation_is_not_empty_letter_agreement(model,optical,nativ
     else:
         assert note['status']=='UNRESOLVED'and note.get('source_image_only')
         assert note['source_bbox']==source[2]['bbox']
+
+
+@pytest.mark.parametrize('refinement_note',[False,True])
+def test_fallback_refinement_keeps_original_ink_for_an_unchanged_unproved_word(tmp_path,monkeypatch,refinement_note):
+    """A later inconclusive pass supplies no new authority for the same word."""
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    source=words('Keep the bright blue wooden sample ready now.')
+    calls=[]
+    def refine(tokens,*args,**kwargs):
+        calls.append(list(tokens))
+        index=tokens.index('bright')
+        note=dict(source=['bright'],model=['bright'],chosen=['bright'],
+            status='UNRESOLVED',method='pixel_read_inconclusive')
+        return dict(tokens=list(tokens),boxes={},marked={index}if refinement_note else set(),
+            word_notes={index:note}if refinement_note else{},decisions=[note]if refinement_note else[])
+    monkeypatch.setattr(pa,'read_crop',lambda *args:pa.CropWitness([]))
+    monkeypatch.setattr(pa,'refine_fallback',refine)
+    class Package:
+        def __init__(self):self.images={}
+        def image(self,name,data):self.images[name]=data
+        def disclosure_image(self,name,display,rect):
+            self.images[name]=display.pixmap(rect,scale=2,max_pixels=100000).tobytes('jpg')
+    package=Package()
+    with pymupdf.open()as drawing,pymupdf.open()as doc:
+        leaf=drawing.new_page(width=320,height=150)
+        leaf.insert_text((25,60),'Keep the bright blue wooden sample ready now.',fontsize=11)
+        raster=leaf.get_pixmap(matrix=pymupdf.Matrix(2,2),alpha=False).tobytes('png')
+        doc.new_page(width=320,height=150).insert_image(leaf.rect,stream=raster)
+        page,report=vp.compile_page({'blocks':[block('Keep the sample ready now.',bbox=(0,0,1000,1000))]},
+            source,SourceDisplay(doc,0),0,package,{},pixel_words=source,forced_uncertain=('b1',),
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    assert calls,'Exercise the later fallback refinement rather than bypassing it'
+    record=report['blocks'][0]
+    assert record['source_image_words']==[2,3,4]
+    assert all(t not in vp._seam_text(' '.join(page['body'])).split()for t in ('bright','blue','wooden'))
+    assert 'sample ready now.'in vp._seam_text(' '.join(page['body']))
+    assert len(package.images)>=3,'Every unproved word retains its inspectable original ink'
