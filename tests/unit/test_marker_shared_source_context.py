@@ -13,6 +13,12 @@ def prepared(case):
  # original body/marker image remains actual synthetic ink. Ordinary uncertainty
  # then retains the whole original owning BODY territory; no target is guessed.
  if case!='tight_crop':words=[w for w in words if w['bbox'][1]>300]
+ else:
+  # This case needs a genuinely unsettled ordinary word beside the marker.
+  # A confident exact baseline would already settle the reader's B flag;
+  # a fused recognition of neighbouring ink cannot manufacture a B conflict.
+  for word in words:
+   if word['text']=='B':word['confidence']=40
  return image,words,answer,glyphs
 
 def controls(docs):return [(name,a)for name,root in docs.items()for a in root.findall('.//x:a',m.h.NS)if a.get('class')=='source-disclosure-ref']

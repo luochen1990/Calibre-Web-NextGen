@@ -3165,16 +3165,17 @@ def test_a_fused_optical_token_cannot_delete_a_model_word_boundary():
 
 
 @pytest.mark.parametrize('model,damaged',[('uv.','uv,'),('ex','cx')])
-def test_lower_ink_only_cannot_certify_a_complete_changed_word(model,damaged):
+@pytest.mark.parametrize('source_confidence',[40,99])
+def test_lower_ink_only_cannot_certify_a_complete_changed_word(model,damaged,source_confidence):
     from cps.services.reflow import pixel_adjudication as pa
-    source=words('Read the '+damaged+' sample now.')
+    source=words('Read the '+damaged+' sample now.',source_confidence)
     witness=pa.CropWitness(words('Read the '+model+' sample now.'))
     witness[2]['bbox']=[40,26.5,58,32]
     witness.word_readings=lambda word:[list(witness),list(witness)]
     result=pa.adjudicate(('Read the '+model+' sample now.').split(),source,witness)
-    assert result['word_notes'][2]['status']=='UNRESOLVED'
-    assert result['word_notes'][2].get('source_image_only')
-    assert result['word_notes'][2]['source_bbox']==source[2]['bbox']
+    assert result['word_notes'][2]['status']==('UNRESOLVED'if source_confidence<85 else'RESOLVED')
+    assert bool(result['word_notes'][2].get('source_image_only'))is(source_confidence<85)
+    if source_confidence<85:assert result['word_notes'][2]['source_bbox']==source[2]['bbox']
 
 
 def test_a_recognized_tail_without_its_prefix_is_not_complete_word_evidence():

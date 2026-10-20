@@ -75,7 +75,7 @@ def _whole_view_word(source,view):
     owned=[w for w in view if a[0]-.5<=(w['bbox'][0]+w['bbox'][2])/2<=a[2]+.5
            and min(a[3],w['bbox'][3])>max(a[1],w['bbox'][1])]
     if len(owned)!=1:return []
-    return owned if _complete_word_occurrence(source,owned[0]) else []
+    return owned if _complete_recognition(source,owned[0]) else []
 
 
 def _model_word_choice(source,witness,model):
@@ -396,7 +396,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         fused_model=(z-a==1 and y-b>1 and
             placement(source_tokens[a])==''.join(placement(t)for t in proposed[b:y]))
         if fused_model:supported=[]
-        incomplete_ink=(z-a==y-b==1 and any(
+        incomplete_ink=(z-a==y-b==1 and source[a].get('confidence',0)<85
+            and any(c.isalpha()for c in proposed[b])
+            and not source_tokens[a].endswith(('-', '\u00ad')) and any(
             _same_occurrence(source[a],w) and w.get('confidence',0)>=85
             and min(source[a]['bbox'][3],w['bbox'][3])-max(source[a]['bbox'][1],w['bbox'][1])
                 <.55*(source[a]['bbox'][3]-source[a]['bbox'][1])
@@ -848,7 +850,7 @@ def audit_agreement(tokens, source, witness, boundary_proof=None, word_boxes=Non
         # but a narrow glyph fragment cannot contradict its whole owner.
         overlapping=[w for w in witness if _same_occurrence(word,w) and
             (id(w)in fused.get(i,set()) or
-             _complete_word_occurrence(word,w))]
+             _complete_recognition(word,w))]
         if len(overlapping)!=1:continue
         other=overlapping[0]
         if other.get('confidence',0)<85 or _key(other['text'])==_key(token):continue
@@ -1154,5 +1156,12 @@ def _complete_word_occurrence(source,word):
             b[0]-.2<=(p['bbox'][0]+p['bbox'][2])/2<=b[2]+.2 and
             b[1]-.2<=(p['bbox'][1]+p['bbox'][3])/2<=b[3]+.2
             for p in source['native_parts']):return False
+    return min(a[2],b[2])-max(a[0],b[0])>=.6*max(a[2]-a[0],b[2]-b[0])
+
+
+def _complete_recognition(source,word):
+    """Locating a word is weaker than certifying all of its printed letters."""
+    if not _complete_word_occurrence(source,word):return False
+    a,b=source['bbox'],word['bbox']
     return (min(a[2],b[2])-max(a[0],b[0])>=.9*max(a[2]-a[0],b[2]-b[0])
             and min(a[3],b[3])-max(a[1],b[1])>=.55*(a[3]-a[1]))
