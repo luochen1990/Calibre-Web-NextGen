@@ -3115,3 +3115,40 @@ def test_complete_own_word_uses_diverse_single_line_proof_when_word_mode_is_weak
         assert ('eng',4,7)in calls and ('LatinRaw',4,7)in calls
     else:assert note['status']=='UNRESOLVED'and note.get('source_image_only')
     assert result['marked']=={3},'Every settled correction retains its own provenance'
+
+
+@pytest.mark.parametrize('proposed,damaged,tail,prefix', [
+    ('example-book','cxample-book','ample-book','cx'),
+    ('several','cveral','veral','c'),
+    ("Harbor’s","Harbor’",'Harbor','5'),
+])
+def test_split_optical_fragments_cannot_certify_a_complete_replacement(proposed,damaged,tail,prefix):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the '+damaged+' sample now.')
+    witness=pa.CropWitness(words('Read the '+damaged+' sample now.',40))
+    box=source[2]['bbox']
+    if prefix=='5':
+        fragments=[dict(text=tail,bbox=[40,20,55,32],confidence=99),
+                   dict(text=prefix,bbox=[56,23,58,29],confidence=50)]
+    else:
+        fragments=[dict(text=prefix,bbox=[40,24,44,31],confidence=20),
+                   dict(text=tail,bbox=[45,20,58,32],confidence=99)]
+    witness.word_readings=lambda word:[fragments,fragments]
+    result=pa.adjudicate(('Read the '+proposed+' sample now.').split(),source,witness)
+    assert result['tokens'][2]==proposed
+    assert result['word_notes'][2]['status']=='UNRESOLVED'
+    assert not result['word_notes'][2].get('source_image_only')
+
+
+def test_complete_pixel_read_can_corroborate_model_when_other_network_splits_ink():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the cxample-book sample now.',40)
+    witness=pa.CropWitness([dict(w)for w in source])
+    intact=dict(text='example-book',bbox=source[2]['bbox'],confidence=96)
+    fragments=[dict(text='cx',bbox=[40,24,44,31],confidence=20),
+               dict(text='ample-book',bbox=[45,20,58,32],confidence=99)]
+    witness.word_readings=lambda word:[[intact],fragments]
+    result=pa.adjudicate('Read the example-book sample now.'.split(),source,witness)
+    assert result['tokens'][2]=='example-book'
+    assert result['word_notes'][2]['status']=='RESOLVED'
+    assert result['marked']=={2},'An actual model correction keeps its source-linked record'

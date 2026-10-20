@@ -62,12 +62,34 @@ def _paired_word_choice(source,views):
     if not views or len(views)%2:return None
     choices={}
     for start in range(0,len(views),2):
-        own=[[w for w in view if _complete_word_occurrence(source,w)]
-             for view in views[start:start+2]]
+        own=[_whole_view_word(source,view) for view in views[start:start+2]]
         if not all(len(row)==1 and row[0].get('confidence',0)>=85 for row in own):continue
         first,second=own[0][0],own[1][0]
         if _key(first['text'])==_key(second['text']):choices[_key(first['text'])]=first
     return next(iter(choices.values()))if len(choices)==1 else None
+
+
+def _whole_view_word(source,view):
+    """A confident tail cannot discard other ink inside its owner's bounds."""
+    a=source['bbox']
+    owned=[w for w in view if a[0]-.5<=(w['bbox'][0]+w['bbox'][2])/2<=a[2]+.5
+           and min(a[3],w['bbox'][3])>max(a[1],w['bbox'][1])]
+    if len(owned)!=1:return []
+    return owned if _complete_word_occurrence(source,owned[0]) else []
+
+
+def _model_word_choice(source,witness,model):
+    """An intact independent read can corroborate, rather than override, a model.
+
+    Split fragments and unavailable networks supply no competing complete word.
+    Any confident complete alternative keeps the disagreement unresolved.
+    """
+    reader=getattr(witness,'word_readings',None)
+    if reader is None:return None
+    own=[row[0] for view in reader(source) if (row:=_whole_view_word(source,view))
+         and row[0].get('confidence',0)>=85]
+    if any(_key(w['text'])!=_key(model)for w in own):return None
+    return next((w for w in own if w.get('confidence',0)>=90),None)
 
 
 def _boundary_parts(model,source):
@@ -411,6 +433,8 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         alternate=None;resampled=None;word_choice=None
         if len(supported)!=1 and z-a==y-b==1 and not partial_wrap:
             word_choice=_own_word_choice(source[a],witness)
+            if word_choice is None:
+                word_choice=_model_word_choice(source[a],witness,proposed[b])
             if word_choice and _accent_conflict(word_choice['text'],proposed[b]):word_choice=None
             if word_choice and max(SequenceMatcher(None,placement(word_choice['text']),placement(t)).ratio()
                                    for t in (source_tokens[a],proposed[b]))<.65:word_choice=None
