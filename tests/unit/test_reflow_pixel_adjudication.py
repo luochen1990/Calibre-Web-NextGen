@@ -4100,3 +4100,27 @@ def test_independent_word_occurrences_split_a_damaged_multiword_alignment(bindin
     else:
         assert not all(result['word_notes'].get(i,{}).get('status')=='RESOLVED'for i in (2,3,4))
         assert result['marked'],'Remote or repeated spelling alone does not supply unique occurrence anchors'
+
+
+@pytest.mark.parametrize('proof',['own','absent','different','remote'])
+def test_weak_line_division_suffix_can_use_its_own_independent_word_read(proof):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('con- tinuation')
+    source[0]['bbox']=[100,20,130,32];source[1]['bbox']=[0,40,60,52]
+    source[1]['confidence']=40
+    witness=pa.CropWitness([dict(source[0])]);witness.model_reading=True
+    def read(word):
+        if proof=='absent':return []
+        value=dict(word,confidence=99,text='tinuation'if proof!='different'else'tonation')
+        if proof=='remote':value['bbox']=[0,80,60,92]
+        return [[value],[value]]
+    witness.word_readings=read
+    result=pa.adjudicate(['continuation'],source,witness)
+    assert result['tokens']==['continuation']
+    if proof=='own':
+        assert not result['marked'],'Every exact letter and the printed division now have their own proof'
+        assert result['word_notes']=={}
+        assert result['boxes'][0]==[0,20,130,52]
+    else:
+        assert result['marked']
+        assert not any(d['status']=='RESOLVED'for d in result['decisions'])

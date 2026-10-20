@@ -343,7 +343,14 @@ def _proved_wrap(source,model,witness,same_reading=False):
         for word in source:
             own=[w for w in witness if _complete_word_occurrence(word,w)]
             if (len(own)!=1 or own[0].get('confidence',0)<90
-                    or _key(own[0]['text'])!=_key(word['text'])):return None
+                    or _key(own[0]['text'])!=_key(word['text'])):
+                # A short continuation can be weak in block layout while its
+                # own complete occurrence has independent language agreement.
+                # Exact letters are still required; this never supplies a
+                # guessed continuation or licenses a different printed word.
+                complete=_own_word_choice(word,witness)
+                if complete is None or _key(complete['text'])!=_key(word['text']):return None
+                own=[complete]
             evidence.append(own[0])
     if len({id(w)for w in evidence})!=len(evidence):return None
     boxes=[w['bbox']for w in evidence]
