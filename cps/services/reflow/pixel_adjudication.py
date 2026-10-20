@@ -227,7 +227,7 @@ def proved_native_occurrence(token,box,words):
 
 
 def _dictionary_regression(original,chosen):
-    """A shared recognizer's nonword needs another network, not preference."""
+    """A dictionary vetoes an unsafe nonword substitution; it never selects text."""
     from .text_quality import english_lexicon
     letters=lambda value:''.join(c for c in _key(value).casefold()if c.isalpha())
     a,b=letters(original),letters(chosen)
@@ -507,19 +507,20 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             if not word_choice and not resampled:
                 alternate=_alternate_choice(source,a,witness,proposed[b])
                 if alternate:supported=[('alternate',[alternate['text']],[alternate])]
-        # Language networks can share a joined-stroke confusion even on the
-        # complete word: rn and m occupy the same physical extent. A later crop
-        # cannot certify that nonword substitution from consensus alone.
-        # This does not select the dictionary spelling: retain the printed ink.
+        # Separate language networks can share an optical error, including a
+        # complete-looking nonword. A later crop cannot bypass the contextual
+        # witness's safety veto. This never selects the dictionary spelling:
+        # retain original ink, including a possible unusual printed spelling.
         if (z-a==y-b==1 and len(supported)==1 and len(supported[0][1])==1
-            and _dictionary_regression(proposed[b],supported[0][1][0])
-            and _key(proposed[b]).casefold().replace('rn','m')==
-                _key(supported[0][1][0]).casefold().replace('rn','m')):
+            and _dictionary_regression(proposed[b],supported[0][1][0])):
             lexical_conflict=True;supported=[];word_choice=None;resampled=None;alternate=None
         if ordinal_conflict:supported=[choice for choice in supported if len(choice[1])==1 and _ordinal(choice[1][0])]
         quote_conflict=(z-a==y-b==1 and _quote_conflict(source_tokens[a],proposed[b])
             and (len(supported)!=1 or len(supported[0][1])!=1
-                 or _quote_conflict(supported[0][1][0],proposed[b])))
+                 or _quote_conflict(supported[0][1][0],proposed[b])
+                 or any(not c.isalnum()and not c.isspace()
+                        and c not in _key(source_tokens[a])+_key(proposed[b])
+                        for c in _key(supported[0][1][0]))))
         if quote_conflict:
             # Agreement between OCR settings can repeat a missing apostrophe or
             # collapse the first reading's double quote. It cannot authorize

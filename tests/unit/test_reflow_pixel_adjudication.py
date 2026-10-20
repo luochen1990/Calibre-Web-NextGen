@@ -2912,6 +2912,13 @@ def test_false_optical_quote_cannot_hide_independently_agreed_model_letters():
 @pytest.mark.parametrize('independent',['missing','model','source'])
 def test_common_word_cannot_be_replaced_by_shared_network_letter_noise(independent):
     from cps.services.reflow import pixel_adjudication as pa
+    import pymupdf
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=400,height=100)
+        page.insert_text((20,50),'Please read the clear sample beside the window.',fontsize=10)
+        assert 'clear'in page.get_text().split()
+    # Both controlled optical networks can misread the same printed letter.
+
     source=words('Please read the clcar sample beside the window.')
     witness=pa.CropWitness([dict(w)for w in source])
     if independent!='missing':
@@ -2921,7 +2928,8 @@ def test_common_word_cannot_be_replaced_by_shared_network_letter_noise(independe
     note=result['word_notes'][3]
     assert result['marked']=={3}
     if independent=='source':
-        assert result['tokens'][3]=='clcar'and note['status']=='RESOLVED'
+        assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+        assert result['tokens'][3]=='clear','Optical consensus is not a certificate for a changed nonword'
     elif independent=='model':
         assert result['tokens'][3]=='clear'and note['status']=='RESOLVED'
     else:
@@ -3381,3 +3389,22 @@ def test_cropped_note_box_cannot_drop_a_source_confirmed_following_line(tmp_path
             end=source[-1]['bbox']
             assert any(b[0]<=end[0]and b[1]<=end[1]and b[2]>=end[2]and b[3]>=end[3]for b in record['source_regions'])
         else:assert not expanded,'Different words or another source owner cannot expand this note'
+
+
+@pytest.mark.parametrize('third',['sample!','sample?'])
+def test_a_quote_like_source_mark_cannot_be_certified_as_invented_third_punctuation(third):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=240,height=100)
+        page.insert_text((20,50),'Read this sample',fontsize=12)
+        page.insert_text((112,45),'1',fontsize=7)
+        page.insert_text((125,50),'now.',fontsize=12)
+        assert 'sample1'in page.get_text().split()
+    source=words("Read this sample' now.")
+    witness=pa.CropWitness(words('Read this '+third+' now.'))
+    result=pa.adjudicate('Read this sample now.'.split(),source,witness,corroboration=list(witness))
+    note=result['word_notes'][2]
+    assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+    assert result['tokens'][2]=='sample','Recognition cannot invent punctuation from ambiguous raised ink'
+    assert result['marked']=={2}
