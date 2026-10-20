@@ -250,10 +250,20 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
               if kind!='equal'and y-b==1 else None)
         if wrap is not None:
             formatting.add(len(chosen));chosen.append((proposed[b],wrap,None));continue
+        if (z-a==y-b==1 and source_tokens[a] in ('–','—') and proposed[b] in ('–','—')):
+            own=[word for word in witness if _complete_word_occurrence(source[a],word)]
+            if (len(own)==1 and own[0].get('confidence',0)>=90 and
+                    own[0]['text'] in ('-','–','—')):
+                # These recognizer codepoints describe the same complete
+                # horizontal punctuation. Preserve the first reader's style;
+                # no lexical word was corrected or remains in doubt.
+                formatting.add(len(chosen));chosen.append((proposed[b],own[0]['bbox'],None));continue
         if kind=='equal':
             for token,index in zip(proposed[b:y],range(a,z)):
                 own=[word for word in witness if _complete_word_occurrence(source[index],word)]
                 word=own[0] if len(own)==1 else None
+                if (token in ('–','—') and word and word.get('confidence',0)>=90
+                        and word['text'] in ('-','–','—')):formatting.add(len(chosen))
                 second=([other for other in corroboration if _same_occurrence(word,other)
                     and _key(word['text'])==_key(other['text'])] if word else [])
                 from . import text_quality
@@ -754,6 +764,8 @@ def audit_agreement(tokens, source, witness, boundary_proof=None, word_boxes=Non
         if len(overlapping)!=1:continue
         other=overlapping[0]
         if other.get('confidence',0)<85 or _key(other['text'])==_key(token):continue
+        if (token in ('–','—') and other['text'] in ('-','–','—') and
+                _complete_word_occurrence(word,other)):continue
         # Missing terminal punctuation is not a contradictory word reading.
         # Keep the original punctuation; letter, case and internal-symbol
         # differences still require occurrence-linked uncertainty.

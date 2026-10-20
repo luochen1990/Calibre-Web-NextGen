@@ -2996,3 +2996,31 @@ def test_a_partial_secondary_word_cannot_force_a_live_word_into_an_image():
     pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
     assert not result['word_notes'][3].get('source_image_only')
     assert result['marked']=={3},'The actual full conflicting occurrence still retains its local uncertainty'
+
+
+@pytest.mark.parametrize('original,second,proposed', [('—','—','–'),('–','–','—'),('–','-','–')])
+def test_a_complete_printed_horizontal_dash_has_no_uncertain_lexical_word(original,second,proposed):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The clear sample '+original+' remains readable.')
+    witness=words('The clear sample '+second+' remains readable.')
+    result=adjudicate(('The clear sample '+proposed+' remains readable.').split(),source,witness,uncertain={3})
+    assert result['marked']==set()
+    assert result['tokens']==('The clear sample '+proposed+' remains readable.').split()
+    assert pa.audit_agreement(result['tokens'],source,witness)=={}
+
+
+@pytest.mark.parametrize('original,proposed',[('clear—sample','clear–sample'),('3—4','3–4'),('−','–'),(',', '.'),('—','minus')])
+def test_dash_formatting_cannot_clear_a_lexical_or_different_symbol_edit(original,proposed):
+    source=words('Read '+original+' beside the window.')
+    result=adjudicate(('Read '+proposed+' beside the window.').split(),source,source)
+    assert 1 in result['marked']
+
+
+@pytest.mark.parametrize('failure',['weak','other_occurrence'])
+def test_unproved_horizontal_punctuation_cannot_claim_a_formatting_settlement(failure):
+    source=words('The clear sample — remains readable.')
+    witness=words('The clear sample — remains readable.',89 if failure=='weak' else 99)
+    if failure=='other_occurrence':
+        for word in witness:word['bbox']=[v+500 for v in word['bbox']]
+    result=adjudicate('The clear sample – remains readable.'.split(),source,witness)
+    assert 3 in result['marked']
