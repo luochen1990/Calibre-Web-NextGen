@@ -3442,3 +3442,44 @@ def test_one_network_nonword_noise_cannot_veto_complete_pixel_support_for_model(
     else:
         assert note['status']=='UNRESOLVED'
     assert result['marked']=={2},'The actual model correction retains its source-linked record'
+
+
+@pytest.mark.parametrize('model,candidate,printed,status',[
+    ('barn','bam','barn','UNRESOLVED'),
+    ('modern','modem','modern','UNRESOLVED'),
+    ('modem','modern','modem','UNRESOLVED'),
+    ('clear','clean','clean','RESOLVED'),
+])
+def test_shared_joined_strokes_cannot_certify_even_a_dictionary_word(
+        monkeypatch,model,candidate,printed,status):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset(
+        {'read','the','sample','now',model,candidate}))
+    assert not pa._dictionary_regression(model,candidate),        'Both alternatives are deliberately in the synthetic vocabulary'
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=300,height=100)
+        page.insert_text((20,50),'Read the '+printed+' sample now',fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+    source[2]['text']=candidate
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda word:[[dict(word,text=candidate,confidence=99)]]*2
+    result=pa.adjudicate(('Read the '+model+' sample now').split(),source,witness)
+    note=result['word_notes'][2]
+    assert note['status']==status
+    assert result['marked']=={2}
+    if status=='UNRESOLVED':
+        assert result['tokens'][2]==model
+        assert note.get('source_image_only')
+        assert note['method']=='unproved_shared_stroke_identity'
+    else:assert result['tokens'][2]==printed
+
+
+def test_visible_native_strokes_remain_authoritative_over_a_model_conflation():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the barn sample now')
+    result=pa.adjudicate('Read the bam sample now'.split(),source,
+        pa.CropWitness(source),source_print=True)
+    assert result['tokens'][2]=='barn'
+    assert result['word_notes'][2]['status']=='RESOLVED'
+    assert result['word_notes'][2]['method']=='visible_mapped_native_glyphs'

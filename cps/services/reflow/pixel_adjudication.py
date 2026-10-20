@@ -244,6 +244,19 @@ def _dictionary_regression(original,chosen):
     return a!=b and a in vocabulary and b not in vocabulary
 
 
+def _joined_stroke_conflict(original,chosen):
+    """Agreement on joined Latin strokes cannot certify a different whole word.
+
+    Both alternatives can be dictionary entries. Keep the original ink until
+    evidence beyond the shared recognizer confusion distinguishes the strokes.
+    Reliably painted native occurrences take their earlier authority path.
+    """
+    letters=lambda value:''.join(c for c in _key(value).casefold()if c.isalpha())
+    a,b=letters(original),letters(chosen)
+    return bool(a and b and a!=b and a.isascii()and b.isascii()
+                and (a.replace('rn','m')==b or b.replace('rn','m')==a))
+
+
 def _letter_number_identity(value):
     return ''.join(c for c in _key(value)if c.isalnum())
 
@@ -488,7 +501,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         lexical_conflict=(z-a==y-b==1 and len(supported)==1
             and len(supported[0][1])==1
             and _dictionary_regression(proposed[b],supported[0][1][0]))
-        if lexical_conflict:supported=[]
+        stroke_conflict=(z-a==y-b==1 and len(supported)==1
+            and len(supported[0][1])==1
+            and _joined_stroke_conflict(proposed[b],supported[0][1][0]))
+        if lexical_conflict or stroke_conflict:supported=[]
         # A page read and a differently cropped read of the same English
         # network can repeat a confident error, including another dictionary
         # word. The production witness supplies separate English/Latin word
@@ -519,9 +535,13 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         # complete-looking nonword. A later crop cannot bypass the contextual
         # witness's safety veto. This never selects the dictionary spelling:
         # retain original ink, including a possible unusual printed spelling.
-        if (z-a==y-b==1 and len(supported)==1 and len(supported[0][1])==1
-            and _dictionary_regression(proposed[b],supported[0][1][0])):
-            lexical_conflict=True;supported=[];word_choice=None;resampled=None;alternate=None
+        if z-a==y-b==1 and len(supported)==1 and len(supported[0][1])==1:
+            unsafe_lexical=_dictionary_regression(proposed[b],supported[0][1][0])
+            unsafe_stroke=_joined_stroke_conflict(proposed[b],supported[0][1][0])
+            if unsafe_lexical or unsafe_stroke:
+                lexical_conflict=lexical_conflict or unsafe_lexical
+                stroke_conflict=stroke_conflict or unsafe_stroke
+                supported=[];word_choice=None;resampled=None;alternate=None
         if ordinal_conflict:supported=[choice for choice in supported if len(choice[1])==1 and _ordinal(choice[1][0])]
         quote_conflict=(z-a==y-b==1 and _quote_conflict(source_tokens[a],proposed[b])
             and (len(supported)!=1 or len(supported[0][1])!=1
@@ -544,7 +564,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
             and visible[b][0]not in pending and source[a].get('confidence',0)<85
-            and not(ordinal_conflict or quote_conflict or symbol_conflict or incomplete_ink or partial_wrap
+            and not(ordinal_conflict or quote_conflict or symbol_conflict or stroke_conflict or incomplete_ink or partial_wrap
                     or _small_mark_conflict(source_tokens[a],proposed[b]))
             and not _optical_counterread(source[a],witness,proposed[b]))
         if retained_vision:
@@ -556,9 +576,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                     status='RESOLVED' if resolved else 'UNRESOLVED',
                     method=('complete_vision_reading_without_optical_counterevidence'if retained_vision else word_method if word_choice else 'corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
                     source_range=[a,z],model_range=[b,y])
-        if (ordinal_conflict or quote_conflict or lexical_conflict or network_conflict or symbol_conflict) and not resolved:
+        if (ordinal_conflict or quote_conflict or lexical_conflict or stroke_conflict or network_conflict or symbol_conflict) and not resolved:
             record.update(source_image_only=True,source_bbox=list(source[a]['bbox']))
             if quote_conflict:record['method']='unproved_quote_identity'
+            elif stroke_conflict:record['method']='unproved_shared_stroke_identity'
             elif lexical_conflict:record['method']='unproved_shared_network_nonword'
             elif symbol_conflict:record['method']='unproved_mathematical_symbol_identity'
             elif network_conflict:record['method']='unproved_shared_network_word'
