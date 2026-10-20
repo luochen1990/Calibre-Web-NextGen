@@ -513,9 +513,20 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             from .text_quality import english_lexicon
             parts=proposed[b:y];vocabulary=english_lexicon()
             separation=getattr(witness,'word_separation',None)
-            may_join=(separation is not None and
-                      not all(_key(t).casefold()in vocabulary for t in parts)
-                      and separation(source[a],tuple(parts))is False)
+            measured=separation(source[a],tuple(parts))if separation is not None else None
+            if (measured is True and getattr(witness,'model_reading',False)
+                    and not getattr(witness,'failure',None) and not unresolved_source
+                    and not any(visible[i][0]in pending for i in range(b,y))
+                    and all(t.isascii()and t.isalpha()and t.casefold()in vocabulary for t in parts)
+                    and ''.join(parts)==source_tokens[a]):
+                # Individual original-ink runs prove the existing spaces.
+                # No letter changes, and no neighboring lexical uncertainty,
+                # arise merely from the source recognizer's fused token.
+                for token in parts:
+                    formatting.add(len(chosen));chosen.append((token,source[a]['bbox'],None))
+                continue
+            may_join=(not all(_key(t).casefold()in vocabulary for t in parts)
+                      and measured is False)
             joined=_own_word_choice(source[a],witness)if may_join else None
             supported=([('word',[joined['text']],[joined])]
                 if joined and _key(joined['text'])==_key(source_tokens[a])else [])

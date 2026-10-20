@@ -3898,3 +3898,23 @@ def test_other_source_rows_cannot_enter_complete_word_ink_scope(tmp_path,monkeyp
             assert not any(d['status']=='RESOLVED'and d['chosen']==['rose']for d in result['decisions'])
         scope=witness.word_scope(source[2]);assert scope is not None
         assert scope[1]>52 and scope[3]<65,'Other printed rows cannot enlarge this word scope'
+
+
+@pytest.mark.parametrize('space,uncertain',[(True,False),(False,False),(None,False),(True,True)])
+def test_printed_spaces_settle_complete_model_words_without_neighbor_uncertainty(space,uncertain):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read As a sample now.')
+    source[1]['text']='Asa';source[1]['bbox']=[20,20,58,32];del source[2]
+    witness=pa.CropWitness([dict(w)for w in source])
+    witness.model_reading=True
+    witness.word_separation=lambda word,parts:space
+    result=pa.adjudicate('Read As a sample now.'.split(),source,witness,uncertain={1}if uncertain else ())
+    assert result['tokens']=='Read As a sample now.'.split()
+    if space is True and not uncertain:
+        assert result['marked']==set(),'A proved space changes no model word and disputes no neighbor'
+        assert result['word_notes']=={}
+        assert result['decisions']==[]
+        assert set(result['boxes'])==set(range(5))
+    else:
+        assert result['marked'],'Absent space proof or explicit reader doubt remains disclosed'
+        assert any(d['status']=='UNRESOLVED'for d in result['decisions'])
