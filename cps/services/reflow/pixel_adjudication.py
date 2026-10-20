@@ -98,9 +98,36 @@ def _optical_counterread(source,witness,model):
     for name in ('word_readings','resampled','alternates'):
         reader=getattr(witness,name,None)
         if reader is not None:views.extend(reader(source)if name=='word_readings'else reader())
-    return any(row and row[0].get('confidence',0)>=85 and
-               _key(row[0]['text'])!=_key(model)
-               for view in views if (row:=_whole_view_word(source,view)))
+    for view in views:
+        row=_whole_view_word(source,view)
+        if not row:
+            # A padded source box can enclose a complete equally long word.
+            # This is counterevidence, not authority to overwrite the reader;
+            # a shorter tail still cannot challenge a complete lexical word.
+            a=source['bbox']
+            owned=[w for w in view if a[0]-.5<=(w['bbox'][0]+w['bbox'][2])/2<=a[2]+.5
+                   and min(a[3],w['bbox'][3])>max(a[1],w['bbox'][1])]
+            if len(owned)==1:
+                w=owned[0]
+                if (sum(c.isalnum()for c in w['text'])==sum(c.isalnum()for c in model)
+                    and _complete_word_occurrence(source,w)
+                    and min(a[3],w['bbox'][3])-max(a[1],w['bbox'][1])>=.55*(a[3]-a[1])):
+                    row=owned
+        if row and row[0].get('confidence',0)>=85 and _key(row[0]['text'])!=_key(model):return True
+    return False
+
+
+def _small_mark_conflict(left,right):
+    """Inconclusive recognition cannot settle accents, case or added ink marks."""
+    def marks(value):
+        count=0;result=[]
+        for char in _key(value):
+            if char.isalnum():count+=1
+            else:result.append((count,char))
+        return result
+    a,b=_key(left),_key(right)
+    return (_accent_conflict(a,b) or a!=b and a.casefold()==b.casefold()
+            or marks(a)!=marks(b))
 
 
 def _boundary_parts(model,source):
@@ -185,9 +212,9 @@ def _terminal_word_view(model, words):
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
         else:result.append(word)
-    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','model_reading')):
+    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','model_reading','failure')):
         result=CropWitness(result)
-        for name in ('alternates','resampled','mark_absence','word_readings','model_reading'):
+        for name in ('alternates','resampled','mark_absence','word_readings','model_reading','failure'):
             if hasattr(words,name):setattr(result,name,getattr(words,name))
     return result
 
@@ -489,7 +516,8 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
             and visible[b][0]not in pending and source[a].get('confidence',0)<85
-            and not(ordinal_conflict or quote_conflict or symbol_conflict or incomplete_ink or partial_wrap)
+            and not(ordinal_conflict or quote_conflict or symbol_conflict or incomplete_ink or partial_wrap
+                    or _small_mark_conflict(source_tokens[a],proposed[b]))
             and not _optical_counterread(source[a],witness,proposed[b]))
         if retained_vision:
             supported=[('model',proposed[b:y],[dict(source[a],text=proposed[b])])]
@@ -550,7 +578,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                        and _key(own[0]['text'])==_key(tokens[i]))
             source_own=[word for word in source if i in bounds and
                         _complete_word_occurrence(dict(bbox=bounds[i]),word)]
-            source_exact=(len(source_own)==1 and source_own[0].get('confidence',0)>=90
+            source_exact=(not getattr(witness,'failure',None) and len(source_own)==1 and source_own[0].get('confidence',0)>=90
                           and _key(source_own[0]['text'])==_key(tokens[i])
                           and not any(w.get('confidence',0)>=85 and _key(w['text'])!=_key(tokens[i])for w in own))
             if i not in notes and (own_exact or source_exact):

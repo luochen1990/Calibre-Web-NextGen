@@ -3214,7 +3214,7 @@ def test_complete_vision_word_is_not_disputed_by_missing_or_incomplete_optical_e
     witness=pa.CropWitness([]if optical=='missing'else[dict(w)for w in source])
     if optical=='competing':witness[2]['confidence']=99
     if optical=='fragment':
-        box=witness[2]['bbox'];witness[2].update(confidence=99,bbox=[box[0]+.25*(box[2]-box[0]),box[1],box[2],box[3]])
+        box=witness[2]['bbox'];witness[2].update(text='car',confidence=99,bbox=[box[0]+.25*(box[2]-box[0]),box[1],box[2],box[3]])
     if optical=='lower_only':
         box=witness[2]['bbox'];witness[2].update(confidence=99,bbox=[box[0],box[1]+.6*(box[3]-box[1]),box[2],box[3]])
     witness.word_readings=lambda word:[]
@@ -3257,3 +3257,34 @@ def test_compiled_vision_correction_names_its_actual_model_evidence(tmp_path,mon
            if n.get('class')=='footnote vision-disclosure']
     assert any('The complete vision reading is retained.'in text for text in notes)
     assert all('upright crop'not in text for text in notes)
+
+
+def test_failed_secondary_recognition_cannot_clear_explicit_reader_doubt():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the clear sample now.')
+    witness=pa.CropWitness()
+    witness.failure='Synthetic secondary recognition unavailable'
+    result=pa.adjudicate('Read the clear sample now.'.split(),source,witness,uncertain={2})
+    assert result['tokens'][2]=='clear'
+    assert result['word_notes'][2]['status']=='UNRESOLVED'
+    assert result['marked']=={2}
+
+
+@pytest.mark.parametrize('source_text,model_text',[('cafe','café'),('as','As'),('because','(because')])
+def test_first_vision_read_does_not_settle_unproved_small_marks_or_case(source_text,model_text):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the '+source_text+' sample now.',40)
+    witness=pa.CropWitness();witness.model_reading=True
+    result=pa.adjudicate(('Read the '+model_text+' sample now.').split(),source,witness)
+    assert result['word_notes'][2]['status']=='UNRESOLVED'
+    assert result['marked']=={2}
+
+
+def test_full_length_counterreading_in_a_padded_source_box_still_disputes_vision():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the clean sample now.',40)
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness[2].update(confidence=99,bbox=[42,20,56,32])
+    result=pa.adjudicate('Read the clear sample now.'.split(),source,witness)
+    assert result['word_notes'][2]['status']=='UNRESOLVED'
+    assert result['marked']=={2}
