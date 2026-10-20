@@ -2961,3 +2961,38 @@ def test_complete_independently_read_line_wrap_is_formatting(failure):
         assert result['marked']==set(),'A proved layout division changes no printed letters'
     else:assert result['marked'],'Unproved divisions cannot normalize away a real word boundary'
     assert source==before
+
+
+@pytest.mark.parametrize('fragment',[False,True])
+def test_a_cropped_glyph_fragment_cannot_certify_a_whole_word_replacement(fragment):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the quirble sample beside the window.')
+    optical=words('Please read the genuine sample beside the window.')
+    if fragment:optical[3]['bbox']=[63,20,68,32]
+    result=pa.adjudicate([w['text']for w in source],source,optical,corroboration=optical)
+    assert result['tokens'][3]==('quirble'if fragment else'genuine')
+    if fragment:assert 3 not in result['marked']
+    else:assert result['word_notes'][3]['status']=='RESOLVED'
+
+
+@pytest.mark.parametrize('fragment',[False,True])
+def test_partial_secondary_ink_cannot_create_a_whole_word_conflict(fragment):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the clear sample beside the window.')
+    optical=words('Please read the clcar sample beside the window.')
+    if fragment:optical[3]['bbox']=[63,20,68,32]
+    notes=pa.audit_agreement([w['text']for w in source],source,optical)
+    assert set(notes)==(set()if fragment else{3})
+    if not fragment:assert notes[3]['alternative']==['clcar']
+
+
+def test_a_partial_secondary_word_cannot_force_a_live_word_into_an_image():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read the clear sample beside the window.',40)
+    witness=pa.CropWitness(words('Please read the clcar sample beside the window.'))
+    partial=words('Please read the clcar sample beside the window.',40);partial[3]['bbox']=[63,20,68,32]
+    witness.alternates=lambda:[partial,partial]
+    result=dict(tokens='Please read the clear sample beside the window.'.split(),marked={3},word_notes={3:dict(source=['clcar'],model=['clear'],chosen=['clear'],status='UNRESOLVED')})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert not result['word_notes'][3].get('source_image_only')
+    assert result['marked']=={3},'The actual full conflicting occurrence still retains its local uncertainty'

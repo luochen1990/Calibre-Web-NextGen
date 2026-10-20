@@ -252,7 +252,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             formatting.add(len(chosen));chosen.append((proposed[b],wrap,None));continue
         if kind=='equal':
             for token,index in zip(proposed[b:y],range(a,z)):
-                own=[word for word in witness if _same_occurrence(source[index],word)]
+                own=[word for word in witness if _complete_word_occurrence(source[index],word)]
                 word=own[0] if len(own)==1 else None
                 second=([other for other in corroboration if _same_occurrence(word,other)
                     and _key(word['text'])==_key(other['text'])] if word else [])
@@ -295,7 +295,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         direct=[];boundary=None
         if z-a==y-b==1 and not any(len(_matches(pixels,left+seq+right))>1
                                    for name,seq,literal in alternatives):
-            own=[w for w in witness if _same_occurrence(source[a],w)]
+            own=[w for w in witness if _complete_word_occurrence(source[a],w)]
             if len(own)==1 and own[0].get('confidence',0)>=90:
                 word=own[0];key=_key(word['text'])
                 second=[w for w in corroboration if _same_occurrence(word,w) and _key(w['text'])==key]
@@ -732,19 +732,25 @@ def audit_agreement(tokens, source, witness, boundary_proof=None, word_boxes=Non
     # Recognition may fuse adjacent printed words. Exact letters plus an
     # independently observed blank between every original occurrence can prove
     # the existing spaces. Geometry alone and a dictionary never waive a clash.
-    segmented=set()
-    if boundary_proof is not None:
-        for other in witness:
-            owned=[(i,w)for i,w in occurrences.items()if _same_occurrence(w,other)]
-            if not 2<=len(owned)<=3 or other.get('confidence',0)<85:continue
-            if ''.join(_key(w['text'])for j,w in owned)!=_key(other['text']):continue
-            if all(boundary_proof(a,b)for (_,a),(_,b)in zip(owned,owned[1:])):
-                segmented.update(j for j,w in owned)
+    segmented=set();fused={}
+    for other in witness:
+        owned=[(i,w)for i,w in occurrences.items()if _same_occurrence(w,other)]
+        if not 2<=len(owned)<=3 or other.get('confidence',0)<85:continue
+        if ''.join(_key(w['text'])for j,w in owned)!=_key(other['text']):continue
+        for j,w in owned:fused.setdefault(j,set()).add(id(other))
+        if boundary_proof is not None and all(
+                boundary_proof(a,b)for (_,a),(_,b)in zip(owned,owned[1:])):
+            segmented.update(j for j,w in owned)
     notes={}
     for i,token in visible:
         if i in segmented or i not in occurrences:continue
         word=occurrences[i]
-        overlapping=[w for w in witness if _same_occurrence(word,w)]
+        # A fused recognition can contradict several complete source words,
+        # but a narrow glyph fragment cannot contradict its whole owner.
+        overlapping=[w for w in witness if _same_occurrence(word,w) and
+            (id(w)in fused.get(i,set()) or
+             min(word['bbox'][2],w['bbox'][2])-max(word['bbox'][0],w['bbox'][0])
+             >=.6*(word['bbox'][2]-word['bbox'][0]))]
         if len(overlapping)!=1:continue
         other=overlapping[0]
         if other.get('confidence',0)<85 or _key(other['text'])==_key(token):continue
@@ -1041,11 +1047,11 @@ def alternate_regions(regions):
 
 
 def _complete_word_occurrence(source,word):
-    """An internal punctuation atom cannot own a larger recognized word."""
+    """A partial glyph crop cannot stand for either complete word occurrence."""
     if not _same_occurrence(source,word):return False
     a,b=source['bbox'],word['bbox']
     if source.get('native_parts') and not all(
             b[0]-.2<=(p['bbox'][0]+p['bbox'][2])/2<=b[2]+.2 and
             b[1]-.2<=(p['bbox'][1]+p['bbox'][3])/2<=b[3]+.2
             for p in source['native_parts']):return False
-    return min(a[2],b[2])-max(a[0],b[0])>=.6*(b[2]-b[0])
+    return min(a[2],b[2])-max(a[0],b[0])>=.6*max(a[2]-a[0],b[2]-b[0])
