@@ -38,6 +38,27 @@ def _quote_conflict(left,right):
     return a[0]==b[0] and a[1]!=b[1]
 
 
+def _initialism_mark_conflict(left,right,chosen=None):
+    """Omitted internal dots are not proof that printed initials lack them."""
+    import re
+    outer='"“”‘’\',;:!?()[]'
+    a,b=(_key(value).strip(outer)for value in (left,right))
+    initialism=r'(?:[A-Z]\.){2,}[A-Z]?\.?'
+    if not any(re.fullmatch(initialism,value)for value in (a,b)):return False
+    letters=lambda value:value.replace('.','').casefold()
+    if letters(a)!=letters(b):return False
+    def dots(value):
+        count=0;positions=set()
+        for char in value:
+            if char=='.':positions.add(count)
+            else:count+=1
+        return positions
+    required=dots(a)|dots(b)
+    if chosen is None:return bool(required)
+    candidate=_key(chosen).strip(outer)
+    return letters(candidate)!=letters(a)or not required<=dots(candidate)
+
+
 def _ordinal(value):
     import re
     match=re.fullmatch(r'([0-9]+)(st|nd|rd|th)[.,;:!?]?',_key(value))
@@ -549,6 +570,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                  or any(not c.isalnum()and not c.isspace()
                         and c not in _key(source_tokens[a])+_key(proposed[b])
                         for c in _key(supported[0][1][0]))))
+        initialism_conflict=(z-a==y-b==1 and _initialism_mark_conflict(
+            source_tokens[a],proposed[b],supported[0][1][0]
+            if len(supported)==1 and len(supported[0][1])==1 else None))
+        if initialism_conflict:supported=[];boundary=None
         if quote_conflict:
             # Agreement between OCR settings can repeat a missing apostrophe or
             # collapse the first reading's double quote. It cannot authorize
@@ -564,7 +589,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
             and visible[b][0]not in pending and source[a].get('confidence',0)<85
-            and not(ordinal_conflict or quote_conflict or symbol_conflict or stroke_conflict or incomplete_ink or partial_wrap
+            and not(ordinal_conflict or quote_conflict or symbol_conflict or stroke_conflict or initialism_conflict or incomplete_ink or partial_wrap
                     or _small_mark_conflict(source_tokens[a],proposed[b]))
             and not _optical_counterread(source[a],witness,proposed[b]))
         if retained_vision:
@@ -576,9 +601,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                     status='RESOLVED' if resolved else 'UNRESOLVED',
                     method=('complete_vision_reading_without_optical_counterevidence'if retained_vision else word_method if word_choice else 'corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
                     source_range=[a,z],model_range=[b,y])
-        if (ordinal_conflict or quote_conflict or lexical_conflict or stroke_conflict or network_conflict or symbol_conflict) and not resolved:
+        if (ordinal_conflict or quote_conflict or lexical_conflict or stroke_conflict or initialism_conflict or network_conflict or symbol_conflict) and not resolved:
             record.update(source_image_only=True,source_bbox=list(source[a]['bbox']))
             if quote_conflict:record['method']='unproved_quote_identity'
+            elif initialism_conflict:record['method']='unproved_initialism_punctuation'
             elif stroke_conflict:record['method']='unproved_shared_stroke_identity'
             elif lexical_conflict:record['method']='unproved_shared_network_nonword'
             elif symbol_conflict:record['method']='unproved_mathematical_symbol_identity'

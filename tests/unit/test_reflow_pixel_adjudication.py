@@ -3483,3 +3483,36 @@ def test_visible_native_strokes_remain_authoritative_over_a_model_conflation():
     assert result['tokens'][2]=='barn'
     assert result['word_notes'][2]['status']=='RESOLVED'
     assert result['word_notes'][2]['method']=='visible_mapped_native_glyphs'
+
+
+@pytest.mark.parametrize('source_token,model_token,read_token,native,status',[
+    ('ABC','A.B.C.','ABC',False,'UNRESOLVED'),
+    ('A.B.C.','ABC','ABC',False,'UNRESOLVED'),
+    ('ABC','A.B.C.','A.B.C.',False,'RESOLVED'),
+    ('ABC','A.B.C.','ABC',True,'RESOLVED'),
+    ('A.B.C.','A.B.C.','ABC',False,'UNCHANGED'),
+])
+def test_omitted_initialism_dots_need_positive_print_evidence(
+        source_token,model_token,read_token,native,status):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    printed=source_token if native else 'A.B.C.'
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=300,height=100)
+        page.insert_text((20,50),'Read the '+printed+' sample now',fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+    source[2]['text']=source_token
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness[2]['text']=read_token
+    witness.word_readings=lambda word:[[dict(word,text=read_token,confidence=99)]]*2
+    result=pa.adjudicate(('Read the '+model_token+' sample now').split(),source,witness,source_print=native)
+    if status=='UNCHANGED':
+        assert result['tokens'][2]==model_token and not result['marked']
+    else:
+        note=result['word_notes'][2]
+        assert note['status']==status
+        assert result['marked']=={2}
+        if status=='UNRESOLVED':
+            assert note.get('source_image_only')
+            assert note['method']=='unproved_initialism_punctuation'
+        else:assert result['tokens'][2]==printed
