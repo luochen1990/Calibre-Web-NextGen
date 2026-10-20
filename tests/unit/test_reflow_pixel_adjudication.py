@@ -3086,7 +3086,7 @@ def test_unchanged_lexical_word_keeps_its_proved_literal_suffix(suffix):
     assert not result.get('word_notes',{}).get(3,{}).get('source_image_only'), 'Punctuation and a separately proved marker do not dispute the unchanged lexical word'
 
 
-@pytest.mark.parametrize('failure',['none','weak','remote','network_conflict','frame_conflict'])
+@pytest.mark.parametrize('failure',['none','small_line','weak','remote','network_conflict','frame_conflict'])
 def test_complete_own_word_uses_diverse_single_line_proof_when_word_mode_is_weak(monkeypatch,tmp_path,failure):
     from cps.services.reflow import pixel_adjudication as pa,text_quality
     import shutil
@@ -3097,7 +3097,7 @@ def test_complete_own_word_uses_diverse_single_line_proof_when_word_mode_is_weak
         calls.append((language,scale,psm))
         if psm==6:return [dict(w)for w in source]
         text='clear'if (failure=='network_conflict'and language=='LatinRaw')or(failure=='frame_conflict'and scale==6)else'clean'
-        word=dict(source[3],text=text,confidence=40 if psm==8 or failure=='weak'else 99)
+        word=dict(source[3],text=text,confidence=40 if psm==8 or failure=='weak'or(failure=='small_line'and scale!=3)else 99)
         if failure=='remote'and psm==7:word['bbox']=[v+500 for v in word['bbox']]
         return [word]
     monkeypatch.setattr(pa,'_read_crop',recognize)
@@ -3109,7 +3109,7 @@ def test_complete_own_word_uses_diverse_single_line_proof_when_word_mode_is_weak
     witness.resampled=lambda:[]
     result=adjudicate('Please read the clear sample beside the window.'.split(),source,witness)
     note=result['word_notes'][3]
-    if failure=='none':
+    if failure in('none','small_line'):
         assert result['tokens'][3]=='clean'
         assert note['status']=='RESOLVED'and not note.get('source_image_only')
         assert ('eng',4,7)in calls and ('LatinRaw',4,7)in calls

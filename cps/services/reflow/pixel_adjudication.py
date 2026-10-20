@@ -606,7 +606,7 @@ def read_crop(display, regions, cache):
                 # same occurrence. Conflicting positive frame pairs cannot win.
                 views.extend(_read_crop(display,[bounds],cache,language=language,
                     scale=scale,tessdata=data,psm=7)
-                    for scale in (4,6)for language,data in networks)
+                    for scale in (3,4,6)for language,data in networks)
                 return views
             except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
         result.word_readings=lambda word:own_word(tuple(word['bbox']))
