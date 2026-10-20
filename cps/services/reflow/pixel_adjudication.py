@@ -24,6 +24,19 @@ def _accent_conflict(left,right):
     return a!=b and bare(a)==bare(b)
 
 
+def _quote_conflict(left,right):
+    """Recognizers that omit a small mark cannot prove its absence in print."""
+    def signature(value):
+        letters=[];marks=[]
+        for char in _key(value):
+            if char.isalnum():letters.append(char.casefold())
+            elif char in ('"', "'") or unicodedata.category(char) in ('Pi','Pf'):
+                marks.append((len(letters),char))
+        return ''.join(letters),marks
+    a,b=signature(left),signature(right)
+    return a[0]==b[0] and a[1]!=b[1]
+
+
 def _ordinal(value):
     import re
     match=re.fullmatch(r'([0-9]+)(st|nd|rd|th)[.,;:!?]?',_key(value))
@@ -322,6 +335,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 alternate=_alternate_choice(source,a,witness,proposed[b])
                 if alternate:supported=[('alternate',[alternate['text']],[alternate])]
         if ordinal_conflict:supported=[choice for choice in supported if len(choice[1])==1 and _ordinal(choice[1][0])]
+        quote_conflict=(z-a==y-b==1 and _quote_conflict(source_tokens[a],proposed[b]))
+        if quote_conflict:
+            # Agreement between OCR settings can repeat a missing apostrophe or
+            # collapse a double quote. Neither spelling earns a live correction
+            # from that evidence; keep this exact word as original source ink.
+            supported=[];boundary=None
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
             boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or not proposed[b:y] else ('model',proposed[b:y],[]))
@@ -329,8 +348,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                     status='RESOLVED' if resolved else 'UNRESOLVED',
                     method=('two_own_word_language_readings' if word_choice else 'corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
                     source_range=[a,z],model_range=[b,y])
-        if ordinal_conflict and not resolved:
+        if (ordinal_conflict or quote_conflict) and not resolved:
             record.update(source_image_only=True,source_bbox=list(source[a]['bbox']))
+            if quote_conflict:record['method']='unproved_quote_identity'
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
                [w['bbox'] for w in source[a:z]])

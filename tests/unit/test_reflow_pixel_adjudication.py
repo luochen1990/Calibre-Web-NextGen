@@ -2874,3 +2874,24 @@ def test_reference_projection_preserves_a_recognition_abort_receipt():
     _,projected=vp._lexical_marker_view([],source,{})
     assert getattr(projected,'failure',None)==source.failure
 
+
+@pytest.mark.parametrize('proposed,recognized',[("We're",'Were'),('"Clear',"'Clear"),('Were',"We're")])
+def test_quote_omission_by_ocr_cannot_certify_a_changed_printed_word(proposed,recognized):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Please read '+recognized+' beside the window.')
+    witness=pa.CropWitness([dict(w)for w in source])
+    witness.alternates=lambda:[[dict(w)for w in source]]*2
+    witness.word_readings=lambda word:[[dict(w)for w in source]]*2
+    model=('Please read '+proposed+' beside the window.').split()
+    result=adjudicate(model,source,witness,corroboration=source)
+    note=result['word_notes'][2]
+    assert note['status']=='UNRESOLVED','OCR without an apostrophe is not a proof that the print has none'
+    assert note['source_image_only'] and note['source_bbox']==source[2]['bbox']
+    assert result['marked']=={2}
+
+
+def test_quote_codepoint_normalization_does_not_invent_word_uncertainty():
+    original=words('Please read we’re beside the window.')
+    model="Please read we're beside the window.".split()
+    result=adjudicate(model,original,original)
+    assert result['tokens']==model and result['marked']==set()
