@@ -313,8 +313,10 @@ def _symbol_identity_conflict(original,chosen):
     """A mathematical glyph cannot be certified as alphabetic/numeric text."""
     symbols=lambda value:{c for c in value if unicodedata.category(c)in('Sm','So')}
     a,b=symbols(original),symbols(chosen)
-    return (a!=b and (bool(a and b) or
-            _letter_number_identity(original)!=_letter_number_identity(chosen)))
+    # A symbol and ordinary punctuation both have an empty letter inventory.
+    # That equality is not evidence that their visible shapes are the same.
+    left,right=_letter_number_identity(original),_letter_number_identity(chosen)
+    return a!=b and (not(left or right)or bool(a and b)or left!=right)
 
 
 def _proved_wrap(source,model,witness,same_reading=False):
@@ -692,6 +694,13 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         if incomplete_ink and not resolved:
             record.update(source_image_only=True,source_bbox=list(source[a]['bbox']),
                 method='incomplete_vertical_word_ink')
+        unproved_source_choice=(not resolved and bool(literal)
+            and list(literal)==source_tokens[a:z]and list(literal)!=proposed[b:y])
+        if unproved_source_choice:
+            # Source conservation may retain a real word omitted by the first
+            # reader, but an unproved OCR change is not a live transcription.
+            # Keep its own original ink until the independent read proves it.
+            record.update(source_image_only=True,method='unproved_source_transcription_change')
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
                [w['bbox'] for w in source[a:z]])
@@ -699,7 +708,14 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                max(x[2] for x in boxes),max(x[3] for x in boxes)] if boxes else None)
         for j,token in enumerate(literal):
             word_record=_word_note(record,j,len(decisions)-1)
-            chosen.append((token,evidence[j]['bbox'] if evidence else box,word_record))
+            if unproved_source_choice:
+                own=list(source[a+j]['bbox'])
+                word_record=dict(word_record,source_image_only=True,
+                    source=[source[a+j]['text']],source_bbox=own,
+                    source_range=[a+j,a+j+1])
+                word_record.pop('mapping',None)
+                chosen.append((token,own,word_record))
+            else:chosen.append((token,evidence[j]['bbox'] if evidence else box,word_record))
         # A deletion still needs a control attached to an adjacent live word.
         if not literal:changes.append((len(chosen),record,box))
     # Reinsert source-proven note placeholders at their original model boundary.

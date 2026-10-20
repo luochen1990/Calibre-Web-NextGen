@@ -3956,3 +3956,78 @@ def test_unfamiliar_joined_stroke_candidate_keeps_possible_unseen_letters_unreso
     else:
         assert result['tokens'][2]==candidate
         assert note['status']=='RESOLVED'and not note.get('source_image_only')
+@pytest.mark.parametrize('inserted',[['bright'],['soft','blue']])
+@pytest.mark.parametrize('replacement',[[],['silver']])
+@pytest.mark.parametrize('proved',[False,True])
+def test_unproved_source_changes_have_their_own_original_ink(inserted,replacement,proved):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Keep the '+' '.join(inserted)+' sample ready now.')
+    witness=pa.CropWitness([dict(w)for w in source]if proved else [])
+    model=['Keep','the',*replacement,'sample','ready','now.']
+    result=pa.adjudicate(model,source,witness,unresolved_source=bool(replacement))
+    assert result['tokens']==[w['text']for w in source]
+    for index in range(2,2+len(inserted)):
+        note=result['word_notes'][index]
+        assert note['status']==('RESOLVED'if proved else'UNRESOLVED')
+        assert bool(note.get('source_image_only'))is not proved
+        if not proved:
+            assert note['source_bbox']==source[index]['bbox']
+            assert result['boxes'][index]==source[index]['bbox']
+            assert note['source']==[source[index]['text']]
+            if not replacement:assert note['model']==[]
+
+
+@pytest.mark.parametrize('proved',[False,True])
+def test_compilation_cannot_publish_an_unproved_source_insertion_as_live_text(tmp_path,monkeypatch,proved):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def __init__(self):self.images={}
+        def image(self,name,data):self.images[name]=data
+        def disclosure_image(self,name,display,rect):
+            self.images[name]=display.pixmap(rect,scale=2,max_pixels=100000).tobytes('jpg')
+    package=Package()
+    with pymupdf.open()as drawing,pymupdf.open()as doc:
+        leaf=drawing.new_page(width=320,height=150)
+        leaf.insert_text((25,60),'Keep the bright sample ready now.',fontsize=11)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in leaf.get_text('words')]
+        raster=leaf.get_pixmap(matrix=pymupdf.Matrix(2,2),alpha=False).tobytes('png')
+        doc.new_page(width=320,height=150).insert_image(leaf.rect,stream=raster)
+        assert not doc[0].get_text(),'Native paint authority is a separate positive control'
+        monkeypatch.setattr(pa,'read_crop',lambda *args:pa.CropWitness(
+            [dict(w)for w in source]if proved else []))
+        page,report=vp.compile_page({'blocks':[block('Keep the sample ready now.',bbox=(0,0,1000,1000))]},
+            source,SourceDisplay(doc,0),0,package,{},pixel_words=source,
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    own=report['blocks'][0]
+    assert own['published_tokens']=='Keep the bright sample ready now.'.split()
+    body=' '.join(page['body'])
+    if proved:
+        assert 'bright'in vp._seam_text(body)
+        assert own['source_image_words']==[]
+        assert all(d['status']=='RESOLVED'for d in own['adjudication'])
+    else:
+        assert 'bright'not in vp._seam_text(body),'A dagger cannot make an unproved live insertion safe'
+        assert own['source_image_words']==[2]
+        assert body.count('class="source-word-image"')==1
+        assert package.images,'The actual original word must remain inspectable'
+
+
+@pytest.mark.parametrize('model,optical',[('★','&'),('÷',':')])
+@pytest.mark.parametrize('native',[False,True])
+def test_symbol_to_punctuation_is_not_empty_letter_agreement(model,optical,native):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the '+optical+' sample now.')
+    witness=pa.CropWitness([dict(w)for w in source])
+    witness.word_readings=lambda word:[[dict(word,confidence=99)]]*2
+    result=pa.adjudicate(('Read the '+model+' sample now.').split(),source,witness,
+        unresolved_source=not native,source_print=native)
+    note=result['word_notes'].get(2,{})
+    if native:
+        assert result['tokens'][2]==optical
+        assert not note or note['status']=='RESOLVED'and note['method']=='visible_mapped_native_glyphs'
+    else:
+        assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+        assert note['source_bbox']==source[2]['bbox']
