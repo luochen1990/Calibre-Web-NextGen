@@ -1983,6 +1983,22 @@ def _lexical_marker_view(tokens,source,proofs):
                     box[0]>=bounds[2]-max(1,bounds[3]-bounds[1])*1.5):
                 replacement=text[:suffix.start()]+suffix[1];break
         if replacement:result.append(word if replacement==text else dict(word,text=replacement))
+    from .pixel_adjudication import CropWitness
+    if isinstance(source,CropWitness):
+        result=CropWitness(result)
+        # Reserving reference ink changes the lexical view, not the independent
+        # recognizer or its failure receipt. Project lazy secondary views through
+        # the same reservations so they cannot reintroduce the reference as prose.
+        def project(views):
+            return [_lexical_marker_view(tokens,view,proofs)[1]for view in views]
+        for name in ('alternates','resampled'):
+            reader=getattr(source,name,None)
+            if reader is not None:
+                setattr(result,name,lambda reader=reader:project(reader()))
+        if hasattr(source,'word_readings'):
+            result.word_readings=lambda word:project(source.word_readings(word))
+        for name in ('mark_absence','failure'):
+            if hasattr(source,name):setattr(result,name,getattr(source,name))
     return lexical,result
 
 

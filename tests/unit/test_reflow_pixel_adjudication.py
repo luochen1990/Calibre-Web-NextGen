@@ -2840,3 +2840,37 @@ def test_balanced_optical_word_boundaries_do_not_move_neighbour_uncertainty(tmp_
     assert ink.body_texts(docs)==[printed]
     assert set(record['marked'])==({1,2,6,7}if conflict else{1,2,7})
     assert record['source_image_words']==[]
+
+
+def test_reference_projection_keeps_lazy_pixel_witnesses_and_reserves_the_same_ink():
+    from cps.services.reflow import pixel_adjudication as pa,vision_pipeline as vp
+    source=pa.CropWitness(words('Clear 2 samples stay readable.'))
+    before=[dict(w,bbox=list(w['bbox']))for w in source]
+    calls=[]
+    def views(name):
+        calls.append(name)
+        return [[dict(w)for w in source],[dict(w)for w in source]]
+    source.alternates=lambda:views('alternate')
+    source.resampled=lambda:views('resampled')
+    source.word_readings=lambda word:views(('word',word['text']))
+    source.mark_absence=lambda word:word['text']=='Clear'
+    tokens=['Clear','<n:note>','samples','stay','readable.']
+    proofs={1:dict(status='PROVED',label='2',source_bbox=list(source[1]['bbox']))}
+    lexical,projected=vp._lexical_marker_view(tokens,source,proofs)
+    assert lexical==tokens and calls==[],'projection must not dispatch another recognition'
+    for method in('alternates','resampled','word_readings'):
+        reader=getattr(projected,method,None)
+        assert callable(reader),'the independent witness must survive a typed reference'
+        result=reader(source[0])if method=='word_readings'else reader()
+        assert [[w['text']for w in view]for view in result]==[['Clear','samples','stay','readable.']]*2
+    assert projected.mark_absence(source[0])
+    assert source==before,'the original occurrence inventory is immutable'
+    assert len(calls)==3
+
+
+def test_reference_projection_preserves_a_recognition_abort_receipt():
+    from cps.services.reflow import pixel_adjudication as pa,vision_pipeline as vp
+    source=pa.CropWitness();source.failure='Synthetic crop recognition abort'
+    _,projected=vp._lexical_marker_view([],source,{})
+    assert getattr(projected,'failure',None)==source.failure
+
