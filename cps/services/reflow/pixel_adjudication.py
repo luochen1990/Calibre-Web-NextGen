@@ -747,7 +747,14 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 counter=any(_complete_word_occurrence(word,other)
                     and other.get('confidence',0)>=85
                     and _key(other['text'])!=_key(word['text'])for other in witness)
-                if any(c.isalnum()for c in word['text'])and(weak or counter):withheld.add(j)
+                # Two source records claiming the same physical word are not
+                # independent occurrences, even if their confidence is absent
+                # or high. A hidden layer can append several guessed labels at
+                # one interpolated position; conservation cannot print them.
+                collision=any(index!=a+j and all(abs(x-y)<.1
+                    for x,y in zip(word['bbox'],other['bbox']))
+                    for index,other in enumerate(source))
+                if any(c.isalnum()for c in word['text'])and(weak or counter or collision):withheld.add(j)
             if withheld:record['method']='unproved_source_transcription_change'
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else

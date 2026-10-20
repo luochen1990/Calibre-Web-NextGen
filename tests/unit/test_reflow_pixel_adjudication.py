@@ -4171,3 +4171,23 @@ def test_source_conservation_withholds_only_the_specific_weak_or_contested_word(
     assert not result['word_notes'][3].get('source_image_only'),'The neighboring admitted word is not implicated'
     assert result['word_notes'][2]['status']=='UNRESOLVED','Absence of a second read certifies no correction'
     if confidence==40 or counter:assert result['word_notes'][2]['source_bbox']==source[2]['bbox']
+
+
+@pytest.mark.parametrize('collision',[False,True])
+@pytest.mark.parametrize('confidence',[None,99])
+def test_conserved_source_labels_require_separate_physical_occurrences(collision,confidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Keep the sample ready. 1 2')
+    if collision:source[-1]['bbox']=list(source[-2]['bbox'])
+    for word in source[-2:]:
+        if confidence is None:word.pop('confidence')
+        else:word['confidence']=confidence
+    result=pa.adjudicate('Keep the sample ready.'.split(),source,pa.CropWitness())
+    assert result['tokens']==[w['text']for w in source]
+    assert result['marked']=={4,5}
+    for index in (4,5):
+        note=result['word_notes'][index]
+        assert bool(note.get('source_image_only'))is collision
+        assert note['status']=='UNRESOLVED'
+        if collision:assert note['source_bbox']==source[index]['bbox']
+    assert all(i not in result['word_notes']for i in range(4))
