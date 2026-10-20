@@ -2555,3 +2555,177 @@ def test_native_complete_print_owns_rows_beyond_a_cached_first_line(tmp_path,mon
         if spelling!='punctuated_ordinal':
             assert records[0]['native_geometry_binding']=='unique_complete_source_text'
             assert records[0]['source_regions'][0][3]>90
+
+
+@pytest.mark.parametrize('case',['plain','italic','leading_spaces','ordinary_size','hidden','repeated','changed_word','foreign_box','semantic_action','other_owner'])
+def test_native_detached_prefix_keeps_its_source_position_in_formatted_prose(case):
+    import pymupdf,copy
+    from cps.services.reflow import vision_pipeline as vp,assemble
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=300)
+        def draw(y):
+            leaf.insert_text((35,y),'A quiet sample stays',fontsize=12)
+            leaf.insert_text((35,y+18),'clear and completely readable.',fontsize=12)
+            leaf.insert_text((30,y-4),'1',fontsize=12 if case=='ordinary_size'else 6,
+                render_mode=3 if case=='hidden'else 0)
+        draw(80)
+        if case=='repeated':draw(170)
+        first=('   'if case=='leading_spaces'else'')+'A quiet sample stays 1 '
+        runs=([['t',first],['t','clear','italic'],['t',' and completely readable.']]
+              if case=='italic'else[['t',first+'clear and completely readable.']])
+        if case=='changed_word':runs[0][1]=runs[0][1].replace('quiet','noisy')
+        if case=='semantic_action':runs=[['t','A quiet sample stays '],['sup','1'],['t','clear and completely readable.']]
+        box=[35,65,300,84]if case!='foreign_box'else[35,230,300,250]
+        element=assemble.Element('p',runs=runs,pno=0,bbox=box,line_boxes=[tuple(box)])
+        elements=[element]
+        if case=='other_owner':elements.append(assemble.Element('p',runs=[['t','clear and completely readable.']],pno=0,bbox=[35,84,300,103],line_boxes=[(35,84,300,103)]))
+        book=assemble.Book(pages={0:elements},elements=elements)
+        before=copy.deepcopy(element.runs)
+        receipts=vp._native_publication_ownership(doc,book,[0])[0]
+        if case in('plain','italic','leading_spaces'):
+            assert element.text.split()==['1','A','quiet','sample','stays','clear','and','completely','readable.']
+            assert any(r['kind']=='original_detached_native_prefix'for r in receipts)
+            assert element.bbox[3]>98
+            if case=='italic':assert ['t','clear','italic']in element.runs
+            page=dict(body=['<p>'+vp.build_epub._runs_html(element.runs,set(),{},set())+'</p>'])
+            records=vp._native_seam_blocks(doc,book,0,page)
+            assert records[0]['native_occurrence_count']==1
+        else:
+            assert element.runs==before, 'Only a unique visible original prefix may change native run order'
+            assert not any(r['kind']=='original_detached_native_prefix'for r in receipts)
+
+
+@pytest.mark.parametrize('foreign_owner',[False,True])
+def test_native_complete_cell_inventory_uses_exact_components_not_its_envelope(tmp_path,monkeypatch,foreign_owner):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,assemble,pixel_adjudication as pa
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=250)
+        leaf.insert_text((25,70),'Quiet sample',fontsize=12)
+        leaf.insert_text((25,90),'stays clear.',fontsize=12)
+        leaf.insert_text((240,70),'Other sample',fontsize=12)
+        leaf.insert_text((240,90),'remains readable.',fontsize=12)
+        leaf.insert_text((155,80),'Separate',fontsize=10)
+        text='Quiet sample stays clear. Other sample remains readable.'
+        element=assemble.Element('p',runs=[['t',text]],pno=0,bbox=[20,54,360,74])
+        elements=[element]
+        if foreign_owner:elements.append(assemble.Element('p',runs=[['t','Other sample remains readable.']],pno=0,bbox=[235,54,370,95]))
+        book=assemble.Book(pages={0:elements},elements=elements)
+        page=dict(pno=0,body=['<p>'+text+'</p>'],asides=[])
+        records=vp._native_seam_blocks(doc,book,0,page)
+        if foreign_owner:
+            assert records[0]['native_geometry_binding']!='unique_complete_source_text'
+            return
+        monkeypatch.setattr(pa,'read_crop',lambda *args:pytest.fail('Complete mapped original cells do not need optical spelling'))
+        vp._audit_native_pixels(doc,page,records,tmp_path,object(),{})
+        assert records[0]['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
+        assert records[0]['native_geometry_binding']=='unique_complete_source_text'
+        words=[dict(text=w[4],bbox=list(w[:4]))for w in leaf.get_text('words')]
+        selected=[w['text']for w in words if any(vp.owned_words([w],b)for b in records[0]['source_regions'])]
+        assert selected==text.split()
+        assert 'Separate'not in selected, 'An interior foreign cell cannot be borrowed through a rectangular envelope'
+        assert page['body']==['<p>'+text+'</p>'] and not records[0].get('marked')
+
+
+@pytest.mark.parametrize('case',['unique','repeated','contradicted'])
+def test_native_single_word_uses_its_complete_original_occurrence(tmp_path,monkeypatch,case):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,assemble,pixel_adjudication as pa
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=300,height=250)
+        leaf.insert_text((25,50),'Other header',fontsize=12)
+        leaf.insert_text((25,120),'Clear.'if case!='contradicted'else'Quiet.',fontsize=12)
+        if case=='repeated':leaf.insert_text((25,180),'Clear.',fontsize=12)
+        element=assemble.Element('p',runs=[['t','Clear.']],pno=0,bbox=[20,34,200,55])
+        book=assemble.Book(pages={0:[element]},elements=[element]);page=dict(pno=0,body=['<p>Clear.</p>'],asides=[])
+        record=vp._native_seam_blocks(doc,book,0,page)[0]
+        if case=='unique':
+            monkeypatch.setattr(pa,'read_crop',lambda *args:pytest.fail('An actual mapped native word requires no optical spelling'))
+            vp._audit_native_pixels(doc,page,[record],tmp_path,object(),{})
+            assert record['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
+            assert record['native_occurrence_count']==1 and record['bbox'][1]>90
+            assert page['body']==['<p>Clear.</p>']and not record.get('marked')
+        else:
+            assert record.get('native_geometry_binding')!='unique_complete_source_text'
+            assert record['native_occurrence_count']==(2 if case=='repeated'else 0)
+
+
+def test_native_note_keeps_complete_live_rows_beyond_a_nonempty_cached_box(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,assemble,build_epub
+    first='The quiet sample remains clear'
+    last='and every following printed word stays readable.'
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=250)
+        leaf.insert_text((35.5,61),'1',fontsize=6)
+        leaf.insert_text((40,70),first,fontsize=10)
+        leaf.insert_text((40,90),last,fontsize=10)
+        note=assemble.Note(num=1,text=first+' '+last,pno=0,bbox=[20,55,350,74])
+        book=assemble.Book(notes=[note],pages={0:[]})
+        aside=build_epub._scope_ids(build_epub._aside_html(note,{'1':'ref'},{'1'}),0)
+        page=dict(pno=0,body=[],asides=[aside])
+        monkeypatch.setattr(pa,'read_crop',lambda *args:pytest.fail('All actual mapped native note words are already printed'))
+        records=vp._audit_native_note_pixels(doc,book,page,tmp_path,None,{})
+        assert len(records)==1 and records[0]['published_tokens']==note.text.split()
+        assert records[0]['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
+        assert not records[0].get('marked')
+        assert last in vp._seam_text(page['asides'][0])
+        assert '<a class="note-return" href="#ref" aria-label="Return to note reference">1</a>'in page['asides'][0]
+        assert max(box[3]for box in records[0]['source_regions'])>90
+
+
+@pytest.mark.parametrize('case',['complete','hidden','changed_word','other_owner','semantic_action'])
+def test_native_stacked_fraction_repairs_only_its_original_components(tmp_path,monkeypatch,case):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,assemble
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=400,height=250)
+        first='Each quiet sample uses '
+        leaf.insert_text((30,100),first,fontsize=12,fontname='tiro')
+        x=30+pymupdf.get_text_length(first,fontname='tiro',fontsize=12)
+        leaf.insert_text((x,93),'1',fontsize=8,fontname='tiro',render_mode=3 if case=='hidden'else 0)
+        leaf.insert_text((x+4,100),'/',fontsize=12,fontname='tiro')
+        leaf.insert_text((x+8,104),'n',fontsize=8,fontname='tiro')
+        leaf.insert_text((x+15,100),' of the printed line.',fontsize=12,fontname='tiro')
+        element=assemble.Element('p',pno=0,bbox=[25,80,360,110],
+            runs=[['t',first+'n'],['raised','/ of the printed line.'],['t',' 1']])
+        if case=='changed_word':element.runs[0][1]=element.runs[0][1].replace('quiet','loud')
+        if case=='semantic_action':element.runs[-1][0]='sup'
+        elements=[element]
+        if case=='other_owner':elements.append(assemble.Element('p',pno=0,bbox=[25,80,360,110],runs=[['t','Other']]))
+        original=[list(r)for r in element.runs]
+        book=assemble.Book(elements=elements,pages={0:elements})
+        vp._native_publication_ownership(doc,book,[0])
+        if case!='complete':
+            assert element.runs==original,'Incomplete, hidden or foreign source evidence cannot rewrite a paragraph'
+            return
+        assert element.text.split()==(first+'1/n of the printed line.').split()
+        assert not any(r[0]=='raised'for r in element.runs),'A displaced fraction cannot raise the following body line'
+        from cps.services.reflow import pixel_adjudication as pa
+        monkeypatch.setattr(pa,'read_crop',lambda *args:pytest.fail('Mapped original fraction atoms need no optical spelling'))
+        page=dict(pno=0,body=['<p>'+element.text+'</p>'],asides=[])
+        records=vp._native_seam_blocks(doc,book,0,page)
+        vp._audit_native_pixels(doc,page,records,tmp_path,object(),{})
+        assert records[0]['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
+        assert records[0]['published_tokens']==(first+'1/n of the printed line.').split()
+        assert not records[0].get('marked')
+
+
+def test_native_mixed_line_fraction_preserves_baseline_and_emphasis():
+    from cps.services.reflow import extract,assemble,native_text
+    text='A /   portion'
+    body=extract.Span(text,9,'Times',5,(100,100,165,109),origin_y=109,
+        char_boxes=tuple((i,i+1,100+i*5,100,105+i*5,109)for i in range(len(text))))
+    num=extract.Span('1',6,'Times',4,(107,98.3,110,104.3))
+    den=extract.Span('n',6,'Times',4,(115,104.6,118,110.6))
+    bold=extract.Span(' stays clear.',9,'Times',21,(170,100,220,109),origin_y=109)
+    marker=extract.Span('3',6,'Times',1,(230,98,233,104))
+    block=extract.Block(0,(100,98,233,111),[
+        extract.Line([den,body,bold],(100,100,220,111)),
+        extract.Line([num],num.bbox),extract.Line([marker],marker.bbox)])
+    result=native_text.normalize_blocks([block]);line=result[0].lines[0]
+    runs=assemble._line_runs(line,0,set(),set(),[],[],preserve_style=True)
+    assert '1/n'in assemble.plain_text(runs)
+    assert any(r==['t',' stays clear.','bold']for r in runs)
+    assert not any(r[0]=='raised'for r in runs)
+    assert any(s.text=='3'and s.superscript for b in result for ln in b.lines for s in ln.spans)

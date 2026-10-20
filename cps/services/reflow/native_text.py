@@ -69,6 +69,36 @@ def _inside_character(char, boxes):
                box[1]-.2 <= (char[3][1]+char[3][3])/2 <= box[3]+.2 for box in boxes)
 
 
+def fraction_word_view(page, words):
+    """Bind separately drawn fraction atoms only at their measured positions."""
+    from collections import Counter
+    from . import extract
+    words=list(words)
+    if not any('/'in w['text']for w in words) or not any(w['text'].isdigit()for w in words):return words
+    raw=extract.read_page(page.parent,page.number,keep_char_boxes=True)
+    fractions=[part for block in raw.blocks for line in block.lines for span in line.spans
+               for part in getattr(span,'source_fraction_parts',())]
+    proposals=[]
+    for num,den,a,slash,b in fractions:
+        parts=[dict(text=num,bbox=a),dict(text='/',bbox=slash),dict(text=den,bbox=b)]
+        boxes=[a,slash,b];indexes=[]
+        for i,word in enumerate(words):
+            box=word['bbox']
+            if any(box[0]-.2<=(part[0]+part[2])/2<=box[2]+.2 and
+                   box[1]-.2<=(part[1]+part[3])/2<=box[3]+.2 for part in boxes):indexes.append(i)
+        if Counter(''.join(words[i]['text']for i in indexes))!=Counter(num+'/'+den):continue
+        value=dict(text=num+'/'+den,native_parts=parts,
+                   bbox=(min(p[0]for p in boxes),min(p[1]for p in boxes),
+                         max(p[2]for p in boxes),max(p[3]for p in boxes)))
+        if not drawn_word_authority(page,[value]):continue
+        proposals.append((indexes,value))
+    consumed=set();groups={}
+    for indexes,value in proposals:
+        if any(sum(i in ids for ids,_ in proposals)!=1 for i in indexes):continue
+        first=min(indexes);groups[first]=value;consumed.update(indexes)
+    return [groups[i]if i in groups else w for i,w in enumerate(words)if i not in consumed or i in groups]
+
+
 def lexical_word_view(page, words, marker_prefixes=()):
     """Bind font fragments into printed words without changing their letters.
 
@@ -76,7 +106,7 @@ def lexical_word_view(page, words, marker_prefixes=()):
     ordinal suffixes can be separate words. Their original component boxes
     remain separate: the bounding rectangle must not borrow a following row.
     """
-    words=list(words);traces=page.get_texttrace();pairs=[]
+    words=fraction_word_view(page,words);traces=page.get_texttrace();pairs=[]
     expanded=[]
     for word in words:
         match=re.fullmatch(r'(.+[A-Za-z].*?)(\d{1,4})',word['text'])
@@ -381,16 +411,16 @@ def image_name(record):
 def _attach_stacked_fractions(blocks):
     """Read a PDF's separately drawn numerator/slash/denominator as one token.
 
-    Both small digits must bracket the slash horizontally and vertically. A
-    lone raised digit remains available to the ordinary note/ordinal handling.
+    Both small atoms must bracket the slash horizontally and vertically. A
+    denominator may be a single variable; a lone raised digit remains available
+    to the ordinary note/ordinal handling.
     Ambiguous matches remain separate source atoms rather than guessed text.
     """
     from .extract import Line, Block
     lines = [line for block in blocks for line in block.lines]
-    parts = [line for line in lines if len(line.spans) == 1
-             and re.fullmatch(r'\d{1,3}', line.stripped)
-             and not (line.spans[0].encoding_unresolved or
-                      line.spans[0].transcription_uncertain)]
+    parts = [Line([span],span.bbox) for line in lines for span in line.spans
+             if re.fullmatch(r'(?:\d{1,3}|[A-Za-z])',span.text.strip())
+             and not (span.encoding_unresolved or span.transcription_uncertain)]
     # Discover every plausible owner before changing any line. Otherwise the
     # first slash hides shared digits from later slashes and extraction order
     # silently decides which prose receives the fraction.
@@ -407,7 +437,8 @@ def _attach_stacked_fractions(blocks):
                 nearby = [part for part in parts if part is not line
                           and .5 <= part.size / line.size <= .8]
                 upper = [part for part in nearby
-                         if abs(part.bbox[2] - x0) <= line.size * .18
+                         if part.stripped.isdigit()
+                         and abs(part.bbox[2] - x0) <= line.size * .18
                          and part.bbox[1] < y0 <= part.bbox[3]
                          and part.bbox[3] <= mid + line.size * .06]
                 lower = [part for part in nearby
@@ -427,7 +458,7 @@ def _attach_stacked_fractions(blocks):
             continue
         edits_by_line.setdefault(id(line), {}).setdefault(span_index, []).append(
             (start, end, num, den, box))
-        consumed.update((id(num), id(den)))
+        consumed.update((id(num.spans[0]), id(den.spans[0])))
     replacements = {}
     for line in lines:
         edits = edits_by_line.get(id(line), {})
@@ -435,6 +466,7 @@ def _attach_stacked_fractions(blocks):
             continue
         changed=[]
         for index, span in enumerate(line.spans):
+            if id(span) in consumed:continue
             if index not in edits:
                 changed.append(span)
                 continue
@@ -449,15 +481,30 @@ def _attach_stacked_fractions(blocks):
                 slash=(slash_box[0],slash_box[1],slash_box[2],slash_box[3])
                 new=[left]*len(num.stripped)+[slash]+[right]*len(den.stripped)
                 boxes.extend((start+j,start+j+1,*box) for j,box in enumerate(new))
-            changed.append(replace(span,text=text,char_boxes=tuple(sorted(boxes))))
+            value=replace(span,text=text,char_boxes=tuple(sorted(boxes)))
+            value.source_fraction_parts=tuple((num.stripped,den.stripped,
+                tuple(num.bbox),tuple(slash_box),tuple(den.bbox))
+                for _,_,num,den,slash_box in edits[index])
+            changed.append(value)
+        # A small denominator can cause MuPDF to flag the remaining baseline
+        # as raised. Only the independently established slash baseline and full
+        # body size can clear that flag; actual small raised spans stay raised.
+        baselines=[line.spans[i]for i in edits]
+        for span in changed:
+            if any(abs(span.size-base.size)<.01 and span.origin_y and
+                   abs(span.origin_y-base.origin_y)<.01 for base in baselines):
+                span.flags &= ~1
         replacements[id(line)]=Line(changed,line.bbox,
                                     spacing_uncertain=line.spacing_uncertain,
                                     transcription_uncertain=line.transcription_uncertain)
     return [Block(block.number,block.bbox,
-                  [replacements.get(id(line),line) for line in block.lines if id(line) not in consumed],
+                  [replacements.get(id(line),Line([s for s in line.spans if id(s)not in consumed],
+                     line.bbox,spacing_uncertain=line.spacing_uncertain,
+                     transcription_uncertain=line.transcription_uncertain))
+                   for line in block.lines if any(id(s)not in consumed for s in line.spans)],
                   block.kind)
             for block in blocks if block.kind != 'text' or
-            any(id(line) not in consumed for line in block.lines)]
+            any(id(s)not in consumed for line in block.lines for s in line.spans)]
 
 
 def normalize_blocks(blocks):

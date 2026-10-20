@@ -3886,6 +3886,113 @@ def _native_source_paragraph_gap(previous,current,model):
     return gap>normal+height*.5
 
 
+def _native_fraction_ownership(doc,book,pno,physical):
+    """Restore original fraction placement without adopting optical spellings."""
+    from .native_text import drawn_word_authority
+    if book.has_source_navigation(pno):return []
+    elements=book.pages.get(pno,[])
+    candidates=[e for e in elements if e.kind=='p' and e.bbox and
+        all(r[0]in('t','raised')for r in e.runs) and any(r[0]=='raised'for r in e.runs)
+        and '/'in e.text]
+    if not candidates:return []
+    raw=extract.read_page(doc,pno,keep_char_boxes=True)
+    lines=[word['_line']for row in _pixel_lines([dict(text=line.text,bbox=line.bbox,_line=line)
+        for b in raw.blocks for line in b.lines])for word in row]
+    flat=lambda value:''.join(vision_reading.normalized(value).split())
+    repairs=[]
+    for element in candidates:
+        original=''.join(r[1]for r in element.runs);proposals=[]
+        for first,line in enumerate(lines):
+            if not owned_words([dict(bbox=line.bbox)],element.bbox):continue
+            for last in range(first,len(lines)):
+                selected=lines[first:last+1]
+                if len(flat(' '.join(ln.text for ln in selected)))>len(flat(original)):break
+                parts=[part for ln in selected for span in ln.spans
+                    for part in getattr(span,'source_fraction_parts',())]
+                if len(parts)!=1:continue
+                num,den,*_=parts[0]
+                for pair in re.finditer(re.escape(den)+r'\s*/',original):
+                    for digit in re.finditer(r'(?<!\w)'+re.escape(num)+r'(?!\w)',original):
+                        if digit.start()<pair.end():continue
+                        proposed=original[:pair.start()]+num+'/'+den+original[pair.end():digit.start()]+original[digit.end():]
+                        source=' '.join(ln.text for ln in selected)
+                        if flat(proposed)!=flat(source):continue
+                        own=[w for w in physical if any(owned_words([w],ln.bbox)for ln in selected)]
+                        # The decoded stream can reverse a fraction's atoms;
+                        # the lexical view binds those exact original glyphs.
+                        from .native_text import lexical_word_view
+                        lexical=lexical_word_view(doc[pno],own)
+                        if not drawn_word_authority(doc[pno],lexical):continue
+                        if any(other is not element and other.kind in('p','h','caption')and
+                               other.bbox and owned_words(own,other.bbox)for other in elements):continue
+                        proposals.append((selected,source,own))
+        if len(proposals)!=1:continue
+        selected,source,own=proposals[0];runs=[]
+        for ln in selected:
+            if runs:runs.append(['t',' '])
+            runs.extend(assemble._line_runs(ln,pno,set(),set(),[],[],preserve_style=True))
+        if flat(assemble.plain_text(runs))!=flat(source):continue
+        element.runs=runs;element.bbox=tuple(vision_reading.union([w['bbox']for w in own]))
+        element.line_boxes=[ln.bbox for ln in selected]
+        repairs.append(dict(page=pno,kind='original_stacked_fraction_placement',
+            source_fraction_parts=1,complete_visible_native_words=True,
+            original_source_typography=True))
+    return repairs
+
+
+def _native_prefix_label_ownership(doc,book,pno,physical):
+    """Restore a detached original prefix without changing prose or styles."""
+    from .native_text import lexical_word_view,drawn_word_authority
+    if book.has_source_navigation(pno):return []
+    words=_pixel_line_order(lexical_word_view(doc[pno],physical))
+    norm=vision_reading.normalized
+    elements=book.pages.get(pno,[]);repairs=[]
+    for index,element in enumerate(elements):
+        if (element.kind!='p' or not element.bbox or not element.runs or
+                any(run[0]!='t' or len(run)>3 for run in element.runs)):continue
+        raw=''.join(run[1]for run in element.runs)
+        tokens=list(re.finditer(r'\S+',raw))
+        if len(tokens)<8 or tokens[0].group().isdigit():continue
+        proposed=[norm(t.group())for t in tokens];proofs=[]
+        for position,token in enumerate(tokens):
+            label=token.group()
+            if not re.fullmatch(r'\d{1,3}',label)or proposed.count(label)!=1:continue
+            body=proposed[:position]+proposed[position+1:]
+            for start,head in enumerate(words):
+                source=words[start:start+len(tokens)]
+                if len(source)!=len(tokens)or head['text']!=label:continue
+                if [norm(w['text'])for w in source[1:]]!=body:continue
+                a,b=head['bbox'],source[1]['bbox'];height=b[3]-b[1]
+                if not (0<a[3]-a[1]<height*.9 and 0<=b[0]-a[2]<=height*.5
+                        and min(a[3],b[3])>max(a[1],b[1])
+                        and a[3]<b[3]-height*.15):continue
+                if not drawn_word_authority(doc[pno],source):continue
+                proofs.append((position,source))
+        if len(proofs)!=1:continue
+        position,source=proofs[0]
+        if not owned_words([source[1]],element.bbox):continue
+        if any(other is not element and other.kind in('p','h','caption')and other.bbox
+                and owned_words(source,other.bbox)for other in elements):continue
+        token=tokens[position];cursor=0;run_position=None
+        for ri,run in enumerate(element.runs):
+            if cursor<=token.start()<token.end()<=cursor+len(run[1]):
+                if len(run)>2 and run[2]:break
+                run_position=(ri,token.start()-cursor,token.end()-cursor);break
+            cursor+=len(run[1])
+        if run_position is None:continue
+        ri,a,z=run_position;run=element.runs[ri]
+        run[1]=run[1][:a]+run[1][z:]
+        element.runs.insert(0,['t',tokens[position].group()+' '])
+        rows=_pixel_lines(source);element.bbox=tuple(vision_reading.union([w['bbox']for w in source]))
+        element.line_boxes=[tuple(vision_reading.union([w['bbox']for w in row]))for row in rows]
+        repairs.append(dict(page=pno,block='native-element-'+str(index),
+            kind='original_detached_native_prefix',source_label=source[0]['text'],
+            source_label_bbox=source[0]['bbox'],source_words=len(source),
+            previous_token_index=position,complete_visible_native_words=True,
+            original_styles_preserved=True))
+    return repairs
+
+
 def _native_inline_paragraph_ownership(doc,book,pno,physical):
     """Keep uniquely source-bound native prose and semantic atoms together.
 
@@ -4249,6 +4356,8 @@ def _native_publication_ownership(doc,book,numbers,raw_pages=None):
                     if len(matches)!=1:raise ValueError('Native figure source inventory is not one-to-one')
                     ordered.append(matches[0])
                 book.figures=[f for f in book.figures if f['pno']!=pno]+ordered
+            repairs.extend(_native_fraction_ownership(doc,book,pno,physical))
+            repairs.extend(_native_prefix_label_ownership(doc,book,pno,physical))
             repairs.extend(_native_inline_paragraph_ownership(doc,book,pno,physical))
             elements=book.pages[pno]
             # Reconstruct only a complete, exact plain-text same-column run. The
@@ -4410,23 +4519,26 @@ def _native_seam_blocks(doc,book,pno,page):
     elements=book.pages.get(pno,[])
     # Paint-object order can serialize a raised note label after its line.
     # Complete occurrence identity follows the printed spatial word order.
-    physical=_pixel_line_order([{'text':w[4],'bbox':list(w[:4])}
-                                for w in doc[pno].get_text('words')])
+    stream=[{'text':w[4],'bbox':list(w[:4])}for w in doc[pno].get_text('words')]
+    physical=_pixel_line_order(stream)
     # Cached native elements can retain a removed running title's box, or an
     # emitted glyph/span can make element-text equality unavailable. Bind the
     # complete emitted reading to unique source words before trusting that box.
     compact=lambda text:re.sub(r'\s+','',vision_reading.normalized(text))
     display=SourceDisplay(doc,pno)
     lexical=_native_lexical_view(display,physical)
-    def complete_occurrences(text):
+    def complete_occurrences(text,element=None):
         target=compact(text)
         if not target:return []
         # The emitted native paragraph can join an original line-end division
         # and a drawn raised suffix. Match those exact physical components
         # before allowing a stale first-line rectangle to truncate its owner.
-        views=[physical,_native_wrap_view(lexical,text.split())]
+        views=[(physical,False),(_native_wrap_view(lexical,text.split()),False)]
+        if (element is not None and not book.has_source_navigation(pno)
+                and all(run[0]in('t','raised')for run in element.runs)):
+            views.append((stream,True))
         found={}
-        for words in views:
+        for words,components_only in views:
             source='';starts={};ends={}
             for index,word in enumerate(words):
                 value=compact(word['text'])
@@ -4437,10 +4549,26 @@ def _native_seam_blocks(doc,book,pno,page):
                 end=offset+len(target)
                 if offset in starts and end in ends:
                     owned=words[starts[offset]:ends[end]]
-                    if len(owned)>1:
-                        components=tuple(tuple(part['bbox'])for word in owned
-                            for part in word.get('native_parts',[word]))
-                        found[components]=owned
+                    if owned:
+                        allowed=True
+                        if components_only:
+                            # Independent cells can serialize by column. The
+                            # original stream still cannot move a raised atom
+                            # behind words on its own row or borrow another
+                            # paragraph's source component.
+                            positions={id(word):i for i,word in enumerate(owned)}
+                            allowed=not any(positions[id(left)]>positions[id(right)]
+                                for row in _pixel_lines(owned)for left,right in zip(row,row[1:]))
+                            allowed=allowed and bool(owned_words([owned[0]],element.bbox))
+                            allowed=allowed and not any(other is not element and
+                                other.kind in('p','h','caption')and other.bbox and
+                                owned_words(owned,other.bbox)for other in elements)
+                        if allowed:
+                            components=tuple(sorted(tuple(part['bbox'])for word in owned
+                                for part in word.get('native_parts',[word])))
+                            bound=([dict(word,_native_component_bound=True)for word in owned]
+                                   if components_only else owned)
+                            found.setdefault(components,bound)
                 offset=source.find(target,offset+1)
         return list(found.values())
     # A typed native note atom has a literal rendered symbol, whereas its
@@ -4496,7 +4624,7 @@ def _native_seam_blocks(doc,book,pno,page):
                 local=_pixel_line_order(owned_words(physical,proposed.bbox))
                 if compact(' '.join(w['text']for w in local))==compact(text):
                     element=proposed;repeated_source=local
-        occurrences=complete_occurrences(text)
+        occurrences=complete_occurrences(text,element if len(candidates)==1 else None)
         owned=(repeated_source if repeated_source is not None else
                occurrences[0] if len(occurrences)==1 and len(candidates)<=1 else [])
         record['native_occurrence_count']=len(occurrences)
@@ -4520,7 +4648,9 @@ def _native_seam_blocks(doc,book,pno,page):
                 next((_native_source_structural_row(vision_reading.union([w['bbox']for w in row]),model)
                     for row in line_groups if _native_source_structural_row(
                         vision_reading.union([w['bbox']for w in row]),model)),None))
-            record.update(bbox=box,source_regions=[box],native_geometry_binding=binding,
+            territories=([list(part['bbox'])for word in owned for part in word.get('native_parts',[word])]
+                if any(word.get('_native_component_bound')for word in owned)else[box])
+            record.update(bbox=box,source_regions=territories,native_geometry_binding=binding,
                 native_source_structure=structure,
                 cached_element_bbox=list(element.bbox) if element is not None else None,
                 native_source_list=bool(element is not None and element.kind=='list'),
@@ -4589,7 +4719,13 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 record.update(degraded_source_context=True,unplaced_source_context=unit,
                     pixel_adjudication_status='UNPLACED_SOURCE_CONTEXT')
                 continue
-            source=_pixel_line_order([w for w in physical if any(owned_words([w],box) for box in territories)])
+            # Proved original note rows need exact word ownership. The model-box
+            # rounding allowance can otherwise borrow a nearby raised label.
+            tolerance=.2 if record.get('native_exact_territories')else 3
+            source=_pixel_line_order([w for w in physical if any(
+                box[0]-tolerance <= (w['bbox'][0]+w['bbox'][2])/2 <= box[2]+tolerance and
+                box[1]-tolerance <= (w['bbox'][1]+w['bbox'][3])/2 <= box[3]+tolerance
+                for box in territories)])
             source=_native_lexical_view(display,source)
             tokens=_seam_text(page['body'][position]).split()
             record['published_tokens']=tokens
@@ -4825,16 +4961,18 @@ def _audit_native_note_pixels(doc,book,page,cache,package,images):
                    if not source_box.is_empty else [])
             if note.num is not None and words and vision_reading.normalized(words[0]['text']).strip('.,:;()[]{}')==str(note.num):words=words[1:]
             territories=[vision_reading.union([w['bbox'] for w in row])for row in _pixel_lines(words)]
-            if not territories:
-                # Continued notes can originate in a moved native paragraph.
-                # Its complete unique source text can prove the footprint;
-                # a missing note rectangle cannot authorize a guessed crop.
-                bound=_native_seam_blocks(doc,book,page['pno'],dict(body=['<p>'+literal+'</p>']))[0]
-                territories=bound.get('source_regions',[])
+            # A cached rectangle can retain only the first line of a continued
+            # note. Complete unique original text proves its full footprint even
+            # when that stale rectangle is nonempty. Ambiguous text still needs
+            # the note's own bounded territory (including label separation).
+            bound=_native_seam_blocks(doc,book,page['pno'],dict(body=['<p>'+literal+'</p>']))[0]
+            if bound.get('native_geometry_binding')=='unique_complete_source_text' or not territories:
+                territories=bound.get('source_rows')or bound.get('source_regions',[])
             if not territories:raise ValueError('Native note has no original word territory')
             fragment='<p><span data-source-page="%d">%s</span></p>'%(page['pno'],literal)
             proxy=dict(pno=page['pno'],body=[fragment],asides=[])
-            record=dict(id=ident,role='body',native_source=True,source_regions=territories)
+            record=dict(id=ident,role='body',native_source=True,source_regions=territories,
+                        native_exact_territories=True)
             _native_published_provenance(proxy,[record])
             _audit_native_pixels(doc,proxy,[record],cache,package,images)
             inner=re.fullmatch(r'<p>(.*)</p>',proxy['body'][0],re.S)
