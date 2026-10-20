@@ -4124,3 +4124,31 @@ def test_weak_line_division_suffix_can_use_its_own_independent_word_read(proof):
     else:
         assert result['marked']
         assert not any(d['status']=='RESOLVED'for d in result['decisions'])
+
+
+@pytest.mark.parametrize('kind',['space','scope'])
+def test_reference_projection_preserves_its_original_physical_word_proofs(kind):
+    from cps.services.reflow import pixel_adjudication as pa,vision_pipeline as vp
+    source=words('Read Asa sample now. 1'if kind=='space'else'Read the rose sample now. 1')
+    if kind=='space':
+        source[1]['bbox']=[20,20,58,32]
+        source[2]['bbox']=[60,20,78,32];source[3]['bbox']=[80,20,98,32]
+    source[-1]['bbox']=[104,15,108,21];source[-1]['native_reference_ink']=True
+    model=('Read As a sample now. <n:n1>'if kind=='space'else'Read the arose sample now. <n:n1>').split()
+    proof={len(model)-1:dict(status='PROVED',label='1',source_bbox=source[-1]['bbox'])}
+    witness=pa.CropWitness(source)
+    witness.word_readings=lambda word:[[dict(word)],[dict(word)]]
+    witness.word_separation=lambda word,parts:True
+    witness.word_scope=lambda word:[35,20,58,32]
+    tokens,lexical=vp._lexical_marker_view(model,source,proof)
+    _,projected=vp._lexical_marker_view(model,witness,proof)
+    projected.model_reading=True
+    result=pa.adjudicate(tokens,lexical,projected)
+    assert result['tokens']==model,'A reserved reference cannot make the adjacent complete word lose its prefix'
+    assert result['tokens'].count('<n:n1>')==1
+    if kind=='space':
+        assert not result['marked'],'Already proved original spaces are not unresolved lexical edits'
+        assert result['decisions']==[]
+    else:
+        assert result['word_notes'][2]['method']=='complete_vision_reading_without_optical_counterevidence'
+        assert not any(d['status']=='RESOLVED'and d['chosen']==['rose']for d in result['decisions'])

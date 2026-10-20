@@ -2121,7 +2121,9 @@ def _lexical_marker_view(tokens,source,proofs):
                 setattr(result,name,lambda reader=reader:project(reader()))
         if hasattr(source,'word_readings'):
             result.word_readings=lambda word:project(source.word_readings(word))
-        for name in ('mark_absence','failure'):
+        # Reserving a reference changes the lexical inventory, not the
+        # original ink used to prove complete words and printed spaces.
+        for name in ('mark_absence','failure','word_scope','word_separation','model_reading'):
             if hasattr(source,name):setattr(result,name,getattr(source,name))
     return lexical,result
 
