@@ -3184,3 +3184,76 @@ def test_a_recognized_tail_without_its_prefix_is_not_complete_word_evidence():
     tail=dict(text='veral',bbox=[28,20,60,32],confidence=99)
     assert pa._paired_word_choice(source,[[tail],[tail]])is None
     assert pa.audit_agreement(['several'],[source],[tail])=={}
+
+
+def test_a_confident_recognized_tail_cannot_force_a_complete_model_word_into_an_image():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=dict(text='cveral',bbox=[20,20,60,32],confidence=40)
+    tail=dict(text='veral',bbox=[28,20,60,32],confidence=99)
+    witness=pa.CropWitness([source]);witness.alternates=lambda:[[tail],[tail]]
+    result=dict(tokens=['several'],marked={0},word_notes={0:dict(
+        source=['cveral'],model=['several'],chosen=['several'],status='UNRESOLVED')})
+    pa.disclose_alternate_conflicts(result,{0:source['bbox']},witness)
+    assert not result['word_notes'][0].get('source_image_only')
+    assert result['tokens']==['several']and result['marked']=={0}
+
+
+@pytest.mark.parametrize('optical',['missing','weak','fragment','competing','reader_uncertain','rejected','lower_only'])
+def test_complete_vision_word_is_not_disputed_by_missing_or_incomplete_optical_evidence(optical):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    printed='Read the clear sample now.'
+    with pymupdf.open()as drawing,pymupdf.open()as scan:
+        page=drawing.new_page(width=300,height=100)
+        page.insert_text((20,50),printed,fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=40)for w in page.get_text('words')]
+        image=page.get_pixmap().tobytes('png')
+        scan.new_page(width=300,height=100).insert_image(page.rect,stream=image)
+        assert not scan[0].get_text(),'The synthetic source is a scan, with no native-text authority'
+    source[2]['text']='clcar'
+    witness=pa.CropWitness([]if optical=='missing'else[dict(w)for w in source])
+    if optical=='competing':witness[2]['confidence']=99
+    if optical=='fragment':
+        box=witness[2]['bbox'];witness[2].update(confidence=99,bbox=[box[0]+.25*(box[2]-box[0]),box[1],box[2],box[3]])
+    if optical=='lower_only':
+        box=witness[2]['bbox'];witness[2].update(confidence=99,bbox=[box[0],box[1]+.6*(box[3]-box[1]),box[2],box[3]])
+    witness.word_readings=lambda word:[]
+    witness.model_reading=True
+    result=pa.adjudicate(printed.split(),source,witness,
+        uncertain={2}if optical=='reader_uncertain'else(),unresolved_source=optical=='rejected')
+    note=result['word_notes'][2]
+    if optical in('missing','weak','fragment'):
+        assert result['tokens'][2]=='clear'
+        assert note['status']=='RESOLVED'
+        assert note['method']=='complete_vision_reading_without_optical_counterevidence'
+        assert result['marked']=={2},'Every real model correction still has a source-linked record'
+    else:
+        assert note['status']=='UNRESOLVED','Real competing ink, explicit reader doubt and rejected readings stay disclosed'
+
+
+def test_compiled_vision_correction_names_its_actual_model_evidence(tmp_path,monkeypatch):
+    from tests.unit import test_round4_defects as ink
+    from cps.services.reflow import pixel_adjudication as pa
+    page=ink.InkPage();printed='Read the clear sample now.'
+    page.text(printed,'body')
+    finish=page.finish
+    def weak_optical():
+        image,optical,answer=finish()
+        for word in optical:
+            if word['text']=='clear':word.update(text='clcar',confidence=40)
+        return image,optical,answer
+    page.finish=weak_optical
+    def weak_crop(display,regions,cache):
+        # This fixture controls recognition only; the original scan still prints
+        # the complete first reading. The other letters retain real geometry.
+        source=ink.vision_pixels.words(display,cache)
+        return pa.CropWitness(source)
+    monkeypatch.setattr(pa,'read_crop',weak_crop)
+    _,report,docs=ink.convert_ink(tmp_path,monkeypatch,[page])
+    assert ink.body_texts(docs)==[printed]
+    decisions=report['pages'][0]['blocks'][0]['adjudication']
+    assert any(d['status']=='RESOLVED'and d['method']=='complete_vision_reading_without_optical_counterevidence'for d in decisions)
+    notes=[' '.join(''.join(n.itertext()).split())for root in docs.values()for n in root.iter()
+           if n.get('class')=='footnote vision-disclosure']
+    assert any('The complete vision reading is retained.'in text for text in notes)
+    assert all('upright crop'not in text for text in notes)

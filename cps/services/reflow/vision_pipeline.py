@@ -2478,7 +2478,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             [vision_reading.normalized(w['text']) for w in local],
                             [vision_reading.normalized(w['text']) for w in optical_local],autojunk=False).get_matching_blocks())
                         if overlap/max(1,len(optical_local))<.6:baseline=optical_local
-                    if baseline and (witness or native_print_words or legacy_native_words):
+                    if baseline and (witness is not None or native_print_words or legacy_native_words):
                         # Only the admitted alignment inventories reach this
                         # stage. Retain the first reader as an alternative, but
                         # require positive pixels to revive rejected words.
@@ -2511,6 +2511,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         # are adjudicated below at their own occurrences.
                         pending=vision_reading.align(block['text'],[],block['low_confidence'],
                             has_layer=False)['marked']
+                        if not hasattr(witness,'__dict__'):
+                            witness=pixel_adjudication.CropWitness(witness)
+                        witness.model_reading=not bool(getattr(witness,'failure',None))
                         adjudication=pixel_adjudication.adjudicate(first_tokens,
                             baseline,witness,uncertain=pending,corroboration=marker_corroboration,
                             # Inconclusive OCR cannot revive a model passage already
@@ -2842,7 +2845,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     if local_ocr:
                         explanation=((source_quote+' ') if decision and decision['status']=='RESOLVED' else '')+'This local OCR transcription has not been independently verified. Consult the original printed reading in the image. '+f'<a href="#v4-local-ocr-source-{pno}">View complete original page</a>.'
                     elif decision:
-                        if decision.get('mapping')=='unplaced_within_span':
+                        if decision.get('method')=='complete_vision_reading_without_optical_counterevidence':
+                            explanation=source_quote+' The complete vision reading is retained. The optical alternative has no complete competing word. Compare the original printed word in the image.'
+                        elif decision.get('mapping')=='unplaced_within_span':
                             explanation=escape(' '.join(decision['chosen']))+'. Its source-word correspondence is unresolved. Compare the original printed span in the image.'
                         elif decision['source']==decision['chosen'] and decision.get('model',decision['source'])==decision['chosen']:
                             explanation=escape(' '.join(decision['chosen']))+'. Consult the original printed word in the image.'

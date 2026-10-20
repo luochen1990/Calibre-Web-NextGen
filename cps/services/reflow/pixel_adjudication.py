@@ -92,6 +92,17 @@ def _model_word_choice(source,witness,model):
     return next((w for w in own if w.get('confidence',0)>=90),None)
 
 
+def _optical_counterread(source,witness,model):
+    """Missing or split recognition is not a competing complete printed word."""
+    views=[witness]
+    for name in ('word_readings','resampled','alternates'):
+        reader=getattr(witness,name,None)
+        if reader is not None:views.extend(reader(source)if name=='word_readings'else reader())
+    return any(row and row[0].get('confidence',0)>=85 and
+               _key(row[0]['text'])!=_key(model)
+               for view in views if (row:=_whole_view_word(source,view)))
+
+
 def _boundary_parts(model,source):
     """Insert proved spaces while preserving every original model codepoint."""
     parts=[];start=cursor=0
@@ -174,9 +185,9 @@ def _terminal_word_view(model, words):
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
         else:result.append(word)
-    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings')):
+    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','model_reading')):
         result=CropWitness(result)
-        for name in ('alternates','resampled','mark_absence','word_readings'):
+        for name in ('alternates','resampled','mark_absence','word_readings','model_reading'):
             if hasattr(words,name):setattr(result,name,getattr(words,name))
     return result
 
@@ -444,11 +455,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             and _letter_number_identity(supported[0][1][0])!=_letter_number_identity(proposed[b])
             and any(c.isalpha()for c in proposed[b]+supported[0][1][0]))
         if network_conflict:supported=[]
-        alternate=None;resampled=None;word_choice=None
+        alternate=None;resampled=None;word_choice=None;word_method='two_own_word_language_readings'
         if len(supported)!=1 and z-a==y-b==1 and not partial_wrap:
             word_choice=_own_word_choice(source[a],witness)
             if word_choice is None:
                 word_choice=_model_word_choice(source[a],witness,proposed[b])
+                word_method='intact_pixel_corroboration_of_model'
             if word_choice and _accent_conflict(word_choice['text'],proposed[b]):word_choice=None
             if word_choice and max(SequenceMatcher(None,placement(word_choice['text']),placement(t)).ratio()
                                    for t in (source_tokens[a],proposed[b]))<.65:word_choice=None
@@ -474,12 +486,19 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             # Neither alphabetic network is a mathematical-glyph classifier.
             # Keep the exact original ink rather than certify its digit guess.
             supported=[];boundary=None
+        retained_vision=(len(supported)!=1 and z-a==y-b==1
+            and getattr(witness,'model_reading',False) and not unresolved_source
+            and visible[b][0]not in pending and source[a].get('confidence',0)<85
+            and not(ordinal_conflict or quote_conflict or symbol_conflict or incomplete_ink or partial_wrap)
+            and not _optical_counterread(source[a],witness,proposed[b]))
+        if retained_vision:
+            supported=[('model',proposed[b:y],[dict(source[a],text=proposed[b])])]
         resolved=len(supported)==1
         name,literal,evidence=(supported[0] if resolved else
             boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or not proposed[b:y] else ('model',proposed[b:y],[]))
         record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=list(literal),
                     status='RESOLVED' if resolved else 'UNRESOLVED',
-                    method=('two_own_word_language_readings' if word_choice else 'corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
+                    method=('complete_vision_reading_without_optical_counterevidence'if retained_vision else word_method if word_choice else 'corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
                     source_range=[a,z],model_range=[b,y])
         if (ordinal_conflict or quote_conflict or lexical_conflict or network_conflict or symbol_conflict) and not resolved:
             record.update(source_image_only=True,source_bbox=list(source[a]['bbox']))
@@ -1036,7 +1055,7 @@ def disclose_alternate_conflicts(result, boxes, witness, allow_clear=True):
     if len(views)!=2:return
     for index in pending:
         original=dict(bbox=boxes[index])
-        own=[[w for w in view if _complete_word_occurrence(original,w)]for view in views]
+        own=[_whole_view_word(original,view)for view in views]
         if not all(len(row)==1 for row in own):continue
         a,b=own[0][0],own[1][0]
         token=result['tokens'][index];note=(result.get('word_notes')or{}).get(index,{})
