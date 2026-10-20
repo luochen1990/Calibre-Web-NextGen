@@ -445,6 +445,54 @@ def _native_ink_regions(territories,words):
     return boxes
 
 
+def _complete_note_head_territory(block,answer,words,display,regions,local):
+    """Locate an exact reader opening on adjacent, otherwise unclaimed source ink.
+
+    This widens a crop, not transcription authority. The original source and
+    independent recognition still adjudicate every added word normally.
+    """
+    if block.get('role')!='footnote' or len(local)<6 or '<n:'in block['text']:return None
+    import statistics
+    from difflib import SequenceMatcher
+    key=lambda text:''.join(c for c in vision_reading.normalized(text).casefold()if c.isalnum())
+    model=block['text'].split();suffix=key(''.join(w['text']for w in local))
+    if len(model)<=len(local) or not suffix:return None
+    splits=[i for i in range(1,len(model)-5)
+            if abs(len(key(''.join(model[i:])))-len(suffix))<=2
+            and SequenceMatcher(None,suffix,key(''.join(model[i:]))).ratio()>=.95]
+    if not splits:return None
+    rank=lambda i:(abs(len(key(''.join(model[i:])))-len(suffix)),
+                   -SequenceMatcher(None,suffix,key(''.join(model[i:]))).ratio())
+    splits.sort(key=rank)
+    if len(splits)>1 and rank(splits[0])==rank(splits[1]):return None
+    head=key(''.join(model[:splits[0]]))
+    if not head or splits[0]>20:return None
+    height=statistics.median(w['bbox'][3]-w['bbox'][1]for w in local)
+    first=min((w['bbox'][1]+w['bbox'][3])/2 for w in local)
+    left=min(w['bbox'][0]for w in local)-3*height
+    right=max(w['bbox'][2]for w in local)+3*height
+    existing={_source_instance(w)for w in local}
+    preceding=_pixel_line_order([w for w in words if _source_instance(w)not in existing
+        and left<=(w['bbox'][0]+w['bbox'][2])/2<=right
+        and first-2.5*height<=(w['bbox'][1]+w['bbox'][3])/2<first-.5*height])
+    selected=[];literal=''
+    for word in reversed(preceding):
+        selected.insert(0,word);literal=key(word['text'])+literal
+        if not head.endswith(literal):return None
+        if literal==head:break
+    if literal!=head:return None
+    for word in selected:
+        claim=(regions or {}).get('_instances',{}).get(_source_instance(word))
+        if claim is not None and claim!=block['id']:return None
+        x=(word['bbox'][0]+word['bbox'][2])/2;y=(word['bbox'][1]+word['bbox'][3])/2
+        for other in answer['blocks']:
+            if other['id']==block['id']:continue
+            if any(b[0]<=x<=b[2]and b[1]<=y<=b[3]
+                   for b in (regions or {}).get(other['id'],[block_rect(other,display)])):return None
+    return selected+list(local)
+
+
+
 def _complete_note_tail_territory(block,answer,words,display,regions,local):
     """Locate an exact reader tail on adjacent, otherwise unclaimed source ink.
 
@@ -2502,6 +2550,17 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 from . import pixel_adjudication
                 with unit_recovery.guard(pno,'pixel_adjudication',block=bid):
                     from .native_text import drawn_word_authority,drawn_word_authorities,unproved_legacy_word
+                    note_head=_complete_note_head_territory(block,answer,words,display,regions,local)
+                    if note_head is not None:
+                        result['guard'].append(dict(kind='complete_note_head_territory',
+                            restored_words=len(note_head)-len(local)))
+                        local=note_head;territories=_native_ink_regions(territories,local)
+                        refreshed=vision_reading.align(block['text'],local,block['low_confidence'],
+                            has_layer=True,pixel_words=optical_local)
+                        if not refreshed['fallback']:
+                            independent_optical_fallback=False
+                            for key in ('tokens','marked','boxes','fallback','dropped_layer_words'):
+                                result[key]=refreshed[key]
                     note_tail=_complete_note_tail_territory(block,answer,words,display,regions,local)
                     if note_tail is not None:
                         result['guard'].append(dict(kind='complete_note_tail_territory',

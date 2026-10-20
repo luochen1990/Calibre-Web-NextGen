@@ -3711,3 +3711,40 @@ def test_original_ink_scope_keeps_detached_upper_and_leading_strokes():
         assert scope[0]<=45.5 and scope[1]<=46.5
         assert scope[2]<66,'A separate following word must stay outside the occurrence'
         assert not pa._covers_ink_scope([dict(bbox=[45,52,60,60])],scope), 'Complete horizontal coverage cannot compensate for missing upper strokes'
+
+
+@pytest.mark.parametrize('conflict',['none','different_head','other_owner'])
+def test_source_proved_note_head_expands_before_word_adjudication(tmp_path,monkeypatch,conflict):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    head='The example data come from a printed reference'
+    tail='at noon near the wide open garden gate.'
+    with pymupdf.open()as drawing,pymupdf.open()as doc:
+        leaf=drawing.new_page(width=400,height=250)
+        leaf.insert_text((40,170),head,fontsize=10)
+        leaf.insert_text((25,183),tail,fontsize=10)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in leaf.get_text('words')]
+        original=leaf.get_pixmap().tobytes('png')
+        doc.new_page(width=400,height=250).insert_image(leaf.rect,stream=original)
+        assert not doc[0].get_text()
+        text=(head if conflict!='different_head'else head.replace('The','Those'))+' '+tail
+        own=block(text,ident='n1',role='footnote',marker='1',bbox=(50,696,900,760))
+        answer={'blocks':[own]}
+        if conflict=='other_owner':answer['blocks'].append(block(head,ident='b2',bbox=(75,625,900,690)))
+        monkeypatch.setattr(pa,'read_crop',lambda display,boxes,cache:pa.CropWitness([dict(w)for w in source if any(vp.owned_words([w],b)for b in boxes)]))
+        page,report=vp.compile_page(answer,source,SourceDisplay(doc,0),0,Package(),{},pixel_words=source,
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+        record=next(b for b in report['blocks']if b['id']=='n1')
+        expanded=any(g['kind']=='complete_note_head_territory'for g in record['guard'])
+        if conflict=='none':
+            assert record['published_tokens']==(head+' '+tail).split()
+            assert expanded
+            assert not record['marked'],'A clipped crop cannot make every correct first-line word uncertain'
+            first=source[0]['bbox']
+            assert any(b[0]<=first[0]and b[1]<=first[1]and b[2]>=first[2]and b[3]>=first[3]for b in record['source_regions'])
+        else:assert not expanded,'Different words or another source owner cannot expand this note'
