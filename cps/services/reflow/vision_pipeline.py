@@ -3294,7 +3294,15 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                 0<=first[0]-optical[i]['bbox'][2]<=3*height and
                 (lex(optical[i]['text'])==marker or
                  lex(optical[i]['text']).startswith(marker) and
-                 len(lex(optical[i]['text']))==len(marker)+1)]
+                 len(lex(optical[i]['text']))==len(marker)+1 or
+                 # A uniquely adjacent raised glyph can own this opening
+                 # without its OCR spelling proving the numeric identity.
+                 # Reserve its ink for the note's existing UNPROVED control;
+                 # omission recovery must not append it to preceding prose.
+                 marker.isdigit() and len(optical[i]['text'])==1
+                 and not optical[i]['text'].isalnum()
+                 and optical[i]['bbox'][3]-optical[i]['bbox'][1]<height*.85
+                 and optical[i]['bbox'][3]<(first[1]+first[3])/2)]
             if len(labels)==1:
                 indices.add(labels[0]);note_openings[note['id']]=optical[labels[0]]['bbox']
         for i in indices:
