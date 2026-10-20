@@ -638,7 +638,7 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
     return dict(tokens=output,boxes=bounds,marked=set(notes),word_notes=notes,decisions=decisions)
 
 
-def audit_agreement(tokens, source, witness, boundary_proof=None):
+def audit_agreement(tokens, source, witness, boundary_proof=None, word_boxes=None):
     """Flag pixel conflicts even where a layer and the first reading agree.
 
     A recognizer's different spelling is evidence of a conflict, not authority
@@ -646,21 +646,35 @@ def audit_agreement(tokens, source, witness, boundary_proof=None):
     ink can cause a mark; a different copy of a repeated word cannot do so.
     """
     visible=[(i,token)for i,token in enumerate(tokens) if not token.startswith('<n:')]
-    if len(visible)!=len(source):return {}
+    if word_boxes is None:
+        if len(visible)!=len(source):return {}
+        occurrences={i:word for (i,token),word in zip(visible,source)}
+    else:
+        # Opposite word-boundary errors can cancel in total count. The lexical
+        # adjudicator has already bound each chosen word to its own occurrence;
+        # positional zipping would move every intervening word to its neighbour.
+        # A shared span box is not a uniquely placed word and earns no new claim.
+        counts={}
+        for i,token in visible:
+            if i in word_boxes:
+                key=tuple(word_boxes[i]);counts[key]=counts.get(key,0)+1
+        occurrences={i:dict(text=token,bbox=word_boxes[i]) for i,token in visible
+                     if i in word_boxes and counts[tuple(word_boxes[i])]==1}
     # Recognition may fuse adjacent printed words. Exact letters plus an
     # independently observed blank between every original occurrence can prove
     # the existing spaces. Geometry alone and a dictionary never waive a clash.
     segmented=set()
     if boundary_proof is not None:
         for other in witness:
-            owned=[(j,w)for j,w in enumerate(source)if _same_occurrence(w,other)]
+            owned=[(i,w)for i,w in occurrences.items()if _same_occurrence(w,other)]
             if not 2<=len(owned)<=3 or other.get('confidence',0)<85:continue
             if ''.join(_key(w['text'])for j,w in owned)!=_key(other['text']):continue
             if all(boundary_proof(a,b)for (_,a),(_,b)in zip(owned,owned[1:])):
                 segmented.update(j for j,w in owned)
     notes={}
-    for j,((i,token),word) in enumerate(zip(visible,source)):
-        if j in segmented:continue
+    for i,token in visible:
+        if i in segmented or i not in occurrences:continue
+        word=occurrences[i]
         overlapping=[w for w in witness if _same_occurrence(word,w)]
         if len(overlapping)!=1:continue
         other=overlapping[0]

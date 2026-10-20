@@ -2812,3 +2812,31 @@ def test_complete_native_cells_are_not_blocked_by_another_elements_navigation(tm
         assert selected==text.split()and 'Separate'not in selected
         if link_scope=='outgoing_other':assert page['body'][1].count('<a href="#source-target">Outside</a>')==1
         if link_scope=='incoming_other':assert page['body'][1].count('<span id="source-target"></span>')==1
+
+
+@pytest.mark.parametrize('conflict',[False,True])
+def test_balanced_optical_word_boundaries_do_not_move_neighbour_uncertainty(tmp_path,monkeypatch,conflict):
+    """Two authored OCR boundary errors cancel in count, never in ownership."""
+    from tests.unit import test_round4_defects as ink
+    from cps.services.reflow import pixel_adjudication as pa
+    import copy
+    printed='These note books remain beside the tall cupboard today.'
+    class BoundaryPage(ink.InkPage):
+        def finish(self):
+            image,source,answer=super().finish()
+            self.actual=copy.deepcopy(source)
+            fused=dict(source[1],text='notebooks',bbox=ink.vision_pipeline.vision_reading.union([source[1]['bbox'],source[2]['bbox']]))
+            cupboard=source[7];a,b,c,d=cupboard['bbox'];middle=(a+c)/2
+            split=[dict(cupboard,text='cup',bbox=[a,b,middle,d]),dict(cupboard,text='board',bbox=[middle,b,c,d])]
+            optical=[source[0],fused,*source[3:7],*split,source[8]]
+            assert len(optical)==len(source)==9
+            return image,optical,answer
+    page=BoundaryPage();page.text(printed,'body',size=8)
+    def read_crop(*args):
+        return pa.CropWitness([dict(w,text='small'if conflict and w['text']=='tall'else w['text'])for w in page.actual])
+    monkeypatch.setattr(pa,'read_crop',read_crop)
+    _,report,docs=ink.convert_ink(tmp_path,monkeypatch,[page])
+    record=next(b for b in report['pages'][0]['blocks']if b['id']=='body')
+    assert ink.body_texts(docs)==[printed]
+    assert set(record['marked'])==({1,2,6,7}if conflict else{1,2,7})
+    assert record['source_image_words']==[]
