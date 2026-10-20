@@ -3962,7 +3962,8 @@ def test_unfamiliar_joined_stroke_candidate_keeps_possible_unseen_letters_unreso
 def test_unproved_source_changes_have_their_own_original_ink(inserted,replacement,proved):
     from cps.services.reflow import pixel_adjudication as pa
     source=words('Keep the '+' '.join(inserted)+' sample ready now.')
-    witness=pa.CropWitness([dict(w)for w in source]if proved else [])
+    for word in source[2:2+len(inserted)]:word['confidence']=40
+    witness=pa.CropWitness([dict(w,confidence=99)for w in source]if proved else [])
     model=['Keep','the',*replacement,'sample','ready','now.']
     result=pa.adjudicate(model,source,witness,unresolved_source=bool(replacement))
     assert result['tokens']==[w['text']for w in source]
@@ -3993,11 +3994,12 @@ def test_compilation_cannot_publish_an_unproved_source_insertion_as_live_text(tm
         leaf=drawing.new_page(width=320,height=150)
         leaf.insert_text((25,60),'Keep the bright sample ready now.',fontsize=11)
         source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in leaf.get_text('words')]
+        source[2]['confidence']=40
         raster=leaf.get_pixmap(matrix=pymupdf.Matrix(2,2),alpha=False).tobytes('png')
         doc.new_page(width=320,height=150).insert_image(leaf.rect,stream=raster)
         assert not doc[0].get_text(),'Native paint authority is a separate positive control'
         monkeypatch.setattr(pa,'read_crop',lambda *args:pa.CropWitness(
-            [dict(w)for w in source]if proved else []))
+            [dict(w,confidence=99)for w in source]if proved else []))
         page,report=vp.compile_page({'blocks':[block('Keep the sample ready now.',bbox=(0,0,1000,1000))]},
             source,SourceDisplay(doc,0),0,package,{},pixel_words=source,
             note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
@@ -4041,6 +4043,7 @@ def test_fallback_refinement_keeps_original_ink_for_an_unchanged_unproved_word(t
     from cps.services.reflow.source_display import SourceDisplay
     from tests.unit.test_reflow_vision_pilot import block
     source=words('Keep the bright blue wooden sample ready now.')
+    for word in source[2:5]:word['confidence']=40
     calls=[]
     def refine(tokens,*args,**kwargs):
         calls.append(list(tokens))
@@ -4152,3 +4155,19 @@ def test_reference_projection_preserves_its_original_physical_word_proofs(kind):
     else:
         assert result['word_notes'][2]['method']=='complete_vision_reading_without_optical_counterevidence'
         assert not any(d['status']=='RESOLVED'and d['chosen']==['rose']for d in result['decisions'])
+
+
+@pytest.mark.parametrize('confidence',[40,99,None])
+@pytest.mark.parametrize('counter',[False,True])
+def test_source_conservation_withholds_only_the_specific_weak_or_contested_word(confidence,counter):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Keep the bright blue sample ready now.')
+    if confidence is None:source[2].pop('confidence')
+    else:source[2]['confidence']=confidence
+    witness=pa.CropWitness([dict(source[2],text='light',confidence=99)]if counter else [])
+    result=pa.adjudicate('Keep the sample ready now.'.split(),source,witness)
+    assert result['tokens']==[w['text']for w in source]
+    assert bool(result['word_notes'][2].get('source_image_only'))is(confidence==40 or counter)
+    assert not result['word_notes'][3].get('source_image_only'),'The neighboring admitted word is not implicated'
+    assert result['word_notes'][2]['status']=='UNRESOLVED','Absence of a second read certifies no correction'
+    if confidence==40 or counter:assert result['word_notes'][2]['source_bbox']==source[2]['bbox']

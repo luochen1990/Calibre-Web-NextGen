@@ -736,11 +736,19 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 method='incomplete_vertical_word_ink')
         unproved_source_choice=(not resolved and bool(literal)
             and list(literal)==source_tokens[a:z]and list(literal)!=proposed[b:y])
+        withheld=set()
         if unproved_source_choice:
-            # Source conservation may retain a real word omitted by the first
-            # reader, but an unproved OCR change is not a live transcription.
-            # Keep its own original ink until the independent read proves it.
-            record.update(source_image_only=True,method='unproved_source_transcription_change')
+            # An admitted local reading remains available when a later crop
+            # merely cannot repeat it. Withhold the specific weak occurrence
+            # or a complete competing read, not its whole conserved passage.
+            # Symbols remain available for the separate note-origin verifier.
+            for j,word in enumerate(source[a:z]):
+                weak=word.get('confidence')is not None and word['confidence']<85
+                counter=any(_complete_word_occurrence(word,other)
+                    and other.get('confidence',0)>=85
+                    and _key(other['text'])!=_key(word['text'])for other in witness)
+                if any(c.isalnum()for c in word['text'])and(weak or counter):withheld.add(j)
+            if withheld:record['method']='unproved_source_transcription_change'
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
                [w['bbox'] for w in source[a:z]])
@@ -748,7 +756,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                max(x[2] for x in boxes),max(x[3] for x in boxes)] if boxes else None)
         for j,token in enumerate(literal):
             word_record=_word_note(record,j,len(decisions)-1)
-            if unproved_source_choice:
+            if j in withheld:
                 own=list(source[a+j]['bbox'])
                 word_record=dict(word_record,source_image_only=True,
                     source=[source[a+j]['text']],source_bbox=own,
