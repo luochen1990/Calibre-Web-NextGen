@@ -3639,3 +3639,33 @@ def test_lazy_word_boundary_measurement_declines_ambiguous_or_printed_spaces(mon
         measure=pa._terminal_word_view(['gar','den'],witness).word_separation(word,['gar','den'])
         if printed=='garden':assert measure is False
         else:assert measure is not False,'A real or ambiguous space can never authorize a joined word'
+
+
+@pytest.mark.parametrize('printed',['rain','grain'])
+@pytest.mark.parametrize('raster',[False,True])
+def test_small_print_scope_excludes_the_following_separate_word(monkeypatch,tmp_path,printed,raster):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=200,height=100)
+        page.insert_text((40,50),printed+' while comparing samples.',fontsize=6)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        if raster:
+            image=page.get_pixmap(matrix=pymupdf.Matrix(2,2),alpha=False).tobytes('png')
+            drawing.delete_page(0);page=drawing.new_page(width=200,height=100)
+            page.insert_image(page.rect,stream=image)
+        source[0]['text']='rain'
+        if printed=='grain':source[0]['bbox'][0]+=.25*(source[0]['bbox'][2]-source[0]['bbox'][0])
+        monkeypatch.setattr(pa,'_read_crop',lambda *a,**k:[dict(w)for w in source])
+        witness=pa.read_crop(SourceDisplay(drawing,0),[source[0]['bbox']],tmp_path)
+        witness.word_readings=lambda word:[[dict(word,text='rain',confidence=99)]]*2
+        result=pa.adjudicate('grain while comparing samples.'.split(),source,witness)
+        note=result['word_notes'][0]
+        if printed=='rain':
+            assert result['tokens'][0]=='rain'
+            assert note['status']=='RESOLVED','Following words cannot invalidate a complete small printed occurrence'
+        else:
+            assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+        scope=witness.word_scope(source[0])
+        assert scope is not None and scope[2]<source[1]['bbox'][0]

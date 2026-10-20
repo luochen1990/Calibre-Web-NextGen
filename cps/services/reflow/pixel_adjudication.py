@@ -871,10 +871,16 @@ def _word_ink_scope(display,word):
     selected=[b for b in boxes if min(a[2],b[2])>max(a[0],b[0])
               and min(a[3],b[3])>max(a[1],b[1])]
     if not selected:return None
+    from statistics import median
+    # A font's ascent/descent box can be much taller than its drawn letters.
+    # Using that metric as a gap would absorb the next small printed word.
+    tallest=max(b[3]-b[1]for b in selected)
+    ink_height=median(b[3]-b[1]for b in selected if b[3]-b[1]>=tallest*.4)
+    gap=max(.5,.3*min(height,ink_height))
     left=min(b[0]for b in selected);right=max(b[2]for b in selected)
     for _ in range(len(boxes)):
-        adjacent=[b for b in boxes if b[0]<=right+max(1.5,.45*height)
-                  and b[2]>=left-max(1.5,.45*height)]
+        adjacent=[b for b in boxes if b[0]<=right+gap
+                  and b[2]>=left-gap]
         new_left=min(b[0]for b in adjacent);new_right=max(b[2]for b in adjacent)
         if new_left==left and new_right==right:break
         left,right=new_left,new_right
