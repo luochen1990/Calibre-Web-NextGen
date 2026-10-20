@@ -2650,7 +2650,8 @@ def test_native_single_word_uses_its_complete_original_occurrence(tmp_path,monke
             assert record['native_occurrence_count']==(2 if case=='repeated'else 0)
 
 
-def test_native_note_keeps_complete_live_rows_beyond_a_nonempty_cached_box(tmp_path,monkeypatch):
+@pytest.mark.parametrize('rotation',[0,90,180,270])
+def test_native_note_keeps_complete_live_rows_beyond_a_nonempty_cached_box(tmp_path,monkeypatch,rotation):
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,assemble,build_epub
     first='The quiet sample remains clear'
@@ -2660,6 +2661,7 @@ def test_native_note_keeps_complete_live_rows_beyond_a_nonempty_cached_box(tmp_p
         leaf.insert_text((35.5,61),'1',fontsize=6)
         leaf.insert_text((40,70),first,fontsize=10)
         leaf.insert_text((40,90),last,fontsize=10)
+        leaf.set_rotation(rotation)
         note=assemble.Note(num=1,text=first+' '+last,pno=0,bbox=[20,55,350,74])
         book=assemble.Book(notes=[note],pages={0:[]})
         aside=build_epub._scope_ids(build_epub._aside_html(note,{'1':'ref'},{'1'}),0)
@@ -2729,3 +2731,30 @@ def test_native_mixed_line_fraction_preserves_baseline_and_emphasis():
     assert any(r==['t',' stays clear.','bold']for r in runs)
     assert not any(r[0]=='raised'for r in runs)
     assert any(s.text=='3'and s.superscript for b in result for ln in b.lines for s in ln.spans)
+
+
+@pytest.mark.parametrize('rotation',[0,90,180,270])
+@pytest.mark.parametrize('includes_label',[False,True])
+def test_native_note_lexical_copy_keeps_its_original_occurrence_when_rotated(tmp_path,monkeypatch,rotation,includes_label):
+    import pymupdf,json
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,assemble,build_epub
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=300,height=250);leaf.insert_text((30,70),'1 1',fontsize=10)
+        original=[dict(text=w[4],bbox=list(w[:4]))for w in leaf.get_text('words')]
+        leaf.set_rotation(rotation);display=SourceDisplay(doc,0)
+        note=assemble.Note(num=1,text='1',pno=0,bbox=vp.vision_reading.union([w['bbox']for w in original])if includes_label else original[1]['bbox'])
+        fragment=build_epub._scope_ids(build_epub._aside_html(note,{'1':'ref'},{'1'}),0)
+        data=dict(pno=0,body=[],asides=[fragment])
+        monkeypatch.setattr(pa,'read_crop',lambda *args:pytest.fail('A mapped lexical copy has its own original ink'))
+        records=vp._audit_native_note_pixels(doc,assemble.Book(notes=[note]),data,tmp_path,None,{})
+        expected=list(display.reading_rect(original[1]['bbox']))
+        assert records[0]['source_regions']==[expected]
+        assert records[0]['published_tokens']==['1']and records[0]['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
+        assert not records[0].get('marked')
+        assert data['asides'][0].count('<a class="note-return" href="#ref" aria-label="Return to note reference">1</a>')==1
+        from xml.etree import ElementTree
+        tree=ElementTree.fromstring('<root xmlns:epub="http://www.idpf.org/2007/ops">'+data['asides'][0]+'</root>')
+        spans=[node for node in tree.iter()if node.get('data-source-block')=='native-note-0']
+        assert len(spans)==1 and ''.join(spans[0].itertext())=='1'
+        assert json.loads(spans[0].get('data-source-regions'))==[expected]

@@ -4525,8 +4525,11 @@ def _native_seam_blocks(doc,book,pno,page):
     # emitted glyph/span can make element-text equality unavailable. Bind the
     # complete emitted reading to unique source words before trusting that box.
     compact=lambda text:re.sub(r'\s+','',vision_reading.normalized(text))
-    display=SourceDisplay(doc,pno)
-    lexical=_native_lexical_view(display,physical)
+    # Occurrence identity and cached element boxes use original PDF space.
+    # Group there directly: rotating and derotating introduces float aliases
+    # that can make one physical occurrence appear to be two distinct ones.
+    from .native_text import lexical_word_view
+    lexical=lexical_word_view(doc[pno],physical)if doc[pno].get_texttrace()else physical
     def complete_occurrences(text,element=None):
         target=compact(text)
         if not target:return []
@@ -4931,7 +4934,7 @@ def _audit_native_note_pixels(doc,book,page,cache,package,images):
     """Audit native note text separately from its label and generated controls."""
     from . import pixel_adjudication
     records=[];display=SourceDisplay(doc,page['pno']);additions=[]
-    physical=[dict(text=w[4],bbox=list(display.reading_rect(w[:4])))
+    physical=[dict(text=w[4],bbox=list(w[:4]))
               for w in doc[page['pno']].get_text('words')]
     controller=unit_recovery.current()
     for ordinal,note in enumerate(n for n in book.notes if n.pno==page['pno']):
@@ -4957,17 +4960,26 @@ def _audit_native_note_pixels(doc,book,page,cache,package,images):
             if len(candidates)!=1:
                 raise ValueError('Native note has no unique emitted lexical fragment')
             source_box=extract.pymupdf.Rect(note.bbox)
-            words=(_pixel_line_order(owned_words(physical,display.reading_rect(source_box)))
+            words=(_pixel_line_order(owned_words(physical,source_box))
                    if not source_box.is_empty else [])
-            if note.num is not None and words and vision_reading.normalized(words[0]['text']).strip('.,:;()[]{}')==str(note.num):words=words[1:]
-            territories=[vision_reading.union([w['bbox'] for w in row])for row in _pixel_lines(words)]
+            # Label order belongs to original source coordinates, before a PDF
+            # display rotation can reverse its position beside the lexical copy.
+            # A box already containing precisely the body must not lose its own
+            # first word merely because that word equals the note number.
+            local=vision_reading.normalized(' '.join(w['text']for w in words)).split()
+            if (note.num is not None and words and local!=vision_reading.normalized(note.text).split()
+                    and vision_reading.normalized(words[0]['text']).strip('.,:;()[]{}')==str(note.num)):
+                words=words[1:]
+            territories=[list(display.reading_rect(vision_reading.union([w['bbox']for w in row])))
+                         for row in _pixel_lines(words)]
             # A cached rectangle can retain only the first line of a continued
             # note. Complete unique original text proves its full footprint even
             # when that stale rectangle is nonempty. Ambiguous text still needs
             # the note's own bounded territory (including label separation).
             bound=_native_seam_blocks(doc,book,page['pno'],dict(body=['<p>'+literal+'</p>']))[0]
             if bound.get('native_geometry_binding')=='unique_complete_source_text' or not territories:
-                territories=bound.get('source_rows')or bound.get('source_regions',[])
+                territories=[list(display.reading_rect(box))for box in
+                             (bound.get('source_rows')or bound.get('source_regions',[]))]
             if not territories:raise ValueError('Native note has no original word territory')
             fragment='<p><span data-source-page="%d">%s</span></p>'%(page['pno'],literal)
             proxy=dict(pno=page['pno'],body=[fragment],asides=[])
