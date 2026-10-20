@@ -341,3 +341,33 @@ def test_native_evidence_retains_at_most_one_frame_across_retained_page_displays
             assert sum(reference() is not None for reference in references) <= 1
     finally:
         package.abandon();source.close();doc.close()
+
+
+def test_preview_reserves_archive_headroom_without_reducing_detail_resolution(tmp_path,monkeypatch):
+    import random
+    from PIL import ImageDraw
+    from cps.services.reflow.image_budget import EvidenceRaster
+    from cps.services.reflow.source_display import SourceDisplay
+    # Synthetic scanner texture is deliberately expensive to encode. The
+    # overview must leave capacity for details rather than consuming that space.
+    grain=random.Random(902).randbytes(1000*1400)
+    paper=Image.frombytes('L',(1000,1400),grain.translate(bytes(224+i%32 for i in range(256))))
+    draw=ImageDraw.Draw(paper)
+    for y in range(40,1360,24):draw.text((35,y),'Clear synthetic lettering.',fill=0)
+    encoded=io.BytesIO();paper.save(encoded,'PNG')
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=500,height=700)
+        page.insert_image(page.rect,stream=encoded.getvalue())
+        display=SourceDisplay(doc,0);raster=EvidenceRaster()
+        overview=raster.jpeg(display,display.rect)
+        with monkeypatch.context()as old_profile:
+            old_profile.setattr('cps.services.reflow.image_budget.EVIDENCE_PREVIEW_QUALITY',45)
+            previous=EvidenceRaster().jpeg(display,display.rect)
+        assert len(overview)<.85*len(previous),'Overview encoding must reserve substantive archive headroom'
+        with Image.open(io.BytesIO(overview))as picture:
+            assert picture.size==(1000,1400)
+            assert picture.convert('L').crop((35,40,180,55)).getextrema()[0]<60
+        detail=raster.jpeg(display,(10,10,210,80),detail=True)
+        with Image.open(io.BytesIO(detail))as picture:
+            assert picture.size==(600,210),'Tight inspection keeps its216dpi sampling'
+            assert picture.convert('L').getextrema()[0]<60

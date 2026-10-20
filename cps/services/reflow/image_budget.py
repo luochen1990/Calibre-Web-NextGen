@@ -15,7 +15,9 @@ MIN_BOOK_BYTES = 150 * 1024 * 1024
 SOURCE_MULTIPLIER = 3
 EVIDENCE_PIXELS = 6_000_000
 EVIDENCE_QUALITY = 75
-EVIDENCE_PREVIEW_QUALITY = 45
+# Overviews preserve the full144dpi page. High-resolution inspection crops
+# retain their separate216dpi/quality75 profile and do not spend this reserve.
+EVIDENCE_PREVIEW_QUALITY = 30
 EVIDENCE_SIDE = 4096
 
 
