@@ -510,11 +510,12 @@ def test_unplaced_multiword_edit_has_bounded_word_notes_not_repeated_paragraphs(
         doc.new_page(width=600,height=400)
         page,report=vp.compile_page({'blocks':[block(model,role='footnote',marker='2',bbox=(0,0,1000,1000))]},
             original,SourceDisplay(doc,0),0,Package(),{},pixel_words=original,note_context={'cache':tmp_path/'cache'})
-    assert report['blocks'][0]['published_tokens']==model.split()
+    assert report['blocks'][0]['published_tokens']==[w['text']for w in original]
+    assert report['blocks'][0]['source_image_words']==[3]
     notes=[aside for aside in page['asides'] if 'Unresolved source reading' in aside]
-    assert len(notes)>=5
+    assert len(notes)==1,'One original occurrence owns this unproved multiword rewrite'
     assert all('small wooden sample and open' not in aside for aside in notes)
-    assert any('source-word correspondence is unresolved' in aside for aside in notes)
+    assert any('source-word-image' in aside for aside in page['asides'])
 
 
 @pytest.mark.parametrize('kind',['word','label','label-punctuation','glyphs'])
@@ -4245,3 +4246,44 @@ def test_whole_word_corroboration_precedes_noisy_alternate_image_fallback(eviden
     else:
         assert result['marked']=={2}
         assert result['word_notes'][2]['status']=='UNRESOLVED'
+
+
+@pytest.mark.parametrize('evidence',['complete','partial','disagreeing','unflagged','proper_name'])
+def test_weak_agreeing_ocr_can_request_its_own_complete_word_reading(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    token='Xample'if evidence=='proper_name'else'xample'
+    source=words('Read the '+token+' beside this box.',40)
+    witness=pa.CropWitness([])
+    positive=words('Read the sample beside this box.',95)
+    second=words('Read the simple beside this box.',95)if evidence=='disagreeing'else positive
+    if evidence=='partial':positive[2]['bbox']=[47,20,58,32]
+    witness.word_readings=lambda word:[positive,second]
+    result=pa.adjudicate([w['text']for w in source],source,witness,
+        uncertain=set()if evidence=='unflagged'else{2})
+    if evidence=='complete':
+        assert result['tokens'][2]=='sample'
+        assert result['word_notes'][2]['status']=='RESOLVED'
+        assert result['word_notes'][2]['source']==[token]
+        assert result['word_notes'][2]['chosen']==['sample']
+        assert 2 in result['marked']
+    else:
+        assert result['tokens'][2]==token
+        assert not any(d['status']=='RESOLVED'for d in result['decisions'])
+
+
+@pytest.mark.parametrize('source_text,model_text',[
+    ('Read the xample beside this box.','Read the helpful sample beside this box.'),
+    ('Read the l. owly sample now.','Read the very useful sample now.')])
+def test_an_unproved_multiword_rewrite_cannot_leave_invented_words_live(source_text,model_text):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words(source_text,40)
+    witness=pa.CropWitness([])
+    witness.model_reading=True
+    result=pa.adjudicate(model_text.split(),source,witness)
+    assert result['tokens']==source_text.split()
+    images={i for i,d in result['word_notes'].items()if d.get('source_image_only')}
+    expected={i for i,t in enumerate(source_text.split())if t in ('xample','l.','owly')}
+    assert images==expected
+    assert all(result['word_notes'][i]['source_bbox']==source[i]['bbox']for i in images)
+    assert all(result['word_notes'][i]['status']=='UNRESOLVED'for i in images)
+    assert result['marked']==expected

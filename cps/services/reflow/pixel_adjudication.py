@@ -487,6 +487,18 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 lexical_repair=(lexical(token) not in vocabulary and
                     not any(c.isupper() for c in token) and word is not None and
                     lexical(word['text']) in vocabulary)
+                if (lexical(token) not in vocabulary and not any(c.isupper()for c in token)
+                        and source[index].get('confidence',100)<85
+                        and visible[b+index-a][0] in pending):
+                    # A recovered low-confidence token can agree with the
+                    # source OCR merely because it came from that same read.
+                    # Consult its independent complete word, even when the
+                    # broader contextual crop failed to recognize this word.
+                    diverse=_own_word_choice(source[index],witness)
+                    if (diverse and lexical(diverse['text']) in vocabulary
+                            and not _small_mark_conflict(token,diverse['text'])
+                            and not _joined_stroke_conflict(token,diverse['text'])):
+                        word=diverse;lexical_repair=True;second=[diverse]
                 corrected=bool(lexical_repair and word and word.get('confidence',0)>=90 and len(second)==1
                     and _key(word['text'])!=_key(token)
                     and _key(word['text']).rstrip('.,;:!?')!=_key(token).rstrip('.,;:!?')
@@ -727,8 +739,14 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 own=source[a]['bbox'];evidence['bbox']=[min(own[0],word_scope[0]),min(own[1],word_scope[1]),max(own[2],word_scope[2]),max(own[3],word_scope[3])]
             supported=[('model',proposed[b:y],[evidence])]
         resolved=len(supported)==1
+        unproved_multiword=(not resolved and bool(source_tokens[a:z]) and bool(proposed[b:y])
+            and getattr(witness,'model_reading',False) and not unresolved_source
+            and not native_print_words and not(fused_model or wrapped or partial_wrap)
+            and max(z-a,y-b)>1 and boundary is None
+            and ''.join(placement(t)for t in source_tokens[a:z])!=
+                ''.join(placement(t)for t in proposed[b:y]))
         name,literal,evidence=(supported[0] if resolved else
-            boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or not proposed[b:y] else ('model',proposed[b:y],[]))
+            boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or unproved_multiword or not proposed[b:y] else ('model',proposed[b:y],[]))
         record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=list(literal),
                     status='RESOLVED' if resolved else 'UNRESOLVED',
                     method=('complete_vision_reading_without_optical_counterevidence'if retained_vision else word_method if word_choice else 'corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
@@ -768,7 +786,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 collision=any(index!=a+j and all(abs(x-y)<.1
                     for x,y in zip(word['bbox'],other['bbox']))
                     for index,other in enumerate(source))
-                if any(c.isalnum()for c in word['text'])and(weak or counter or collision):withheld.add(j)
+                if any(c.isalnum()for c in word['text'])and(weak or counter or collision or unproved_multiword):withheld.add(j)
             if withheld:record['method']='unproved_source_transcription_change'
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
