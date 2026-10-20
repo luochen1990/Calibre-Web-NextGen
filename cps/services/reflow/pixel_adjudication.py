@@ -387,6 +387,39 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 operations.extend(('replace',a+n,a+n+1,b+m,b+m+1)
                                   for n,m in zip(range(i,k),range(j,l)))
             else:operations.append(('replace',a+i,a+k,b+j,b+l))
+    # A damaged neighbor can prevent lexical alignment of several otherwise
+    # separable words. Use unique complete physical recognitions as boundaries
+    # inside that edit, never a positional zip or spelling similarity. These
+    # anchors propose ownership only; each resulting edit still needs all the
+    # ordinary transcription and uncertainty checks below.
+    placed=[]
+    for kind,a,z,b,y in operations:
+        if kind!='replace' or max(z-a,y-b)<=1 or max(z-a,y-b)>32:
+            placed.append((kind,a,z,b,y));continue
+        def contextual(items):
+            return any(len(own:=_whole_view_word(word,witness))==1
+                and own[0].get('confidence',0)>=85
+                and _key(own[0]['text'])==_key(word['text'])for word in items)
+        if not(contextual(source[max(0,a-2):a])and contextual(source[z:z+2])):
+            placed.append((kind,a,z,b,y));continue
+        anchors=[]
+        for i in range(a,z):
+            own=_whole_view_word(source[i],witness)
+            if len(own)!=1:continue
+            matches=[j for j in range(b,y)if _key(own[0]['text'])==candidate[j]]
+            if len(matches)==1:anchors.append((i,matches[0],id(own[0])))
+        if (not anchors or len({j for i,j,w in anchors})!=len(anchors)
+                or len({w for i,j,w in anchors})!=len(anchors)
+                or [j for i,j,w in anchors]!=sorted(j for i,j,w in anchors)):
+            placed.append((kind,a,z,b,y));continue
+        left,right=a,b
+        for i,j,_ in anchors:
+            if left<i or right<j:
+                placed.append(('replace'if left<i and right<j else 'delete'if left<i else 'insert',left,i,right,j))
+            placed.append(('replace',i,i+1,j,j+1));left,right=i+1,j+1
+        if left<z or right<y:
+            placed.append(('replace'if left<z and right<y else 'delete'if left<z else 'insert',left,z,right,y))
+    operations=placed
     for kind,a,z,b,y in operations:
         if source_print or a<z and all(proved_native_occurrence(w['text'],w['bbox'],native_print_words)for w in source[a:z]):
             # This occurrence is reliably decoded visible native paint, even

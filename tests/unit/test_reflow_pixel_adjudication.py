@@ -4071,3 +4071,32 @@ def test_fallback_refinement_keeps_original_ink_for_an_unchanged_unproved_word(t
     assert all(t not in vp._seam_text(' '.join(page['body'])).split()for t in ('bright','blue','wooden'))
     assert 'sample ready now.'in vp._seam_text(' '.join(page['body']))
     assert len(package.images)>=3,'Every unproved word retains its inspectable original ink'
+
+
+@pytest.mark.parametrize('binding',['own','remote','repeated'])
+def test_independent_word_occurrences_split_a_damaged_multiword_alignment(binding):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Keep the c1car bluc sarnple ready now.')
+    model='Keep the clear blue sample ready now.'.split()
+    # The final context differs, so it cannot certify this whole edit as one
+    # span. Each complete physical word needs its own recognition instead.
+    rows=words('Keep the clear blue sample ready later.')
+    if binding=='remote':
+        rows=[dict(w,bbox=[w['bbox'][0],60,w['bbox'][2],72])for w in rows]
+    if binding=='repeated':
+        model='Keep the clear clear sample ready now.'.split()
+        rows[3]=dict(rows[3],text='clear')
+    witness=pa.CropWitness(rows)
+    witness.word_readings=lambda word:[[dict(w)for w in rows]]*2
+    result=pa.adjudicate(model,source,witness)
+    if binding=='own':
+        assert result['tokens']==model
+        for index in (2,3,4):
+            note=result['word_notes'][index]
+            assert note['status']=='RESOLVED'
+            assert not note.get('mapping'),'Do not leave a positively placed word in an unplaced edit span'
+            assert result['boxes'][index]==source[index]['bbox']
+            assert note['chosen']==[model[index]]
+    else:
+        assert not all(result['word_notes'].get(i,{}).get('status')=='RESOLVED'for i in (2,3,4))
+        assert result['marked'],'Remote or repeated spelling alone does not supply unique occurrence anchors'
