@@ -3748,3 +3748,120 @@ def test_source_proved_note_head_expands_before_word_adjudication(tmp_path,monke
             first=source[0]['bbox']
             assert any(b[0]<=first[0]and b[1]<=first[1]and b[2]>=first[2]and b[3]>=first[3]for b in record['source_regions'])
         else:assert not expanded,'Different words or another source owner cannot expand this note'
+
+
+@pytest.mark.parametrize('model,counter', [('reef','rccf'),('fold','lold'),('yarn','varn')])
+def test_shared_eroded_strokes_cannot_certify_a_changed_complete_word(monkeypatch,model,counter):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    # Vocabulary membership cannot distinguish a missing crossbar or descender.
+    # Both injected networks repeat the same synthetic optical error.
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset(
+        {'read','the','sample','now',model,counter}))
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=300,height=100)
+        page.insert_text((20,50),'Read the '+model+' sample now',fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+    source[2]['text']=counter
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda word:[[dict(word,text=counter,confidence=99)]]*2
+    result=pa.adjudicate(('Read the '+model+' sample now').split(),source,witness)
+    note=result['word_notes'][2]
+    assert note['status']=='UNRESOLVED','Shared recognition cannot prove a missing distinguishing stroke'
+    assert note.get('source_image_only')and note['method']=='unproved_shared_stroke_identity'
+    assert result['tokens'][2]==model and result['marked']=={2}
+
+
+@pytest.mark.parametrize('printed,first',[('rccf','reef'),('lold','fold'),('varn','yarn')])
+def test_visible_native_eroded_stroke_alternative_remains_authoritative(printed,first):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the '+printed+' sample now')
+    result=pa.adjudicate(('Read the '+first+' sample now').split(),source,
+        pa.CropWitness(source),source_print=True)
+    assert result['tokens'][2]==printed
+    assert result['word_notes'][2]['status']=='RESOLVED'
+    assert result['word_notes'][2]['method']=='visible_mapped_native_glyphs'
+
+
+@pytest.mark.parametrize('position,source_quote',[('adjacent','”'),('distant','”'),('adjacent','’')])
+def test_separated_matching_closing_quote_is_formatting_only_at_its_own_word(position,source_quote):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read this sample.')
+    box=list(source[-1]['bbox']);height=box[3]-box[1]
+    quote=dict(text=source_quote,bbox=[box[2]+3,box[1],box[2]+6,box[1]+3],confidence=57)
+    if position=='distant':quote['bbox']=[box[2]+10*height,box[1],box[2]+10*height+3,box[1]+3]
+    source.append(quote)
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    result=pa.adjudicate(['Read','this','sample.”'],source,witness)
+    if position=='adjacent'and source_quote=='”':
+        assert result['tokens']==['Read','this','sample.”']
+        assert not result['marked'],'A matching separately printed closing mark is not a different reading'
+        assert result['boxes'][2][2]>=quote['bbox'][2]
+    else:
+        assert result['marked'],'A distant or different quotation mark cannot settle the model reading'
+
+
+@pytest.mark.parametrize('printed,first',[('reef','rccf'),('fold','lold'),('yarn','varn')])
+def test_positive_pixel_stroke_is_distinct_from_certifying_its_absence(monkeypatch,printed,first):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset(
+        {'read','the','sample','now',printed,first}))
+    source=words('Read the '+printed+' sample now')
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda word:[[dict(word,text=printed,confidence=99)]]*2
+    result=pa.adjudicate(('Read the '+first+' sample now').split(),source,witness)
+    assert result['tokens'][2]==printed
+    assert result['word_notes'][2]['status']=='RESOLVED'
+    assert not result['word_notes'][2].get('source_image_only')
+
+
+@pytest.mark.parametrize('case',['matching','different','other_owner','no_pixels'])
+def test_clipped_closing_mark_requires_its_unclaimed_visible_occurrence(tmp_path,monkeypatch,case):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    with pymupdf.open()as drawing,pymupdf.open()as doc:
+        page=drawing.new_page(width=300,height=150)
+        page.insert_text((30,70),'Read this clear sample. "',fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        quote=source[-1];quote['confidence']=57
+        pixels=[dict(w)for w in source if case!='no_pixels'or w is not quote]
+        if case=='different':pixels[-1]['text']='’'
+        body=source[:-1];right=max(w['bbox'][2]for w in body)+.5
+        image=page.get_pixmap().tobytes('png')
+        doc.new_page(width=300,height=150).insert_image(page.rect,stream=image)
+        assert not doc[0].get_text()
+        own=block('Read this clear sample.”',ident='b1',bbox=(90,350,right/300*1000,500))
+        answer={'blocks':[own]}
+        if case=='other_owner':
+            q=quote['bbox'];answer['blocks'].append(block('"',ident='b2',bbox=(q[0]/300*1000,350,900,500)))
+        monkeypatch.setattr(pa,'read_crop',lambda display,boxes,cache:pa.CropWitness([dict(w)for w in pixels if any(vp.owned_words([w],b)for b in boxes)]))
+        page,report=vp.compile_page(answer,source,SourceDisplay(doc,0),0,Package(),{},pixel_words=pixels,
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+        record=next(b for b in report['blocks']if b['id']=='b1')
+        widened=any(g['kind']=='complete_closing_mark_territory'for g in record['guard'])
+        if case=='matching':
+            assert widened
+            assert record['published_tokens']==['Read','this','clear','sample.”']
+            assert not record['marked']and not record.get('source_image_words')
+            assert any(b[2]>=quote['bbox'][2]for b in record['source_regions'])
+        else:assert not widened,'A different, unrecognized or already owned mark cannot widen this source'
+
+
+@pytest.mark.parametrize('model,counter',[('willow','villow'),('Aim','\\im'),('A','\\')])
+def test_missing_letter_strokes_cannot_be_certified_as_a_slash_or_half_letter(monkeypatch,model,counter):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset(
+        {'read','the','sample','now','im',model.casefold(),counter.casefold()}))
+    source=words('Read the '+counter+' sample now')
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda word:[[dict(word,text=counter,confidence=99)]]*2
+    result=pa.adjudicate(('Read the '+model+' sample now').split(),source,witness)
+    note=result['word_notes'][2]
+    assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+    assert note['method']=='unproved_shared_stroke_identity'
+    assert result['tokens'][2]==model and result['marked']=={2}

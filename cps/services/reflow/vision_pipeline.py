@@ -540,6 +540,35 @@ def _complete_note_tail_territory(block,answer,words,display,regions,local):
     return list(local)+selected
 
 
+def _complete_closing_mark_territory(block,answer,words,pixel_words,display,regions,local):
+    """Include one adjacent, independently recognized closing mark in its word."""
+    if not local or not pixel_words:return None
+    from . import pixel_adjudication
+    model=[t for t in block['text'].split()if not t.startswith('<n:')]
+    if not model or model[-1][-1:]not in ('"','”','’'):return None
+    last=_pixel_line_order(local)[-1]
+    existing={_source_instance(w)for w in local};found=[]
+    for word in words:
+        if (_source_instance(word)in existing or not word['text']
+                or not all(c in '"”’'for c in word['text'])):continue
+        joined=pixel_adjudication._terminal_word_view([model[-1]],[last,word])
+        if len(joined)!=1 or pixel_adjudication._key(joined[0]['text'])!=pixel_adjudication._key(model[-1]):continue
+        box=word['bbox']
+        visible=[w for w in pixel_words
+            if pixel_adjudication._key(w['text'])==pixel_adjudication._key(word['text'])
+            and w.get('confidence',0)>=50
+            and box[0]-1<=(w['bbox'][0]+w['bbox'][2])/2<=box[2]+1
+            and box[1]-1<=(w['bbox'][1]+w['bbox'][3])/2<=box[3]+1]
+        if len(visible)!=1:continue
+        claim=(regions or {}).get('_instances',{}).get(_source_instance(word))
+        if claim is not None and claim!=block['id']:continue
+        x=(box[0]+box[2])/2;y=(box[1]+box[3])/2
+        if any(other['id']!=block['id']and any(b[0]<=x<=b[2]and b[1]<=y<=b[3]
+            for b in (regions or {}).get(other['id'],[block_rect(other,display)]))for other in answer['blocks']):continue
+        found.append(word)
+    return list(local)+found if len(found)==1 else None
+
+
 def _complete_native_reading_territory(block,answer,words,display,regions,body_owners,local):
     """Restore a clipped optical territory only from complete original print."""
     if (not local or len(local)>=len(block['text'].split()) or '<n:'in block['text']
@@ -2570,6 +2599,17 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         # owned inventory; its earlier missing-row fallback is
                         # not word-level reader doubt. Pixel adjudication below
                         # still checks the widened original crop normally.
+                        refreshed=vision_reading.align(block['text'],local,block['low_confidence'],
+                            has_layer=True,pixel_words=optical_local)
+                        if not refreshed['fallback']:
+                            independent_optical_fallback=False
+                            for key in ('tokens','marked','boxes','fallback','dropped_layer_words'):
+                                result[key]=refreshed[key]
+
+                    closing=_complete_closing_mark_territory(block,answer,words,pixel_words,display,regions,local)
+                    if closing is not None:
+                        result['guard'].append(dict(kind='complete_closing_mark_territory',restored_marks=1))
+                        local=closing;territories=_native_ink_regions(territories,local)
                         refreshed=vision_reading.align(block['text'],local,block['low_confidence'],
                             has_layer=True,pixel_words=optical_local)
                         if not refreshed['fallback']:

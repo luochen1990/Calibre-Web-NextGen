@@ -232,13 +232,22 @@ def _terminal_word_view(model, words):
     result=[]
     for word in words:
         suffix=word['text']
-        if (result and suffix and all(c in '.,;:!?' for c in suffix)
+        closing=bool(suffix and all(c in '"”’'for c in suffix))
+        if (result and suffix and all(c in '.,;:!?"”’' for c in suffix)
                 and _key(result[-1]['text']+suffix) in literals):
             previous=result[-1]
             a,b=previous['bbox'],word['bbox']
             height=max(a[3]-a[1],b[3]-b[1],1)
             adjacent=(min(a[3],b[3])-max(a[1],b[1])>=height*.5
                       and 0<=b[0]-a[2]<=height*1.5)
+            if closing:
+                # A closing quotation may sit above the lexical baseline. Its
+                # own printed extent and the exact model suffix must agree;
+                # a distant mark cannot be absorbed into this occurrence.
+                adjacent=(min(a[3],b[3])-max(a[1],b[1])>=.5*min(a[3]-a[1],b[3]-b[1])
+                    and 0<=b[0]-a[2]<=height*1.5)
+                if not adjacent:
+                    result.append(word);continue
             box=[min(a[0],b[0]),min(a[1],b[1]),max(a[2],b[2]),max(a[3],b[3])] if adjacent else a
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
@@ -275,8 +284,17 @@ def _joined_stroke_conflict(original,chosen):
     """
     letters=lambda value:''.join(c for c in _key(value).casefold()if c.isalpha())
     a,b=letters(original),letters(chosen)
-    return bool(a and b and a!=b and a.isascii()and b.isascii()
-                and (a.replace('rn','m')==b or b.replace('rn','m')==a))
+    # An alphabetic first reading cannot lose a printed letter to a path slash
+    # merely because two alphabet recognizers repeat that partial stroke.
+    if _key(original).strip('.,;:!?()[]').isalpha()and any(c in chosen for c in ('/',chr(92))):return True
+    if not(a and b and a!=b and a.isascii()and b.isascii()):return False
+    joined=(a.replace('rn','m')==b or b.replace('rn','m')==a)
+    # Shared alphabet networks can also agree after a crossbar or descender
+    # disappears. Complete word boxes do not prove the distinguishing stroke.
+    # This veto retains original ink; it never chooses a dictionary spelling.
+    eroded=(len(a)==len(b)and all(x==y or (x,y)in(
+        ('e','c'),('f','l'),('y','v'),('w','v'))for x,y in zip(a,b)))
+    return joined or eroded
 
 
 def _letter_number_identity(value):
