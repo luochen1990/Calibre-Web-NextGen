@@ -5360,3 +5360,24 @@ def test_original_word_scope_cannot_claim_clipped_ink_from_its_search_frame(ink)
     if ink in('above','below','own_ascender'):
         assert scope is None,'A cut component cannot prove the complete ink or ownership of this word'
     else:assert scope==pytest.approx([40,50,60,60],abs=.2)
+
+
+@pytest.mark.parametrize('territory',['clear','upper_row','lower_row','detached_dot','touching_row','cut_own_ink'])
+def test_word_scope_separates_neighboring_rows_before_expanding_its_letters(territory):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=160,height=100)
+        for x in(60,65,70,75):
+            page.draw_rect(pymupdf.Rect(x,50,x+3,54),color=None,fill=(0,0,0))
+        if territory=='upper_row':page.draw_rect(pymupdf.Rect(60,44,78,47),color=None,fill=(0,0,0))
+        if territory=='lower_row':page.draw_rect(pymupdf.Rect(60,57,78,60),color=None,fill=(0,0,0))
+        if territory=='detached_dot':page.draw_rect(pymupdf.Rect(66,48,67,49),color=None,fill=(0,0,0))
+        if territory=='touching_row':page.draw_rect(pymupdf.Rect(60,44,78,49),color=None,fill=(0,0,0))
+        if territory=='cut_own_ink':page.draw_rect(pymupdf.Rect(60,44,63,51),color=None,fill=(0,0,0))
+        scope=pa._word_ink_scope(SourceDisplay(drawing,0),dict(bbox=[60,50,78,54]))
+    if territory in('touching_row','cut_own_ink'):
+        assert scope is None,'Continuous or inseparable cut ink cannot prove a complete word'
+    else:
+        assert scope==pytest.approx([60,48 if territory=='detached_dot'else 50,78,54],abs=.2)

@@ -1667,6 +1667,19 @@ def _word_ink_scope(display,word,*,line_limits=(None,None)):
     selected=[b for b in boxes if min(a[2],b[2])>max(a[0],b[0])
               and min(a[3],b[3])>max(a[1],b[1])]
     if not selected:return None
+    # Horizontal adjacency cannot join letters on different printed rows.
+    # First bound this occurrence's vertical ink band, including nearby dots
+    # and ascenders. A separate row beyond a positive blank gap contributes
+    # neither a letter nor a reason to call this word's crop incomplete.
+    upper=min(b[1]for b in selected);lower=max(b[3]for b in selected)
+    for _ in range(len(boxes)):
+        close=[b for b in boxes if min(a[2]+.5*height,b[2])>max(a[0]-.5*height,b[0])
+            and b[1]<=lower+max(.5,.5*height)
+            and b[3]>=upper-max(.5,.5*height)]
+        new_upper=min(b[1]for b in close);new_lower=max(b[3]for b in close)
+        if (new_upper,new_lower)==(upper,lower):break
+        upper,lower=new_upper,new_lower
+    boxes=[b for b in boxes if min(lower,b[3])>max(upper,b[1])]
     # Font metrics can exceed the visible letters, while a cropped OCR box
     # can exclude their ascenders. Use the complete selected ink envelope,
     # including detached dots, rather than either misleading height.
