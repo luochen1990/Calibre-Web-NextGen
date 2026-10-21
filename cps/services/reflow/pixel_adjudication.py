@@ -507,9 +507,36 @@ def _joined_stroke_conflict(original,chosen):
     # certification; it never supplies those missing letters to the output.
     from .text_quality import english_lexicon
     vocabulary=english_lexicon()
+    def known_alternative(word):
+        # A dictionary may list the adjective but omit its productive adverb.
+        # This is only a shared-stroke veto, never a generated transcription.
+        return word in vocabulary or word.endswith('ly') and word[:-2] in vocabulary
     unseen_join=(b not in vocabulary and any(
-        b[:i]+'rn'+b[i+1:]in vocabulary for i,c in enumerate(b)if c=='m'))
+        known_alternative(b[:i]+'rn'+b[i+1:])for i,c in enumerate(b)if c=='m'))
     return joined or eroded or unseen_join
+
+
+def _anomalous_leading_word_gap(source,index):
+    """A doubtful short fragment after missing initial ink is not a whole word.
+
+    Recognizers can agree on the remaining tail of damaged print. Compare the
+    preceding blank with ordinary spaces on this same physical row; uniformly
+    justified spacing, another row and an isolated word supply no such signal.
+    The gap cannot supply the missing letter or choose a replacement spelling.
+    """
+    import statistics
+    own=source[index]['bbox'];height=own[3]-own[1]
+    if height<=0:return False
+    row=sorted((w for w in source if any(c.isalnum()for c in w['text'])
+        and min(own[3],w['bbox'][3])-max(own[1],w['bbox'][1])>=.6*height),
+        key=lambda w:w['bbox'][0])
+    positions=[i for i,w in enumerate(row)if w is source[index]]
+    if len(positions)!=1 or positions[0]==0:return False
+    at=positions[0];gap=own[0]-row[at-1]['bbox'][2]
+    ordinary=[b['bbox'][0]-a['bbox'][2]for i,(a,b)in enumerate(zip(row,row[1:]),1)
+        if i!=at and 0<b['bbox'][0]-a['bbox'][2]<height]
+    return bool(len(ordinary)>=3 and .6*height<gap<2*height
+        and gap>2*statistics.median(ordinary))
 
 
 def _letter_number_identity(value):
@@ -1284,6 +1311,13 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 supported=[('word',[complete_choice['text']],[complete_choice])]
                 word_scope_conflict=False
         if missing_ink_scope is not None:word_scope=missing_ink_scope
+        doubtful_fragment=(z-a==y-b==1 and visible[b][0]in pending
+            and len(_letter_number_identity(proposed[b]))<=2
+            and _anomalous_leading_word_gap(source,a))
+        if doubtful_fragment:
+            # A known uncertain tail cannot become a complete printed word
+            # merely because several tight crops repeat its surviving ink.
+            supported=[];boundary=None;word_choice=None;resampled=None;alternate=None
         symbol_conflict=(z-a==y-b==1 and _symbol_identity_conflict(
             proposed[b],source_tokens[a]))
         if symbol_conflict:
@@ -1335,6 +1369,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         if incomplete_ink and not resolved:
             record.update(source_image_only=True,source_bbox=list(source[a]['bbox']),
                 method='incomplete_vertical_word_ink')
+        if doubtful_fragment and not resolved:
+            record.update(source_image_only=True,source_bbox=list(source[a]['bbox']),
+                method='unproved_doubtful_leading_word_ink')
         unproved_source_choice=(not resolved and bool(literal)
             and list(literal)==source_tokens[a:z]and list(literal)!=proposed[b:y])
         withheld=set()

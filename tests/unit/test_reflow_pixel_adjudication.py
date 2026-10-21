@@ -5482,3 +5482,56 @@ def test_a_certain_complete_wrapped_word_needs_a_complete_counterreading(proof):
     else:
         assert not any(d.get('method')=='complete_vision_reading_without_optical_counterevidence'
             and len(d.get('source',[]))>1 for d in result['decisions'])
+
+
+@pytest.mark.parametrize('available',['base_only','adverb','neither','literal_candidate'])
+def test_productive_inflection_does_not_certify_a_shared_fused_stroke(monkeypatch,available):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    lexicon={'read','the','sample','now'}
+    if available=='base_only':lexicon.add('modern')
+    if available=='adverb':lexicon.add('modernly')
+    if available=='literal_candidate':lexicon.add('modemly')
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset(lexicon))
+    # Synthetic damaged spelling; the vocabulary supplies a veto, never output.
+    source=words('Read the modemly sample now')
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda item:[[dict(item,text='modemly',confidence=99)]]*2
+    result=pa.adjudicate('Read the modenly sample now'.split(),source,witness)
+    note=result['word_notes'][2]
+    if available in ('base_only','adverb'):
+        assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+        assert note['method']=='unproved_shared_stroke_identity'
+        assert result['tokens'][2]!='modernly','A dictionary is not a transcription'
+    else:
+        assert note['status']=='RESOLVED'
+        assert result['tokens'][2]=='modemly'
+
+
+@pytest.mark.parametrize('case',['damaged_prefix','ordinary_spacing','justified_spacing','certain_model','visible_native','long_gap_without_neighbors'])
+def test_explicitly_doubtful_fragment_needs_complete_word_evidence(case):
+    from cps.services.reflow import pixel_adjudication as pa
+    # Synthetic printed row: a blank damaged initial leaves only the tail ox.
+    # Independent recognizers repeat that fragment; a complete-word claim needs
+    # more than agreement on the remaining ink after the anomalous blank.
+    source=words('Read the ox beside this clear sample now')
+    for i,w in enumerate(source):w['bbox']=[i*22,10,i*22+18,20]
+    source[2]['bbox'][0]+=5
+    if case=='ordinary_spacing':source[2]['bbox'][0]-=5
+    if case=='justified_spacing':
+        for i,w in enumerate(source):w['bbox']=[i*28,10,i*28+18,20]
+    if case=='long_gap_without_neighbors':source=source[2:3]
+    target=0 if case=='long_gap_without_neighbors'else 2
+    source[target]['text']='0x'
+    model=[w['text']for w in source];model[target]='ox'
+    witness=pa.CropWitness([dict(w,text='ox'if i==target else w['text'])for i,w in enumerate(source)])
+    witness.model_reading=True
+    witness.word_readings=lambda item:[[dict(item,text='ox',confidence=99)]]*2
+    result=pa.adjudicate(model,source,witness,uncertain=()if case=='certain_model'else(target,),
+        source_print=case=='visible_native')
+    note=result['word_notes'][target]
+    if case=='damaged_prefix':
+        assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+        assert note['method']=='unproved_doubtful_leading_word_ink'
+        assert target in result['marked']
+    else:
+        assert note['status']=='RESOLVED','Ordinary gaps or authoritative print do not invent new uncertainty'
