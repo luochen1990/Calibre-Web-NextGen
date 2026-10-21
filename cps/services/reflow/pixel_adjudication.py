@@ -252,11 +252,7 @@ def _optical_counterread(source,witness,model,scope=None):
     if scope is not None:
         a=source['bbox'];source=dict(source,bbox=[min(a[0],scope[0]),min(a[1],scope[1]),
             max(a[2],scope[2]),max(a[3],scope[3])])
-    views=[witness]
-    for name in ('word_readings','resampled','alternates'):
-        reader=getattr(witness,name,None)
-        if reader is not None:views.extend(reader(source)if name=='word_readings'else reader())
-    for view in views:
+    def candidate(view):
         row=_whole_view_word(source,view)
         if not row:
             # A padded source box can enclose a complete equally long word.
@@ -280,9 +276,24 @@ def _optical_counterread(source,witness,model,scope=None):
             # the enlarged request rectangle into its answer.
             if (recognized==_letter_number_identity(source['text']).casefold()
                     and len(first)>len(recognized)>=2 and
-                    (first.startswith(recognized)or first.endswith(recognized))):continue
+                    (first.startswith(recognized)or first.endswith(recognized))):return None
         if (row and row[0].get('confidence',0)>=85 and _key(row[0]['text'])!=_key(model)
-                and (scope is None or _owns_complete_ink(row,scope))):return True
+                and (scope is None or _owns_complete_ink(row,scope))):return row[0]
+        return None
+    if candidate(witness)is not None:return True
+    # Adaptive single-word crops explore several segmentations. One new
+    # spelling from one setting is a hypothesis, not corroborated evidence
+    # against a certain first reader. Repeated source readings remain evidence;
+    # a new alternative must agree across the separate language networks.
+    for name in ('word_readings','resampled','alternates'):
+        reader=getattr(witness,name,None)
+        if reader is None:continue
+        views=reader(source)if name=='word_readings'else reader()
+        alternatives=[candidate(view)for view in views]
+        if any(w is not None and _key(w['text'])==_key(source['text'])for w in alternatives):return True
+        for i in range(0,len(alternatives)-1,2):
+            left,right=alternatives[i:i+2]
+            if left is not None and right is not None and _key(left['text'])==_key(right['text']):return True
     return False
 
 

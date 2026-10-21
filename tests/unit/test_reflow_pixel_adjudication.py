@@ -5315,3 +5315,30 @@ def test_contextual_reread_does_not_reuse_a_recognizers_clipped_vertical_frame(m
         assert choice['bbox']==full
         assert all(box[1]<=full[1]and box[3]>=full[3]for box in frames)
     else:assert choice is None,'Incomplete, unavailable or different contextual reads cannot certify the first word'
+
+
+@pytest.mark.parametrize('evidence',['lone_third_guess','primary_counter','source_repeat','paired_third','paired_uncommon','explicit_doubt','failed_primary','strong_source'])
+def test_a_new_isolated_word_guess_needs_corroboration_before_doubting_a_certain_model(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The clcar sample stays readable.',confidence=30)
+    if evidence=='strong_source':source[1]['confidence']=99
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    if evidence=='primary_counter':witness[1].update(text='clean',confidence=99)
+    candidate='clcar'if evidence=='source_repeat'else'prlnted'if evidence=='paired_uncommon'else'clcat'
+    def readings(word):
+        left=[dict(w)for w in source];right=[dict(w)for w in source]
+        left[1].update(text=candidate,confidence=99)
+        right[1].update(text=candidate if evidence.startswith('paired_')else'clear',confidence=99 if evidence.startswith('paired_')else 30)
+        return [left,right]
+    witness.word_readings=readings
+    if evidence=='failed_primary':witness.failure='Synthetic recognition failure';witness.model_reading=False
+    result=pa.adjudicate('The clear sample stays readable.'.split(),source,witness,
+        uncertain={1}if evidence=='explicit_doubt'else())
+    note=result['word_notes'][1]
+    if evidence=='lone_third_guess':
+        assert result['tokens'][1]=='clear'
+        assert note['status']=='RESOLVED'and not note.get('source_image_only')
+        assert note['method']=='complete_vision_reading_without_optical_counterevidence'
+    else:
+        assert note['status']=='UNRESOLVED'
+    assert result['marked']=={1},'Each changed source word keeps exactly its own reading record'
