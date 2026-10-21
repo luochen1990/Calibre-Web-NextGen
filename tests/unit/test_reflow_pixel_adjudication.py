@@ -4613,3 +4613,47 @@ def test_compilation_preserves_conserved_fragment_letters_through_both_sweeps(tm
         assert body == printed
         assert own['source_image_words'] == []
         assert 'HARBXR' not in body and 'HARBKR' not in body
+
+
+@pytest.mark.parametrize('evidence', ['paired_terminal_noise', 'boundary_terminal_noise',
+    'different_word', 'internal_dot', 'lost_possessive', 'missing_pair', 'weak_pair', 'clipped_pair'])
+def test_conserved_word_boundaries_do_not_choose_recognizer_terminal_punctuation(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    # All words and layouts below are written for this test. The existing
+    # inventories agree exactly; the independent views may locate a word
+    # without being allowed to add their own terminal dot or drop a comma.
+    source = words('This label H a r b o r , stays readable.')
+    for i, item in enumerate(source[2:9]):
+        item['bbox'] = [40 + i * 6, 20, 45 + i * 6, 32]
+    for i, item in enumerate(source[9:]):
+        item['bbox'] = [120 + i * 30, 20, 138 + i * 30, 32]
+    word = dict(text='HARBXR,.', bbox=[40, 20, 81, 32], confidence=47)
+    witness = pa.CropWitness([*source[:2], word, *source[9:]])
+    witness.model_reading = True
+    pair = [[dict(word, text='HARBOR,', confidence=71)],
+            [dict(word, text='HARBOR,.', confidence=78)]]
+    if evidence == 'boundary_terminal_noise':
+        pair[0][0]['text'] = 'HARBXR,'
+        pair[1][0]['text'] = 'HARBKR,.'
+    elif evidence == 'different_word':
+        for view in pair: view[0]['text'] = 'HARROW,.'
+    elif evidence == 'internal_dot':
+        for view in pair: view[0]['text'] = 'HAR.BOR,'
+    elif evidence == 'lost_possessive':
+        for view in pair: view[0]['text'] = "HARBOR'S,"
+    elif evidence == 'missing_pair':
+        pair[1] = []
+    elif evidence == 'weak_pair':
+        pair[1][0]['confidence'] = 40
+    elif evidence == 'clipped_pair':
+        pair[1][0]['bbox'] = [60, 20, 81, 32]
+    witness.word_readings = lambda item: pair
+    result = pa.adjudicate('This label HARBOR, stays readable.'.split(), source, witness)
+    live = [token for i, token in enumerate(result['tokens'])
+            if not result['word_notes'].get(i, {}).get('source_image_only')]
+    if evidence in ('paired_terminal_noise', 'boundary_terminal_noise'):
+        expected = 'HARBOR,' if evidence == 'paired_terminal_noise' else 'Harbor,'
+        assert live == f'This label {expected} stays readable.'.split()
+        assert 'HARBOR,.' not in live
+    else:
+        assert 'HARBOR,' not in live

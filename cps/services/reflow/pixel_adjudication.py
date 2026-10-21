@@ -407,14 +407,17 @@ def _conserved_group_boundary(items,witness,model_words):
     choices=set();boundary_noise=False;competing=False
     from . import text_quality
     vocabulary=text_quality.english_lexicon()
-    body=key.rstrip('.,;:!?');suffix=key[len(body):]
+    # Terminal recognition noise cannot choose punctuation. This helper only
+    # proves the boundary of letters already present in both inventories;
+    # internal dots, quotes and possessive letters remain significant.
+    body=key.rstrip('.,;:!?')
     for start in range(0,len(views),2):
         pair=[_whole_view_word(original,view)for view in views[start:start+2]]
         if not all(len(row)==1 for row in pair):continue
         first,second=(_key(row[0]['text']).strip().casefold()for row in pair)
-        if all(row[0].get('confidence',0)>=50 for row in pair) and first==second:
-            choices.add(first)
-        if any(value!=key and value.rstrip('.,;:!?')in vocabulary
+        if all(row[0].get('confidence',0)>=50 for row in pair) and first.rstrip('.,;:!?')==second.rstrip('.,;:!?'):
+            choices.add(first.rstrip('.,;:!?'))
+        if any(value.rstrip('.,;:!?')!=body and value.rstrip('.,;:!?')in vocabulary
                 and row[0].get('confidence',0)>=50
                 for value,row in zip((first,second),pair)):
             competing=True
@@ -423,13 +426,12 @@ def _conserved_group_boundary(items,witness,model_words):
         # only the boundary, never a spelling. Preserve the exact existing
         # source/first-reader letters; the ordinary word adjudicator still
         # judges any credible complete alternative after regrouping.
-        if (first!=second and body.isalpha()
+        if (first.rstrip('.,;:!?')!=second.rstrip('.,;:!?') and body.isalpha()
                 and all(value.rstrip('.,;:!?').isalpha()
-                    and value[len(value.rstrip('.,;:!?')):]==suffix
                     and value.rstrip('.,;:!?')not in vocabulary
                     for value in(first,second))):
             boundary_noise=True
-    if choices=={key}:return 'matching_letters'
+    if choices=={body}:return 'matching_letters'
     if competing:return False
     return 'word_boundary_only' if not choices and boundary_noise else False
 
