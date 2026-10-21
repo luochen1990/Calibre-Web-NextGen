@@ -5575,7 +5575,7 @@ def test_complete_ink_groups_prove_spaces_in_a_fused_four_word_reading(tmp_path,
         assert result['marked'],'An unavailable, conflicting or rejected read supplies no boundary proof'
 
 
-@pytest.mark.parametrize('case',['slash','dash','known_tail','complete_counter','accent','explicit_doubt','fallback','unknown_model','same_letters','native_print'])
+@pytest.mark.parametrize('case',['slash','dash','known_tail','complete_counter','accent','explicit_doubt','fallback','unknown_model','same_letters','native_print','unmeasured','different_case'])
 def test_incomplete_ocr_prefix_is_not_a_complete_competing_model_word(monkeypatch,case):
     from cps.services.reflow import pixel_adjudication as pa,text_quality
     vocabulary={'read','the','garden','beside','this','sample','now','warden'}
@@ -5584,10 +5584,12 @@ def test_incomplete_ocr_prefix_is_not_a_complete_competing_model_word(monkeypatc
     original='-arden'if case=='dash'else '\\arden'
     if case=='accent':original='gárden'
     if case=='same_letters':original='-garden'
+    if case=='different_case':original='\\Arden'
     source=words('Read the '+original+' beside this sample now')
     witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
-    if case=='complete_counter':witness[2]['text']='warden'
-    model='Read the '+('garthen'if case=='unknown_model'else'garden')+' beside this sample now'
+    if case!='unmeasured':witness.word_scope=lambda word:[word['bbox'][0]-1.5,*word['bbox'][1:]]
+    if case=='complete_counter':witness[2].update(text='warden',bbox=[38.5,20,58,32])
+    model='Read the '+('garthen'if case=='unknown_model'else'Garden'if case=='different_case'else'garden')+' beside this sample now'
     result=pa.adjudicate(model.split(),source,witness,
         uncertain=(2,)if case=='explicit_doubt'else(),
         unresolved_source=case=='fallback',source_print=case=='native_print')
