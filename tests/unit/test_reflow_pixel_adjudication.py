@@ -4930,3 +4930,33 @@ def test_horizontal_punctuation_needs_its_own_pixel_shape_not_word_recognition(g
             assert result['tokens']==['–']and not result['marked']
             assert not result['decisions'],'Equivalent dash style adds no word or lexical correction'
         else:assert result['marked'],'A different or unavailable shape cannot certify punctuation'
+
+
+@pytest.mark.parametrize('proof',['spaces','unknown_gap','different_letters'])
+def test_unproved_prefix_cannot_withhold_conserved_words_after_proved_source_spaces(proof):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=[dict(text='blurrysamplewordsremain.',bbox=[0,20,98,32],confidence=80)]
+    optical=[dict(text=t,bbox=[x,20,x+w,32],confidence=c)for t,x,w,c in(
+        ('blurry',0,25,80),('sample',30,25,99),('words',60,18,99),('remain.',83,15,99))]
+    if proof=='different_letters':optical[2]['text']='swords'
+    witness=pa.CropWitness(optical);witness.model_reading=True
+    witness.word_gap=lambda left,right:proof!='unknown_gap'
+    result=pa.adjudicate('Unclear sample words remain.'.split(),source,witness)
+    if proof=='spaces':
+        assert result['tokens'][-3:]==['sample','words','remain.']
+        assert not set(range(1,4))&result['marked'],'An unresolved prefix owns no doubt in the conserved following words'
+        assert 0 in result['marked'],'The unresolved lexical difference still has its own source control'
+    else:assert result['tokens'][-3:]!=['sample','words','remain.'],'Unproved spacing or changed letters cannot split this source instance'
+
+
+@pytest.mark.parametrize('proof',['missing','independent','real_model'])
+def test_recovered_common_word_is_not_verified_by_dictionary_membership(proof):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read this part now.',confidence=75)
+    witness=pa.CropWitness(words('Read this part now.',confidence=96 if proof=='independent'else 70))
+    witness.model_reading=True
+    result=pa.adjudicate([w['text']for w in source],source,witness,uncertain={2},
+        unresolved_source=proof!='real_model')
+    if proof=='missing':assert result['word_notes'][2].get('source_image_only')
+    elif proof=='independent':assert 2 not in result['marked']
+    else:assert not result['word_notes'][2].get('source_image_only')

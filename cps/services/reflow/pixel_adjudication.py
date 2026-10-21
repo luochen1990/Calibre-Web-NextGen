@@ -300,9 +300,9 @@ def _terminal_word_view(model, words):
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
         else:result.append(word)
-    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','word_context_readings','dash_shape','word_scope','word_separation','fragment_boundary','model_reading','failure')):
+    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','word_context_readings','word_gap','dash_shape','word_scope','word_separation','fragment_boundary','model_reading','failure')):
         result=CropWitness(result)
-        for name in ('alternates','resampled','mark_absence','word_readings','word_context_readings','dash_shape','word_scope','word_separation','fragment_boundary','model_reading','failure'):
+        for name in ('alternates','resampled','mark_absence','word_readings','word_context_readings','word_gap','dash_shape','word_scope','word_separation','fragment_boundary','model_reading','failure'):
             if hasattr(words,name):setattr(result,name,getattr(words,name))
     return result
 
@@ -568,6 +568,29 @@ def _punctuation_spacing_only(left,right):
     return bool(changed)and all(not(text[i-1].isalnum()and text[i].isalnum())for i in changed)
 
 
+def _spaced_source_view(source,witness):
+    """Split fused source letters only at independently observed blank gaps.
+
+    Recognition locates the parts but may not change a single codepoint. Each
+    resulting lexical occurrence still passes the ordinary word adjudicator.
+    """
+    gap=getattr(witness,'word_gap',None)
+    if gap is None:return source
+    result=[]
+    for word in source:
+        a=word['bbox']
+        parts=sorted((w for w in witness
+            if a[0]-.5<=(w['bbox'][0]+w['bbox'][2])/2<=a[2]+.5
+            and min(a[3],w['bbox'][3])-max(a[1],w['bbox'][1])>=.75*min(a[3]-a[1],w['bbox'][3]-w['bbox'][1])),
+            key=lambda w:w['bbox'][0])
+        exact=(2<=len(parts)<=8 and ''.join(_key(w['text'])for w in parts)==_key(word['text']))
+        if exact and all(gap(left,right)for left,right in zip(parts,parts[1:])):
+            result.extend(dict(word,text=w['text'],bbox=list(w['bbox']),
+                confidence=min(100 if word.get('confidence')is None else word['confidence'],w.get('confidence',100)))for w in parts)
+        else:result.append(word)
+    return result
+
+
 def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False, source_print=False, native_print_words=()):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
@@ -584,6 +607,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             model_words={_key(t).casefold()for i,t in enumerate(model)
                 if i not in uncertain and not t.startswith('<n:')}-doubtful
         source=_recognized_letter_groups(source,witness,model_words)
+        source=_spaced_source_view(source,witness)
     source=_terminal_word_view(model,source)
     witness=_terminal_word_view(model,witness)
     corroboration=_terminal_word_view(model,corroboration)
@@ -1185,11 +1209,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             notes.setdefault(i,dict(source=[tokens[i]],model=[tokens[i]],chosen=[tokens[i]],
                 status='UNRESOLVED',method='reader_uncertainty'))
             if unresolved_source and notes[i].get('method')=='reader_uncertainty':
-                lexical=''.join(c for c in _key(tokens[i]).casefold()if c.isalpha())
-                from .text_quality import english_lexicon
                 weak_source=(len(source_own)==1 and source_own[0].get('confidence',100)<85)
                 independent=own_exact
-                if weak_source and lexical and lexical not in english_lexicon() and not independent:
+                if weak_source and any(c.isalnum()for c in tokens[i])and not independent:
                     notes[i]=dict(notes[i],source_image_only=True,source_bbox=list(bounds[i]),
                         method='unproved_recovered_word')
     consumed=0;inserted=0
@@ -1318,6 +1340,11 @@ def read_crop(display, regions, cache):
                     for scale in (3,4)for language,data in(('eng',None),('LatinRaw',directory))]
             except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
         result.word_context_readings=lambda word:word_context(tuple(word['bbox']))
+        def word_gap(left,right):
+            a,b=left['bbox'],right['bbox'];height=min(a[3]-a[1],b[3]-b[1])
+            return (height>0 and b[0]-a[2]>=.25*height
+                and blank_between(display,left,right,regions))
+        result.word_gap=word_gap
         @lru_cache(maxsize=128)
         def dash_shape(bounds):
             if display is None:return False
