@@ -5668,3 +5668,23 @@ def test_a_weak_divided_nonword_tail_cannot_overrule_a_complete_reader_word(monk
         assert note['status']=='RESOLVED'and not note.get('source_image_only')
         assert result['marked']=={1},'A model correction keeps its own source control'
     else:assert not any(d.get('method')=='complete_vision_reading_without_optical_counterevidence'for d in result['decisions'])
+
+
+@pytest.mark.parametrize('mode',['source_only','rejected_model','different_chosen'])
+def test_restored_source_words_keep_their_own_occurrence_not_the_edit_envelope(mode):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Keep these clear printed samples here')
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    model=[]if mode=='source_only'else['A','different','reading']
+    if mode=='different_chosen':
+        result=pa.adjudicate(model,source,pa.CropWitness([]))
+        assert not all(result['boxes'].get(i)==w['bbox']for i,w in enumerate(source))
+        return
+    result=pa.adjudicate(model,source,witness,unresolved_source=True)
+    assert result['tokens']==[w['text']for w in source]
+    assert result['boxes']=={i:w['bbox']for i,w in enumerate(source)}
+    for i,note in result['word_notes'].items():
+        assert note['source']==note['chosen']==[source[i]['text']]
+        assert not note.get('mapping'),'The source owner is known even when the model correspondence is not'
+        assert not note.get('model'),'An unrelated model span cannot supply a positional word pairing'
+        assert note['source_range']==[i,i+1]

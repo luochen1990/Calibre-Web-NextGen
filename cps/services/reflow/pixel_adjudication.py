@@ -1462,6 +1462,14 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             # located word. Keep their transcription evidence on that word,
             # rather than report a fabricated positional or unplaced mapping.
             word_record=record if single_ink_word else _word_note(record,j,len(decisions)-1)
+            retained_source=(not evidence and list(literal)==source_tokens[a:z])
+            if retained_source:
+                # Conservation retains these exact source occurrences. Only
+                # their correspondence to the rejected model span is unknown;
+                # sharing its envelope would bind every word to every neighbor.
+                word_record=dict(word_record,source=[source[a+j]['text']],
+                    model=[],chosen=[token],source_range=[a+j,a+j+1])
+                word_record.pop('mapping',None)
             if j in withheld:
                 own=list(source[a+j]['bbox'])
                 word_record=dict(word_record,source_image_only=True,
@@ -1469,7 +1477,8 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                     source_range=[a+j,a+j+1])
                 word_record.pop('mapping',None)
                 chosen.append((token,own,word_record))
-            else:chosen.append((token,evidence[j]['bbox'] if evidence else box,word_record))
+            else:chosen.append((token,evidence[j]['bbox'] if evidence else
+                source[a+j]['bbox']if retained_source else box,word_record))
         # A deletion still needs a control attached to an adjacent live word.
         if not literal:changes.append((len(chosen),record,box))
     # Reinsert source-proven note placeholders at their original model boundary.
