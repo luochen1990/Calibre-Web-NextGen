@@ -4287,3 +4287,28 @@ def test_an_unproved_multiword_rewrite_cannot_leave_invented_words_live(source_t
     assert all(result['word_notes'][i]['source_bbox']==source[i]['bbox']for i in images)
     assert all(result['word_notes'][i]['status']=='UNRESOLVED'for i in images)
     assert result['marked']==expected
+
+
+@pytest.mark.parametrize('evidence',['complete','partial','competing_pair','weak'])
+def test_two_complete_word_networks_can_verify_an_unchanged_invented_name(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Fennwick repaired this green latch.',40)
+    noise=words('Fenmvick repaired this green latch.',45)
+    witness=pa.CropWitness(noise);witness.alternates=lambda:[noise,noise]
+    first=words('Fennwick repaired this green latch.',95)
+    second=words('Fennwick repaired this green latch.',86 if evidence!='weak'else 40)
+    if evidence=='partial':first[0]['bbox']=[7,20,18,32]
+    opposite=words('Fenmvick repaired this green latch.',95)
+    witness.word_readings=lambda word:[first,second]+([opposite,opposite]if evidence=='competing_pair'else[])
+    note=dict(source=['Fennwick'],model=['Fennwick'],chosen=['Fennwick'],
+        status='UNRESOLVED',method='reader_uncertainty')
+    result=dict(tokens=[w['text']for w in source],marked={0},word_notes={0:note})
+    pa.disclose_alternate_conflicts(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert result['tokens']==[w['text']for w in source]
+    if evidence=='complete':
+        assert result['marked']==set()
+        assert result['word_notes']=={}
+        assert result['verified_unchanged']==[0]
+    else:
+        assert result['marked']=={0}
+        assert result['word_notes'][0]['status']=='UNRESOLVED'

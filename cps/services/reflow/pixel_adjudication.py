@@ -1475,9 +1475,13 @@ def disclose_alternate_conflicts(result, boxes, witness, allow_clear=True):
         # Corrections retain their provenance; local-only OCR stays unverified.
         from .text_quality import english_lexicon
         lexical=''.join(c for c in _key(token).casefold()if c.isalpha())
-        if (allow_clear and lexical in english_lexicon()
-                and note.get('source')==note.get('model')==note.get('chosen')==[token]
-                and _model_word_choice(original,witness,token) is not None):
+        unchanged=note.get('source')==note.get('model')==note.get('chosen')==[token]
+        paired=(_own_word_choice(original,witness)
+            if allow_clear and unchanged and len(lexical)>=3 else None)
+        exact_pair=(paired is not None and _key(paired['text'])==_key(token)
+                    and paired.get('confidence',0)>=90)
+        if (allow_clear and unchanged and (exact_pair or lexical in english_lexicon()
+                and _model_word_choice(original,witness,token) is not None)):
             result['marked'].discard(index);result['word_notes'].pop(index)
             result.setdefault('verified_unchanged',[]).append(index)
             result['adjudication']=[d for d in result.get('adjudication',[])if d is not note]
