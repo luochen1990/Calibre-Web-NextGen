@@ -1381,8 +1381,18 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 supported=[('word',[complete_choice['text']],[complete_choice])]
                 word_scope_conflict=False
         if missing_ink_scope is not None:word_scope=missing_ink_scope
-        doubtful_fragment=(z-a==y-b==1 and visible[b][0]in pending
-            and len(_letter_number_identity(proposed[b]))<=2
+        shortened_initial=(z-a==y-b==1
+            and len(_letter_number_identity(proposed[b]))>len(_letter_number_identity(source_tokens[a]))>=2
+            and _letter_number_identity(proposed[b]).endswith(_letter_number_identity(source_tokens[a]))
+            and (len(supported)!=1 or len(supported[0][1])==1
+                 and _letter_number_identity(supported[0][1][0])==_letter_number_identity(source_tokens[a])))
+        blank_initial_scope=(scope_reader(source[a])if shortened_initial
+            and scope_reader is not None and _anomalous_leading_word_gap(source,a)else None)
+        missing_initial=(blank_initial_scope is not None
+            and blank_initial_scope[0]>=source[a]['bbox'][0]-.5)
+        doubtful_fragment=(z-a==y-b==1
+            and (visible[b][0]in pending and len(_letter_number_identity(proposed[b]))<=2
+                 or shortened_initial and missing_initial)
             and _anomalous_leading_word_gap(source,a))
         if doubtful_fragment:
             # A known uncertain tail cannot become a complete printed word
@@ -1400,7 +1410,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
             and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter)
-            and not(ordinal_conflict or quote_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or word_scope_conflict and not partial_counter
+            and not(ordinal_conflict or quote_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or doubtful_fragment or word_scope_conflict and not partial_counter
                     or not prefix_fragment and _small_mark_conflict(source_tokens[a],proposed[b]))
             and not _optical_counterread(source[a],witness,proposed[b],word_scope if partial_counter else None))
         if retained_vision:

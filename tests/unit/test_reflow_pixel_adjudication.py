@@ -5768,3 +5768,37 @@ def test_complete_occurrence_location_seeds_ink_search_without_borrowing_other_w
             result=pa.adjudicate(['grain'],[source],witness)
             assert result['tokens']==['grain'],'Repeated recognition of only the tail cannot erase the complete first reading'
             assert result['word_notes'][0]['method']=='complete_vision_reading_without_optical_counterevidence'
+
+
+@pytest.mark.parametrize('case',['missing_initial','longer_tail','weak_tail','ordinary_spaces','uniform_justification','same_word','visible_native','isolated_word','other_row','missing_suffix'])
+def test_repeated_tail_cannot_certify_losing_a_prefix_after_an_anomalous_blank(case):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read the at beside this clear sample now')
+    for i,w in enumerate(source):w['bbox']=[i*22,10,i*22+18,20]
+    source[2]['bbox'][0]+=5
+    model_word='cat';tail='at'
+    if case=='longer_tail':model_word='grain';tail='rain'
+    if case=='weak_tail':source[2]['confidence']=20
+    if case=='ordinary_spaces':source[2]['bbox'][0]-=5
+    if case=='uniform_justification':
+        for i,w in enumerate(source):w['bbox']=[i*28,10,i*28+18,20]
+    if case=='other_row':source[2]['bbox'][1:4:2]=[30,40]
+    if case=='missing_suffix':model_word='cats';tail='cat'
+    source[2]['text']=tail
+    if case=='isolated_word':source=source[2:3]
+    at=0 if case=='isolated_word'else 2
+    model=[w['text']for w in source];model[at]=tail if case=='same_word'else model_word
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda item:[[dict(item,text=tail,confidence=99)]]*2
+    witness.word_scope=lambda item:list(item['bbox'])
+    result=pa.adjudicate(model,source,witness,source_print=case=='visible_native')
+    if case in('missing_initial','longer_tail','weak_tail'):
+        note=result['word_notes'][at]
+        assert note['status']=='UNRESOLVED'and note.get('source_image_only'),'Agreement on surviving ink cannot certify the missing initial letters'
+        assert at in result['marked']
+        assert note['method']=='unproved_doubtful_leading_word_ink'
+    elif case=='same_word':
+        assert result['tokens'][at]==tail and at not in result['marked'],'No changed first reading means no new claim that an initial is missing'
+    else:
+        assert result['tokens'][at]==tail
+        assert result['word_notes'][at]['status']=='RESOLVED','Normal spacing, explicit print or insufficient geometry must not invent missing ink'
