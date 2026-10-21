@@ -1065,7 +1065,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 collision=any(index!=a+j and all(abs(x-y)<.1
                     for x,y in zip(word['bbox'],other['bbox']))
                     for index,other in enumerate(source))
-                if any(c.isalnum()for c in word['text'])and(weak or counter or collision or unproved_multiword):withheld.add(j)
+                # A weak punctuation guess can be the discarded first stroke
+                # of this same lexical word, or a displaced reference glyph.
+                # It is not exempt from the edit's source-ink containment.
+                # Equal, independently retained punctuation never enters this
+                # differing-source branch and remains live as before.
+                if word['text'] and (weak or counter or collision or unproved_multiword):withheld.add(j)
             if withheld:record['method']='unproved_source_transcription_change'
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else

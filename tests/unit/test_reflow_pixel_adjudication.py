@@ -4750,3 +4750,30 @@ def test_clipped_context_cannot_hide_a_conserved_word_from_its_complete_own_crop
         assert not result['marked']
     else:
         assert 'HARBOR' not in live and 'Harbor' not in live
+
+
+@pytest.mark.parametrize('weak_glyph', ["'", '|', '.'])
+def test_unproved_lexical_edit_cannot_publish_weak_ocr_punctuation_as_a_word(weak_glyph):
+    from cps.services.reflow import pixel_adjudication as pa
+    # The synthetic scan prints Harbor. The source recognizer split its first
+    # stroke into a punctuation guess; neither guess is a proven live word.
+    source = words('Read the ' + weak_glyph + ' arbor sample now.', 40)
+    witness = pa.CropWitness()
+    witness.model_reading = True
+    result = pa.adjudicate('Read the Harbor sample now.'.split(), source, witness)
+    index = result['tokens'].index(weak_glyph)
+    assert result['word_notes'][index]['source_image_only']
+    assert result['word_notes'][index]['source'] == [weak_glyph]
+    assert result['word_notes'][index]['source_bbox'] == source[2]['bbox']
+    assert result['word_notes'][index]['status'] == 'UNRESOLVED'
+    assert index in result['marked']
+
+
+def test_proved_independent_punctuation_is_not_hidden_by_an_unrelated_word_edit():
+    from cps.services.reflow import pixel_adjudication as pa
+    source = words('Read | the clcar sample now.')
+    witness = pa.CropWitness(words('Read | the clear sample now.'))
+    witness.model_reading = True
+    result = pa.adjudicate('Read | the clear sample now.'.split(), source, witness)
+    assert result['tokens'][1] == '|'
+    assert 1 not in result['marked']
