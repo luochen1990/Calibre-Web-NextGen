@@ -3231,7 +3231,7 @@ def test_complete_vision_word_is_not_disputed_by_missing_or_incomplete_optical_e
     result=pa.adjudicate(printed.split(),source,witness,
         uncertain={2}if optical=='reader_uncertain'else(),unresolved_source=optical=='rejected')
     note=result['word_notes'][2]
-    if optical in('missing','weak','fragment'):
+    if optical in('missing','weak','fragment','competing'):
         assert result['tokens'][2]=='clear'
         assert note['status']=='RESOLVED'
         assert note['method']=='complete_vision_reading_without_optical_counterevidence'
@@ -3435,10 +3435,12 @@ def test_one_network_nonword_noise_cannot_veto_complete_pixel_support_for_model(
     primary.word_readings=lambda word:[[model],[weak],[contrary],[latin]]
     result=pa.adjudicate(printed.split(),source,primary)
     note=result['word_notes'][2]
-    if counter=='clcar'and latin_confidence==40 and model_confidence>=90 and complete:
+    if counter=='clcar'and latin_confidence==40:
         assert result['tokens'][2]=='clear'
         assert note['status']=='RESOLVED'
-        assert note['method']=='intact_pixel_corroboration_of_model'
+        expected=('intact_pixel_corroboration_of_model'if model_confidence>=90 and complete
+                  else'complete_vision_reading_without_optical_counterevidence')
+        assert note['method']==expected
         assert not note.get('source_image_only')
     else:
         assert note['status']=='UNRESOLVED'
@@ -4861,3 +4863,70 @@ def test_unsettled_recovered_nonword_cannot_remain_a_live_transcription():
     assert result['tokens'][1]=='prlnted','Unsettled ink must not be guessed from the dictionary'
     assert result['word_notes'][1].get('source_image_only'),'A weak recovered nonword needs original ink, not wrong live text'
     assert result['word_notes'][1]['source_bbox']==source[1]['bbox']
+
+
+@pytest.mark.parametrize('credible',['single_network_noise','paired_nonword','real_word','explicit_doubt'])
+def test_only_credible_complete_counterreadings_dispute_a_confident_model_word(credible):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The clcar sample stays readable.',confidence=96)
+    witness=pa.CropWitness(words('The clcar sample stays readable.',confidence=96))
+    witness.model_reading=True
+    if credible=='real_word':
+        source[1]['text']='clean';witness[1]['text']='clean'
+    witness.word_readings=lambda word:[
+        words('The '+('clean'if credible=='real_word'else'clcar')+' sample stays readable.',confidence=96),
+        words('The '+('clean'if credible=='real_word'else'clcar')+' sample stays readable.',confidence=96 if credible=='paired_nonword'else 30)]
+    result=pa.adjudicate('The clear sample stays readable.'.split(),source,witness,
+        uncertain={1}if credible=='explicit_doubt'else())
+    note=result['word_notes'][1]
+    if credible=='single_network_noise':
+        assert result['tokens'][1]=='clear'
+        assert note['status']=='RESOLVED'and not note.get('source_image_only')
+        assert note['method']=='complete_vision_reading_without_optical_counterevidence'
+    else:assert note['status']=='UNRESOLVED'or result['tokens'][1]!='clear'
+
+
+@pytest.mark.parametrize('context',['complete','clipped','different_word','conflicting_pairs','explicit_doubt'])
+def test_complete_context_can_corroborate_a_model_without_certifying_a_shared_stroke_guess(context):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    with pymupdf.open()as doc:
+        page=doc.new_page();page.insert_text((30,70),'A modern sample remains readable.',fontsize=12)
+        assert 'modern'in page.get_text().split()
+    source=words('A modem sample remains readable.')
+    witness=pa.CropWitness(words('A modem sample remains readable.'));witness.model_reading=True
+    witness.word_readings=lambda word:[words('A modem sample remains readable.')]*2
+    def contexts(word):
+        view=words('A '+('modem'if context=='different_word'else'modern')+' sample remains readable.')
+        if context=='clipped':view[1]['bbox']=[27,20,38,32]
+        return [view,view]+([words('A modem sample remains readable.')]*2 if context=='conflicting_pairs'else[])
+    witness.word_context_readings=contexts
+    result=pa.adjudicate('A modern sample remains readable.'.split(),source,witness,
+        uncertain={1}if context=='explicit_doubt'else())
+    note=result['word_notes'][1]
+    if context=='complete':
+        assert result['tokens'][1]=='modern'
+        assert note['status']=='RESOLVED'and not note.get('source_image_only')
+        assert note['method']=='contextual_pixel_corroboration_of_model'
+    else:assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+
+
+@pytest.mark.parametrize('glyph',['horizontal','plus','two_marks','unavailable'])
+def test_horizontal_punctuation_needs_its_own_pixel_shape_not_word_recognition(glyph):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=100,height=70)
+        page.draw_line((30,35),(45,35),width=1)
+        if glyph=='plus':page.draw_line((37,27),(37,43),width=1)
+        if glyph=='two_marks':page.draw_line((30,40),(45,40),width=1)
+        display=SourceDisplay(doc,0)
+        source=[dict(text='—',bbox=[28,25,47,45],confidence=70)]
+        witness=pa.CropWitness();witness.model_reading=True
+        witness.dash_shape=lambda word:pa._horizontal_dash_shape(display,word)if glyph!='unavailable'else False
+        result=pa.adjudicate(['–'],source,witness)
+        if glyph=='horizontal':
+            assert result['tokens']==['–']and not result['marked']
+            assert not result['decisions'],'Equivalent dash style adds no word or lexical correction'
+        else:assert result['marked'],'A different or unavailable shape cannot certify punctuation'

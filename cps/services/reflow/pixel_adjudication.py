@@ -147,12 +147,33 @@ def _model_word_choice(source,witness,model):
                  and w.get('confidence',0)>=90),None)
 
 
+def _context_model_choice(source,witness,model):
+    """Two complete contextual networks may corroborate the existing model.
+
+    These reads cannot introduce a new spelling. Conflicting positive context
+    pairs, clipped words or unavailable evidence leave the choice unresolved.
+    """
+    reader=getattr(witness,'word_context_readings',None)
+    if reader is None:return None
+    views=reader(source)
+    choices=[]
+    for i in range(0,len(views)-1,2):
+        choice=_paired_word_choice(source,views[i:i+2])
+        if choice is not None:choices.append(choice)
+    if not choices or any(_key(w['text'])!=_key(model)for w in choices):return None
+    return next((w for w in choices if w.get('confidence',0)>=90),None)
+
+
 def _optical_counterread(source,witness,model,scope=None):
     """Missing or split recognition is not a competing complete printed word."""
     views=[witness]
     for name in ('word_readings','resampled','alternates'):
         reader=getattr(witness,name,None)
         if reader is not None:views.extend(reader(source)if name=='word_readings'else reader())
+    word_reader=getattr(witness,'word_readings',None)
+    word_views=word_reader(source)if word_reader is not None else []
+    paired_noise={_key(choice['text'])for i in range(0,len(word_views)-1,2)
+        if(choice:=_paired_word_choice(source,word_views[i:i+2]))is not None}
     for view in views:
         row=_whole_view_word(source,view)
         if not row:
@@ -169,7 +190,9 @@ def _optical_counterread(source,witness,model,scope=None):
                     and min(a[3],w['bbox'][3])-max(a[1],w['bbox'][1])>=.55*(a[3]-a[1])):
                     row=owned
         if (row and row[0].get('confidence',0)>=85 and _key(row[0]['text'])!=_key(model)
-                and (scope is None or _covers_ink_scope(row,scope))):return True
+                and (scope is None or _covers_ink_scope(row,scope))
+                and (not _dictionary_regression(model,row[0]['text'])
+                     or _key(row[0]['text'])in paired_noise)):return True
     return False
 
 
@@ -277,9 +300,9 @@ def _terminal_word_view(model, words):
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
         else:result.append(word)
-    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','word_scope','word_separation','fragment_boundary','model_reading','failure')):
+    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','word_context_readings','dash_shape','word_scope','word_separation','fragment_boundary','model_reading','failure')):
         result=CropWitness(result)
-        for name in ('alternates','resampled','mark_absence','word_readings','word_scope','word_separation','fragment_boundary','model_reading','failure'):
+        for name in ('alternates','resampled','mark_absence','word_readings','word_context_readings','dash_shape','word_scope','word_separation','fragment_boundary','model_reading','failure'):
             if hasattr(words,name):setattr(result,name,getattr(words,name))
     return result
 
@@ -642,6 +665,11 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             placed.append(('replace'if left<z and right<y else 'delete'if left<z else 'insert',left,z,right,y))
     operations=placed
     for kind,a,z,b,y in operations:
+        dash_reader=getattr(witness,'dash_shape',None)
+        if (z-a==y-b==1 and source_tokens[a]in ('-','–','—')and proposed[b]in ('-','–','—')
+                and dash_reader is not None and dash_reader(source[a])):
+            formatting.add(len(chosen));chosen.append((proposed[b],source[a]['bbox'],None))
+            continue
         if (z-a==2 and y-b==1 and proposed[b].endswith(('*','†','‡'))
                 and visible[b][0]+1<len(model)and model[visible[b][0]+1].startswith('<n:')
                 and not source_print and not all(proved_native_occurrence(
@@ -934,6 +962,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         alternate=None;resampled=None;word_choice=None;word_method='two_own_word_language_readings'
         if len(supported)!=1 and z-a==y-b==1 and not partial_wrap:
             word_choice=_own_word_choice(source[a],witness)
+            if (getattr(witness,'model_reading',False) and not unresolved_source
+                    and visible[b][0]not in pending
+                    and (word_choice is None or _key(word_choice['text'])!=_key(proposed[b]))):
+                context_choice=_context_model_choice(source[a],witness,proposed[b])
+                if context_choice is not None:
+                    word_choice=context_choice;word_method='contextual_pixel_corroboration_of_model'
             if word_choice is None:
                 word_choice=_model_word_choice(source[a],witness,proposed[b])
                 word_method='intact_pixel_corroboration_of_model'
@@ -1003,8 +1037,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         partial_counter=word_scope_conflict and word_scope is not None
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
-            and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter)
-            and not(ordinal_conflict or quote_conflict or symbol_conflict or stroke_conflict or initialism_conflict or incomplete_ink or partial_wrap or word_scope_conflict and not partial_counter
+            and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter
+                or _dictionary_regression(proposed[b],source_tokens[a]))
+            and not(ordinal_conflict or quote_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or word_scope_conflict and not partial_counter
                     or _small_mark_conflict(source_tokens[a],proposed[b]))
             and not _optical_counterread(source[a],witness,proposed[b],word_scope if partial_counter else None))
         if retained_vision:
@@ -1267,6 +1302,29 @@ def read_crop(display, regions, cache):
                 return views
             except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
         @lru_cache(maxsize=128)
+        def word_context(bounds):
+            if display is None:return []
+            try:
+                import shutil
+                engine=shutil.which('tesseract')
+                directory=_latin_directory(engine)if engine else None
+                if not directory:return []
+                width,height=bounds[2]-bounds[0],bounds[3]-bounds[1]
+                if not(0<width<=200 and 0<height<=80):return []
+                context=[max(display.rect.x0,bounds[0]-4*height),bounds[1],
+                         min(display.rect.x1,bounds[2]+4*height),bounds[3]]
+                return [_read_crop(display,[context],cache,language=language,
+                    scale=scale,tessdata=data,psm=7)
+                    for scale in (3,4)for language,data in(('eng',None),('LatinRaw',directory))]
+            except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
+        result.word_context_readings=lambda word:word_context(tuple(word['bbox']))
+        @lru_cache(maxsize=128)
+        def dash_shape(bounds):
+            if display is None:return False
+            try:return _horizontal_dash_shape(display,dict(bbox=bounds))
+            except (RuntimeError,OSError,ValueError,KeyError):return False
+        result.dash_shape=lambda word:dash_shape(tuple(word['bbox']))
+        @lru_cache(maxsize=128)
         def word_scope(bounds):
             if display is None:return None
             try:
@@ -1291,6 +1349,20 @@ def read_crop(display, regions, cache):
         result = CropWitness()
         result.failure = f'{type(error).__name__}: {error}'
         return result
+
+
+def _horizontal_dash_shape(display,word):
+    """Recognize only an isolated horizontal ink stroke, not a word spelling."""
+    from . import extract,vision_pixels
+    box=extract.pymupdf.Rect(word['bbox'])
+    if not(0<box.width<=80 and 0<box.height<=40)or not display.rect.contains(box):return False
+    pix=display.pixmap(box,scale=8,max_pixels=100_000)
+    picture,components=vision_pixels._word_ink_components(pix)
+    if len(components)!=1:return False
+    a=components[0];width=a[2]-a[0];height=a[3]-a[1]
+    if height<=0 or width<4.5*height:return False
+    # A clipped edge could hide the vertical or neighboring part of a symbol.
+    return a[0]>1 and a[1]>1 and a[2]<picture.width-1 and a[3]<picture.height-1
 
 
 def _fragment_word_boundary(display,word):
