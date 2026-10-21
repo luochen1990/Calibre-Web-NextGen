@@ -5381,3 +5381,71 @@ def test_word_scope_separates_neighboring_rows_before_expanding_its_letters(terr
         assert scope is None,'Continuous or inseparable cut ink cannot prove a complete word'
     else:
         assert scope==pytest.approx([60,48 if territory=='detached_dot'else 50,78,54],abs=.2)
+
+
+@pytest.mark.parametrize('proof',['complete','explicit_doubt','one_network_model','one_network_competitor','missing','different','still_clipped','competing'])
+def test_matching_word_support_is_reread_when_late_ink_measurement_finds_a_cut(proof):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The clear- sample stays readable.')
+    for word in source[2:]:word['bbox']=[word['bbox'][0]+40,20,word['bbox'][2]+40,32]
+    source[1].update(text='damaged-token',bbox=[20,20,60,32],confidence=99)
+    whole=dict(text='clear-',bbox=[20,20,51,34],confidence=99)
+    first=dict(whole,bbox=[20,20,50,34])
+    witness=pa.CropWitness([dict(w)for w in source]);witness[1]=first;witness.model_reading=True
+    witness.word_scope=lambda word:whole['bbox']
+    def readings(word):
+        if word['bbox'][3]<34:return[[dict(first)],[dict(first)]]
+        if proof=='missing':return[]
+        value=dict(whole)
+        if proof=='different':value['text']='clean-'
+        if proof=='still_clipped':value['bbox']=first['bbox']
+        views=[[value],[dict(value)]]
+        if proof=='one_network_model':views[1][0]['confidence']=20
+        if proof=='one_network_competitor':views[1][0]['text']='clean-'
+        if proof=='competing':views +=[[dict(whole,text='clean-')]]*2
+        return views
+    witness.word_readings=readings
+    result=pa.adjudicate('The clear- sample stays readable.'.split(),source,witness,
+        uncertain={1}if proof=='explicit_doubt'else())
+    note=result['word_notes'][1]
+    assert result['marked']=={1}
+    if proof in('complete','explicit_doubt','one_network_model'):
+        assert result['tokens'][1]=='clear-'and note['status']=='RESOLVED'
+        assert note['method']=='complete_original_word_ink_corroboration'
+        assert not note.get('source_image_only')
+    else:assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+
+
+@pytest.mark.parametrize('proof',['dash','missing_letter','clipped_upper','non_dash_shape','weak_reading','different_word'])
+def test_complete_original_terminal_dash_can_close_its_matching_word_evidence(tmp_path,monkeypatch,proof):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=180,height=120)
+        page.insert_text((30,65),'clear!'if proof=='non_dash_shape'else'clear-',fontsize=20)
+        native=page.get_text('words')[0]
+        display=SourceDisplay(drawing,0)
+        scope=pa._word_ink_scope(display,dict(bbox=list(native[:4])))
+        assert scope is not None
+        observed=list(scope);observed[2]-=.8
+        if proof=='missing_letter':observed[0]+=(scope[2]-scope[0])*.45
+        if proof=='clipped_upper':observed[1]+=3
+        pixel=dict(text='clean-'if proof=='different_word'else'clear-',bbox=observed,
+            confidence=60 if proof=='weak_reading'else 99)
+        monkeypatch.setattr(pa,'_read_crop',lambda *args,**kwargs:[dict(pixel)])
+        monkeypatch.setattr(pa,'_latin_directory',lambda engine:tmp_path)
+        source=[dict(text='damaged-token',confidence=99,
+            bbox=[scope[0],scope[1],scope[2]+1,scope[3]-2])]
+        witness=pa.read_crop(display,[list(native[:4])],tmp_path);witness.model_reading=True
+        witness.word_scope=lambda word:list(scope)
+        result=pa.adjudicate(['clear-'],source,witness)
+    note=result['word_notes'][0]
+    assert result['marked']=={0}
+    if proof=='dash':
+        assert result['tokens']==['clear-']and note['status']=='RESOLVED'
+        assert note['method']=='complete_original_terminal_dash_corroboration'
+        assert not note.get('source_image_only')
+    else:
+        assert note['status']=='UNRESOLVED'
+        assert note['method']!='complete_original_terminal_dash_corroboration'

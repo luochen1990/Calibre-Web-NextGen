@@ -107,11 +107,14 @@ def _complete_model_ink_choice(source,witness,model):
     reader=getattr(witness,'word_readings',None)
     if scope_reader is None or reader is None:return None
     scope=scope_reader(source)
-    if scope is None or _covers_ink_scope([source],scope):return None
+    if scope is None or _owns_complete_ink([source],scope):return None
     a=source['bbox']
     if not (scope[0]<=(a[0]+a[2])/2<=scope[2]
             and scope[1]<=(a[1]+a[3])/2<=scope[3]):return None
-    bounds=[min(a[0],scope[0]),min(a[1],scope[1]),max(a[2],scope[2]),max(a[3],scope[3])]
+    # The hint may be both padded on one edge and clipped on another. Once
+    # original ink proves this complete owned envelope, reread that envelope;
+    # a union with the bad hint would still require OCR to fill blank padding.
+    bounds=list(scope)
     # Measuring nearby connected components is not permission to merge a
     # separately located neighbor. Single-word recognition can fuse its space
     # in both networks; keep that enlarged territory unproved instead.
@@ -120,9 +123,10 @@ def _complete_model_ink_choice(source,witness,model):
             and scope[1]<=(word['bbox'][1]+word['bbox'][3])/2<=scope[3]
             for word in witness):return None
     complete=dict(source,bbox=bounds)
-    choice=_paired_word_choice(complete,reader(complete))
+    choice=(_paired_word_choice(complete,reader(complete))
+            or _model_word_choice(complete,witness,model))
     if (choice is None or choice.get('confidence',0)<90 or _key(choice['text'])!=_key(model)
-            or not _covers_ink_scope([choice],scope)
+            or not _owns_complete_ink([choice],scope)
             or _optical_counterread(complete,witness,model,scope)):return None
     return choice
 
@@ -137,6 +141,31 @@ def _paired_word_choice(source,views):
         first,second=own[0][0],own[1][0]
         if _key(first['text'])==_key(second['text']):choices[_key(first['text'])]=first
     return next(iter(choices.values()))if len(choices)==1 else None
+
+
+def _terminal_dash_completes_ink(display,word,scope):
+    """An isolated complete dash can close an otherwise complete same word.
+
+    Recognition may end inside the final horizontal stroke. Measure that
+    stroke separately; every letter and other mark must already be inside the
+    recognized occurrence. Missing letters and vertical punctuation decline.
+    """
+    if not word['text'].endswith(('-', '\u00ad', '\u2010', '\u2011')):return False
+    from . import extract,vision_pixels
+    box=extract.pymupdf.Rect(scope)+(-2,-2,2,2)
+    if not display.rect.contains(box):return False
+    pix=display.pixmap(box,scale=8,max_pixels=200_000)
+    picture,components=vision_pixels._word_ink_components(pix)
+    if len(components)<2:return False
+    sx=box.width/picture.width;sy=box.height/picture.height
+    boxes=[[box.x0+c[0]*sx,box.y0+c[1]*sy,box.x0+c[2]*sx,box.y0+c[3]*sy]for c in components]
+    last=max(boxes,key=lambda b:b[2]);a=word['bbox']
+    if (last[2]-last[0]<3*(last[3]-last[1])
+            or last[0]<=scope[0]+.6*(scope[2]-scope[0])
+            or not(last[0]<a[2]<last[2])
+            or last[0]<=box.x0+sx or last[1]<=box.y0+sy
+            or last[2]>=box.x1-sx or last[3]>=box.y1-sy):return False
+    return all(b is last or _owns_complete_ink([word],b)for b in boxes)
 
 
 def _whole_view_word(source,view):
@@ -430,9 +459,9 @@ def _terminal_word_view(model, words):
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
         else:result.append(word)
-    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','word_context_readings','word_gap','dash_shape','word_scope','word_separation','fragment_boundary','model_reading','failure')):
+    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','word_context_readings','word_gap','dash_shape','word_scope','word_separation','fragment_boundary','word_end_dash','model_reading','failure')):
         result=CropWitness(result)
-        for name in ('alternates','resampled','mark_absence','word_readings','word_context_readings','word_gap','dash_shape','word_scope','word_separation','fragment_boundary','model_reading','failure'):
+        for name in ('alternates','resampled','mark_absence','word_readings','word_context_readings','word_gap','dash_shape','word_scope','word_separation','fragment_boundary','word_end_dash','model_reading','failure'):
             if hasattr(words,name):setattr(result,name,getattr(words,name))
     return result
 
@@ -1192,8 +1221,26 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             if z-a==y-b==1 else None)
         if (missing_ink_scope is not None and len(supported)==1
                 and not _owns_complete_ink(supported[0][2],missing_ink_scope)):
+            prior_word=(supported[0][2][0]if len(supported[0][2])==1 else None)
+            dash_reader=getattr(witness,'word_end_dash',None)
+            dash_choice=(dict(prior_word,bbox=list(missing_ink_scope))
+                if prior_word and _key(prior_word['text'])==_key(proposed[b])
+                and prior_word.get('confidence',0)>=90 and dash_reader is not None
+                and dash_reader(prior_word,missing_ink_scope)else None)
             supported=[];boundary=None;word_choice=None;resampled=None;alternate=None
             word_scope_conflict=True
+            # This boundary may only be discovered after an apparently matching
+            # word was accepted. Reread the complete measured ink now, rather
+            # than permanently discarding that correct reading because the
+            # earlier OCR rectangle cut its edge. Complete independent support
+            # may corroborate the existing model spelling, never replace it.
+            complete_choice=dash_choice or _complete_model_ink_choice(source[a],witness,proposed[b])
+            if complete_choice is not None:
+                word_choice=complete_choice
+                word_method=('complete_original_terminal_dash_corroboration'if dash_choice
+                    else 'complete_original_word_ink_corroboration')
+                supported=[('word',[complete_choice['text']],[complete_choice])]
+                word_scope_conflict=False
         if missing_ink_scope is not None:word_scope=missing_ink_scope
         symbol_conflict=(z-a==y-b==1 and _symbol_identity_conflict(
             proposed[b],source_tokens[a]))
@@ -1535,6 +1582,10 @@ def read_crop(display, regions, cache):
         result.fragment_boundary=lambda word:fragment_boundary(tuple(word['bbox']))
         result.word_separation=lambda word,parts:word_separation(tuple(word['bbox']),tuple(parts))
         result.word_scope=lambda word:word_scope(tuple(word['bbox']))
+        def word_end_dash(word,scope):
+            try:return _terminal_dash_completes_ink(display,word,scope)
+            except (RuntimeError,OSError,ValueError,KeyError):return False
+        result.word_end_dash=word_end_dash
         result.word_readings=lambda word:own_word(tuple(word['bbox']))
         result.mark_absence=lambda word:below_dot_absent(display,word)
         return result
