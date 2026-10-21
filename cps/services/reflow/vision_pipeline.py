@@ -2806,6 +2806,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             has_layer=False)['marked']
                         if not hasattr(witness,'__dict__'):
                             witness=pixel_adjudication.CropWitness(witness)
+                        witness.neighbor_occurrences=pixel_words or ()
                         witness.model_reading=not bool(getattr(witness,'failure',None))
                         adjudication=pixel_adjudication.adjudicate(first_tokens,
                             baseline,witness,uncertain=pending,corroboration=marker_corroboration,
@@ -2886,6 +2887,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 with unit_recovery.guard(pno,'local_pixel_adjudication',block=bid):
                     witness=pixel_adjudication.read_crop(display,territories,
                         Path(note_context['cache'])/'adjudication')
+                    if hasattr(witness,'__dict__'):witness.neighbor_occurrences=pixel_words or ()
                     source_occurrences=(source_unit['words'] if local_ocr_units is not None else optical_local)
                     refined=pixel_adjudication.refine_fallback(result['tokens'],witness,
                         text_quality.english_lexicon(),source=source_occurrences,corroboration=optical_local)

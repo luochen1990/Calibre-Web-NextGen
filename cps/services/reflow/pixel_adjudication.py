@@ -1638,6 +1638,15 @@ def read_crop(display, regions, cache):
                     for scale in (3,4,6)for language,data in networks)
                 return views
             except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
+        def neighboring_limits(bounds):
+            inventories=(result,getattr(result,'neighbor_occurrences',()))
+            rows=[_neighbor_line_limits(bounds,words)for words in inventories]
+            columns=[_neighbor_word_limits(bounds,words)for words in inventories]
+            def closest(items):
+                left=[a for a,b in items if a is not None]
+                right=[b for a,b in items if b is not None]
+                return (max(left)if left else None,min(right)if right else None)
+            return closest(rows),closest(columns)
         @lru_cache(maxsize=128)
         def word_context(bounds):
             if display is None:return []
@@ -1653,7 +1662,7 @@ def read_crop(display, regions, cache):
                 # strip whose missing ascenders/descenders caused this reread.
                 # Neighboring rows bound a modest original-pixel expansion;
                 # they supply no transcription and cannot cut known own ink.
-                top,bottom=_neighbor_line_limits(bounds,result)
+                (top,bottom),_=neighboring_limits(bounds)
                 upper=max(display.rect.y0,min(complete[1],bounds[1]-.75*height))
                 lower=min(display.rect.y1,max(complete[3],bounds[3]+.75*height))
                 if top is not None:upper=max(upper,top)
@@ -1681,8 +1690,8 @@ def read_crop(display, regions, cache):
         def word_scope(bounds):
             if display is None:return None
             try:
-                limits=_neighbor_line_limits(bounds,result)
-                return _word_ink_scope(display,dict(bbox=bounds),line_limits=limits)
+                limits,columns=neighboring_limits(bounds)
+                return _word_ink_scope(display,dict(bbox=bounds),line_limits=limits,word_limits=columns)
             except (RuntimeError,OSError,ValueError,KeyError):return None
         @lru_cache(maxsize=128)
         def word_separation(bounds,parts):
@@ -1845,7 +1854,26 @@ def _neighbor_line_limits(bounds,words):
     return top,bottom
 
 
-def _word_ink_scope(display,word,*,line_limits=(None,None)):
+def _neighbor_word_limits(bounds,words):
+    """Locate blank boundaries to other words without choosing their letters."""
+    a=list(bounds);height=a[3]-a[1]
+    if height<=0:return None,None
+    # A second location may already enclose the missing prefix. Its geometry
+    # prevents the midpoint to the preceding word from cutting that own ink.
+    own=[w['bbox']for w in words if _same_occurrence(dict(bbox=bounds),w)]
+    if len(own)==1:
+        a[0]=min(a[0],own[0][0]);a[2]=max(a[2],own[0][2])
+    neighbors=[w['bbox']for w in words if w.get('confidence',0)>=0
+        and w['bbox'][3]>w['bbox'][1]
+        and min(a[3],w['bbox'][3])-max(a[1],w['bbox'][1])>=
+            .6*min(height,w['bbox'][3]-w['bbox'][1])]
+    left=[b[2]for b in neighbors if b[2]<a[0]]
+    right=[b[0]for b in neighbors if b[0]>a[2]]
+    return ((max(left)+a[0])/2 if left else None,
+            (min(right)+a[2])/2 if right else None)
+
+
+def _word_ink_scope(display,word,*,line_limits=(None,None),word_limits=(None,None)):
     """Bound the adjacent original ink before certifying a shortened word.
 
     The recognizer's own box can already exclude a prefix. Measure a bounded
@@ -1864,6 +1892,10 @@ def _word_ink_scope(display,word,*,line_limits=(None,None)):
     top,bottom=line_limits
     if top is not None:bounds.y0=max(bounds.y0,top)
     if bottom is not None:bounds.y1=min(bounds.y1,bottom)
+    left,right=word_limits
+    if left is not None:bounds.x0=max(bounds.x0,left)
+    if right is not None:bounds.x1=min(bounds.x1,right)
+    if bounds.is_empty:return None
     pix=display.pixmap(bounds,scale=6,max_pixels=200_000)
     picture,components=vision_pixels._word_ink_components(pix)
     if not components:return None

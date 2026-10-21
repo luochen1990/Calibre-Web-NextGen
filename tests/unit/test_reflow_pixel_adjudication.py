@@ -5618,3 +5618,32 @@ def test_neighboring_row_positions_do_not_need_a_correct_lexical_reading(case):
     assert bottom is None
     if case=='two_weak_words':assert top==48
     else:assert top is None,'An unproved or overlapping row cannot bound the original ink'
+
+
+@pytest.mark.parametrize('case',['bounded','missing_prefix','cut_prefix','no_neighbors','different_row'])
+def test_lazy_word_scope_stops_at_separately_located_neighbor_ink(tmp_path,monkeypatch,case):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    # Four synthetic letters with a tight adjacent word and a separate row.
+    # Bounding the search may not erase an unobserved first part of this word.
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=180,height=120)
+        for x in(60,65,70,75):page.draw_rect(pymupdf.Rect(x,50,x+3,58),color=None,fill=(0,0,0))
+        page.draw_rect(pymupdf.Rect(80,50,98,58),color=None,fill=(0,0,0))
+        page.draw_rect(pymupdf.Rect(60,62,75,68),color=None,fill=(0,0,0))
+        page.draw_rect(pymupdf.Rect(80,62,98,68),color=None,fill=(0,0,0))
+        source=dict(text='sample',bbox=[60,50,78,58],confidence=99)
+        if case=='missing_prefix':source['bbox'][0]=65
+        if case=='cut_prefix':page.draw_rect(pymupdf.Rect(30,50,64,58),color=None,fill=(0,0,0))
+        adjacent=dict(text='neighbor',bbox=[80,50,98,58],confidence=20)
+        if case=='different_row':adjacent['bbox']=[80,80,98,88]
+        rows=[source,adjacent]
+        if case!='no_neighbors':rows.extend([dict(text='lower-a',bbox=[60,62,75,68],confidence=20),dict(text='lower-b',bbox=[80,62,98,68],confidence=20)])
+        else:rows=[source]
+        monkeypatch.setattr(pa,'_read_crop',lambda *a,**k:rows)
+        witness=pa.read_crop(SourceDisplay(doc,0),[[60,50,98,58]],tmp_path)
+        scope=witness.word_scope(source)
+    if case in('bounded','missing_prefix'):
+        assert scope==pytest.approx([60,50,78,58],abs=.2)
+    else:assert scope is None,'Absent or contradictory ownership cannot certify a complete word'
