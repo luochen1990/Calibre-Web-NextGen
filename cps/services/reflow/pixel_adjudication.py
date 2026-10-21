@@ -295,6 +295,22 @@ def _incomplete_letter_prefix(optical,model):
             and whole in vocabulary and tail not in vocabulary)
 
 
+def _weak_punctuation_tail(optical,model):
+    """A weak nonword fragment is not a complete competing punctuation claim.
+
+    This only retains the existing certain reader's complete lexical word.
+    Equal-letter quotes, possessives, real shorter words, accents and changed
+    case retain their independent punctuation and word-conservation controls.
+    """
+    import re
+    from .text_quality import english_lexicon
+    a=re.fullmatch(r"[^\w\s]{1,3}([A-Za-z]{3,})|([A-Za-z]{3,})[^\w\s]{1,3}",_key(optical))
+    if not a or not model.isascii()or not model.isalpha():return False
+    tail=a[1]or a[2];vocabulary=english_lexicon()
+    return (1<=len(model)-len(tail)<=3 and model.endswith(tail)
+            and model.casefold()in vocabulary and tail.casefold()not in vocabulary)
+
+
 def _optical_counterread(source,witness,model,scope=None,*,complete_lexical_tail=False):
     """Missing or split recognition is not a competing complete printed word."""
     if scope is not None:
@@ -1517,7 +1533,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             and getattr(witness,'model_reading',False) and not unresolved_source
             and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter)
             and not(ordinal_conflict or quote_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or doubtful_fragment or eroded_numeric is not None or word_scope_conflict and not partial_counter
-                    or not prefix_fragment and _small_mark_conflict(source_tokens[a],proposed[b]))
+                    or not (prefix_fragment or source[a].get('confidence',0)<85
+                            and _weak_punctuation_tail(source_tokens[a],proposed[b]))
+                    and _small_mark_conflict(source_tokens[a],proposed[b]))
             and not _optical_counterread(source[a],witness,proposed[b],word_scope if partial_counter else None))
         if retained_vision:
             evidence=dict(source[a],text=proposed[b])

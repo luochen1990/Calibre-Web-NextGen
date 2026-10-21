@@ -6032,3 +6032,33 @@ def test_empty_gap_raster_does_not_round_a_neighbor_stroke_into_the_gap(interven
         page=doc.new_page(width=100,height=60)
         page.insert_image(page.rect,stream=encoded.getvalue())
         assert pa.blank_between(SourceDisplay(doc,0),left,right,[[0,0,100,60]])is not intervening_ink,'A fractional neighboring edge is outside the empty original band; genuine thin intervening ink still defeats absence proof'
+
+
+@pytest.mark.parametrize('case',['weak_prefix','weak_tail','complete_counter','printed_quote','explicit_doubt','local_only','punctuation_added','unknown_model','different_case','real_tail','strong_source','damaged_initial'])
+def test_weak_nonlexical_punctuation_tail_cannot_dispute_a_complete_reader_word(case):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The \u2018rden sample remains clear.')
+    model='The garden sample remains clear.'.split()
+    if case=='weak_tail':source[1]['text']='rden/'
+    if case=='printed_quote':source[1]['text']='\u2018garden'
+    if case=='punctuation_added':model[1]='garden!'
+    if case=='unknown_model':model[1]='zrden'
+    if case=='different_case':source[1]['text']='\u2018Rden'
+    if case=='real_tail':source[1]['text']='\u2018rain';model[1]='grain'
+    for word in source:word['confidence']=99
+    source[1]['confidence']=99 if case=='strong_source'else 20
+    if case=='damaged_initial':
+        for word in source[1:]:word['bbox']=[v+10 if j in(0,2)else v for j,v in enumerate(word['bbox'])]
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    if case=='complete_counter':witness[1]=dict(source[1],text='warden',confidence=99)
+    witness.word_readings=lambda word:[[dict(w)for w in witness],[dict(w)for w in witness]]
+    if case=='damaged_initial':witness.word_scope=lambda word:list(word['bbox'])
+    result=pa.adjudicate(model,source,witness,uncertain={1}if case=='explicit_doubt'else(),unresolved_source=case=='local_only')
+    note=result['word_notes'].get(1,{})
+    if case in('weak_prefix','weak_tail'):
+        assert result['tokens'][1]=='garden'and note['status']=='RESOLVED','Punctuation standing in for missing initial letters at a weak nonword is not a complete optical counter to a certain first reader'
+        assert not note.get('source_image_only')
+    elif case=='complete_counter':
+        assert result['tokens'][1]=='warden'and note['status']=='RESOLVED','A complete independently corroborated alternative still has authority to correct the first reading'
+    else:
+        assert note.get('status')!='RESOLVED','Explicit doubt, real quote, added punctuation, unknown spelling or mismatched tail case still needs positive pixel proof'
