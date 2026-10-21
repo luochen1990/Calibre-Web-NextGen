@@ -652,7 +652,7 @@ def _retained_model_wrap(source,model,witness):
     """
     if len(source)!=2 or getattr(witness,'failure',None):return None
     head,tail=source
-    if (head.get('confidence',0)<90 or tail.get('confidence',100)>=85
+    if (tail.get('confidence',100)>=85
             or not head['text'].endswith(('-', '\u00ad', '\u2010', '\u2011'))):return None
     prefix=_key(head['text'][:-1]);reading=_key(model)
     if not prefix.isascii()or not prefix.isalpha()or not reading.startswith(prefix):return None
