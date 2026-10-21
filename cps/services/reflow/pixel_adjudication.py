@@ -885,23 +885,49 @@ def _punctuation_spacing_only(left,right):
     return bool(changed)and all(not(text[i-1].isalnum()and text[i].isalnum())for i in changed)
 
 
-def _spaced_source_view(source,witness):
+def _spaced_source_view(source,witness,model=()):
     """Split fused source letters only at independently observed blank gaps.
 
-    Recognition locates the parts but may not change a single codepoint. Each
-    resulting lexical occurrence still passes the ordinary word adjudicator.
+    One layout can misread ordinary character spacing as a word break. A word
+    already agreed by source and first reading needs complete paired language
+    evidence before that layout may change its boundary. Existing first-reader
+    spaces and a different uncertain prefix retain their conservation path.
     """
     gap=getattr(witness,'word_gap',None)
     if gap is None:return source
-    result=[]
-    for word in source:
+    candidates=[_key(t)for t in model if not t.startswith('<n:')]
+    atomic=set()
+    for kind,a,z,b,y in SequenceMatcher(None,[_key(w['text'])for w in source],
+                                       candidates,autojunk=False).get_opcodes():
+        if kind=='equal':atomic.update(range(a,z))
+    def owned(word,view):
         a=word['bbox']
-        parts=sorted((w for w in witness
+        return sorted((w for w in view
             if a[0]-.5<=(w['bbox'][0]+w['bbox'][2])/2<=a[2]+.5
             and min(a[3],w['bbox'][3])-max(a[1],w['bbox'][1])>=.75*min(a[3]-a[1],w['bbox'][3]-w['bbox'][1])),
             key=lambda w:w['bbox'][0])
+    def paired_boundary(word,parts):
+        reader=getattr(witness,'word_readings',None)
+        measure=getattr(witness,'word_scope',None)
+        scope=measure(word)if measure is not None else None
+        if reader is None or scope is None:return False
+        views=reader(word);layouts=set()
+        for i in range(0,len(views)-1,2):
+            pair=[owned(word,view)for view in views[i:i+2]]
+            if any(not words or any(w.get('confidence',0)<85 for w in words)
+                   or not _owns_complete_ink([dict(bbox=[
+                       min(w['bbox'][0]for w in words),min(w['bbox'][1]for w in words),
+                       max(w['bbox'][2]for w in words),max(w['bbox'][3]for w in words)])],scope)
+                   or not all(gap(a,b)for a,b in zip(words,words[1:]))for words in pair):continue
+            left,right=([_key(w['text'])for w in words]for words in pair)
+            if left==right:layouts.add(tuple(left))
+        return layouts=={tuple(_key(w['text'])for w in parts)}
+    result=[]
+    for index,word in enumerate(source):
+        parts=owned(word,witness)
         exact=(2<=len(parts)<=8 and ''.join(_key(w['text'])for w in parts)==_key(word['text']))
-        if exact and all(gap(left,right)for left,right in zip(parts,parts[1:])):
+        if (exact and all(gap(left,right)for left,right in zip(parts,parts[1:]))
+                and (index not in atomic or paired_boundary(word,parts))):
             result.extend(dict(word,text=w['text'],bbox=list(w['bbox']),
                 confidence=min(100 if word.get('confidence')is None else word['confidence'],w.get('confidence',100)))for w in parts)
         else:result.append(word)
@@ -924,7 +950,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             model_words={_key(t).casefold()for i,t in enumerate(model)
                 if i not in uncertain and not t.startswith('<n:')}-doubtful
         source=_recognized_letter_groups(source,witness,model_words)
-        source=_spaced_source_view(source,witness)
+        source=_spaced_source_view(source,witness,model)
     source=_terminal_word_view(model,source)
     witness=_terminal_word_view(model,witness)
     corroboration=_terminal_word_view(model,corroboration)

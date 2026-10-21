@@ -5945,3 +5945,33 @@ def test_an_eroded_numeric_fragment_cannot_certify_unseen_digits(case):
         assert note['source_bbox']==[20,20,32,29]
     else:
         assert not note.get('source_image_only'),'Small or raised type, another row, complete original ink, letters and missing measurements do not prove eroded numeric print'
+
+
+@pytest.mark.parametrize('evidence',['single_weak','single_strong','paired','clipped_pair','different_pair','missing_scope','conflicting_pair','already_spaced_model','no_gap'])
+def test_agreed_source_word_is_not_split_by_one_layout_segmentation(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=[dict(text='Read',bbox=[10,20,32,32],confidence=99),
+            dict(text='Panel11',bbox=[40,20,100,32],confidence=99),
+            dict(text='now.',bbox=[110,20,130,32],confidence=99)]
+    confidence=63 if evidence=='single_weak'else 99
+    parts=[dict(text='Panel1',bbox=[40,22,80,30],confidence=confidence),
+           dict(text='1',bbox=[82,24,100,30],confidence=confidence)]
+    witness=pa.CropWitness([source[0],*parts,source[-1]]);witness.model_reading=True
+    witness.word_gap=lambda left,right:evidence!='no_gap'
+    witness.word_scope=lambda word:None if evidence=='missing_scope'else[40,22,100,30]
+    def reads(word):
+        if evidence in('single_weak','single_strong','already_spaced_model','no_gap'):return []
+        left=[dict(w,confidence=99)for w in witness];right=[dict(w)for w in left]
+        if evidence=='clipped_pair':left[1]['bbox']=[46,22,80,30];right[1]['bbox']=[46,22,80,30]
+        if evidence=='different_pair':right[2]['text']='I'
+        views=[left,right]
+        if evidence=='conflicting_pair':views.extend([[source[0],source[1],source[-1]]]*2)
+        return views
+    witness.word_readings=reads
+    model='Read Panel1 1 now.'.split()if evidence=='already_spaced_model'else'Read Panel11 now.'.split()
+    result=pa.adjudicate(model,source,witness,unresolved_source=True)
+    if evidence in('paired','already_spaced_model'):
+        assert result['tokens']==['Read','Panel1','1','now.'],'Complete independent boundaries or the existing spaced first reading still conserve genuine printed words'
+    else:
+        assert result['tokens']==['Read','Panel11','now.'],'A weak, isolated, clipped or conflicting segmentation must not invent a space inside a source/model-agreed word'
+        assert not any(d.get('source_image_only')for d in result['word_notes'].values()),'A speculative boundary must not withhold an otherwise retained source word as two ink fragments'
