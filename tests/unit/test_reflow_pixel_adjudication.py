@@ -5975,3 +5975,60 @@ def test_agreed_source_word_is_not_split_by_one_layout_segmentation(evidence):
     else:
         assert result['tokens']==['Read','Panel11','now.'],'A weak, isolated, clipped or conflicting segmentation must not invent a space inside a source/model-agreed word'
         assert not any(d.get('source_image_only')for d in result['word_notes'].values()),'A speculative boundary must not withhold an otherwise retained source word as two ink fragments'
+
+
+@pytest.mark.parametrize('evidence',['small_edges','outer_weak','weak_outer_only','boundary_weak','large_edges','missing_scope','different_anchor','ink_present'])
+def test_empty_printed_gap_uses_its_own_complete_boundary_words(evidence):
+    """Procedural ink edges and fabricated recognition labels isolate gap proof."""
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    edge=0 if evidence in('weak_outer_only','boundary_weak')else .8 if evidence=='large_edges'else .2
+    source=[dict(text='Keep',bbox=[2,20,18,30],confidence=99),
+        dict(text='the',bbox=[20,20,40,30],confidence=99),
+        dict(text='panel.',bbox=[50,20,70,30],confidence=99),
+        dict(text='Next',bbox=[2,40,18,50],confidence=0 if evidence in('outer_weak','weak_outer_only')else 99),
+        dict(text='line.',bbox=[22,40,40,50],confidence=99)]
+    if evidence=='boundary_weak':source[2]['confidence']=20
+    witness=pa.CropWitness([dict(w,bbox=list(w['bbox']))for w in source]);witness.model_reading=True
+    witness[1]['bbox'][2]+=edge;witness[2]['bbox'][0]-=edge
+    if evidence=='different_anchor':witness[2]['text']='panei.'
+    def scope(word):
+        if evidence=='missing_scope':return None
+        return list(witness[1]['bbox']if word['text']=='the'else witness[2]['bbox']if word['text']=='panel.'else word['bbox'])
+    witness.word_scope=scope
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=100,height=70)
+        for box in(witness[1]['bbox'],witness[2]['bbox']):page.draw_rect(pymupdf.Rect(box),color=None,fill=(0,0,0))
+        if evidence=='ink_present':page.draw_rect(pymupdf.Rect(44,22,47,29),color=None,fill=(0,0,0))
+        display=SourceDisplay(doc,0)
+        result=pa.adjudicate('Keep the extra panel. Next line.'.split(),source,witness,
+            absence_proof=lambda left,right:pa.blank_between(display,left,right,[[0,0,100,70]]))
+    if evidence in('small_edges','outer_weak','weak_outer_only'):
+        assert result['tokens']=='Keep the panel. Next line.'.split(),'Positive empty original ink between complete adjacent words must reject the invented word even when a farther row is unreadable'
+        decision=next(d for d in result['decisions']if d['model']==['extra'])
+        assert decision['chosen']==[] and decision['status']=='RESOLVED'
+    else:
+        assert 'extra'in result['tokens'],'Weak or different boundary words, missing or excessive edge measurement, and actual intervening ink cannot prove a word absent'
+
+
+@pytest.mark.parametrize('intervening_ink',[False,True])
+def test_empty_gap_raster_does_not_round_a_neighbor_stroke_into_the_gap(intervening_ink):
+    """Procedurally drawn raster words leave a fractional empty original band."""
+    import io
+    import pymupdf
+    from PIL import Image,ImageDraw
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    factor=8
+    image=Image.new('RGB',(100*factor,60*factor),'white')
+    draw=ImageDraw.Draw(image)
+    draw.rectangle((20*factor,20*factor,int(40.2*factor),30*factor),fill='black')
+    draw.rectangle((round(49.12*factor),20*factor,70*factor,30*factor),fill='black')
+    if intervening_ink:draw.rectangle((44*factor,22*factor,round(44.3*factor),29*factor),fill='black')
+    encoded=io.BytesIO();image.save(encoded,format='PNG')
+    left=dict(bbox=[20,20,40.2,30]);right=dict(bbox=[49.12,20,70,30])
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=100,height=60)
+        page.insert_image(page.rect,stream=encoded.getvalue())
+        assert pa.blank_between(SourceDisplay(doc,0),left,right,[[0,0,100,60]])is not intervening_ink,'A fractional neighboring edge is outside the empty original band; genuine thin intervening ink still defeats absence proof'

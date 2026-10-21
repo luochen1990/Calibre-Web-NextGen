@@ -392,6 +392,32 @@ def _same_occurrence(left,right):
             and min(a[2],b[2])-max(a[0],b[0])>=.3*min(a[2]-a[0],b[2]-b[0]))
 
 
+
+def _complete_gap_edges(left,right,witness):
+    """Correct only subpixel anchor cuts before inspecting an empty gap.
+
+    A complete independently located word owns the measured edge. At most one
+    pixel of the four-times recognition grid may extend any old edge; a larger
+    change could consume a separate printed character and cannot prove absence.
+    """
+    reader=getattr(witness,'word_scope',None)
+    if reader is None:return None
+    anchors=[]
+    for word in (left,right):
+        scope=reader(word);own=_whole_view_word(word,witness)
+        if (scope is None or len(own)!=1 or own[0].get('confidence',0)<85
+                or _key(own[0]['text'])!=_key(word['text'])
+                or not _owns_complete_ink(own,scope)):return None
+        a=word['bbox']
+        if (not(scope[0]<scope[2] and scope[1]<scope[3])
+                or not(scope[0]<=(a[0]+a[2])/2<=scope[2]
+                    and scope[1]<=(a[1]+a[3])/2<=scope[3])):return None
+        box=[min(a[0],scope[0]),min(a[1],scope[1]),max(a[2],scope[2]),max(a[3],scope[3])]
+        if any(abs(x-y)>.25 for x,y in zip(a,box)):return None
+        anchors.append(dict(word,bbox=box))
+    return anchors
+
+
 def blank_between(display,left,right,regions):
     """Prove absence only from complete original intervening ink, not OCR gaps."""
     from . import extract
@@ -403,7 +429,10 @@ def blank_between(display,left,right,regions):
     if not any(r[0]<=envelope[0] and r[1]<=envelope[1] and r[2]>=envelope[2] and r[3]>=envelope[3] for r in regions):return False
     box=extract.pymupdf.Rect(a[2]+.1,envelope[1],b[0]-.1,envelope[3])
     if box.width<=0:return False
-    pix=display.pixmap(box,scale=4,max_pixels=200_000)
+    # The clip rounds outward on its raster grid. A fine grid keeps a
+    # neighboring stroke outside this narrow original-ink band instead of
+    # sampling it as intervening ink. The decoded-byte cap still applies.
+    pix=display.pixmap(box,scale=32,max_pixels=200_000)
     from PIL import Image
     import io
     gray=Image.open(io.BytesIO(pix.tobytes('png'))).convert('L')
@@ -1241,14 +1270,21 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             anchors=list(zip(source[max(0,a-2):a],context[:len(left)]))
             if right:anchors+=list(zip(source[z:z+2],context[-len(right):]))
             if not anchors or not all(_same_occurrence(a,b) for a,b in anchors):continue
-            if not seq and (absence_proof is None or not absence_proof(source[a-1],source[z])):continue
+            gap_anchors=None
+            if not seq:
+                if absence_proof is None:continue
+                gap_anchors=[source[a-1],source[z]]
+                if not absence_proof(*gap_anchors):
+                    gap_anchors=_complete_gap_edges(*gap_anchors,witness)
+                    if gap_anchors is None or not absence_proof(*gap_anchors):continue
             start=locations[0]+len(left)
-            evidence=witness[start:start+len(seq)]
+            evidence=witness[start:start+len(seq)] if seq else gap_anchors
             # Exact surrounding occurrences locate this edit; uncertainty in
             # their recognitions is not uncertainty in an independently read
-            # edited word. Empty alternatives still need the full confident
-            # context and the separate two-sided blank-ink proof above.
-            confident=evidence if seq else context
+            # edited word. Empty alternatives need both confident adjacent
+            # boundary words and the separate two-sided blank-ink proof. A
+            # farther row's uncertainty is not ink between those boundaries.
+            confident=evidence if seq else [context[len(left)-1],context[len(left)]]
             if any(w.get('confidence',0)<85 for w in confident):continue
             if (z-a>=3 and y-b==1 and len(seq)==1 and all(
                     len(_key(t).strip('.,;:'))<=2 for t in source_tokens[a:z])):
