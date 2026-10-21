@@ -2251,11 +2251,14 @@ def _lexical_marker_view(tokens,source,proofs):
             reader=getattr(source,name,None)
             if reader is not None:
                 setattr(result,name,lambda reader=reader:project(reader()))
-        if hasattr(source,'word_readings'):
-            result.word_readings=lambda word:project(source.word_readings(word))
+        for name in ('word_readings','word_context_readings'):
+            reader=getattr(source,name,None)
+            if reader is not None:
+                setattr(result,name,lambda word,reader=reader:project(reader(word)))
         # Reserving a reference changes the lexical inventory, not the
         # original ink used to prove complete words and printed spaces.
-        for name in ('mark_absence','failure','word_scope','word_separation','model_reading'):
+        for name in ('mark_absence','failure','word_scope','word_separation','model_reading',
+                     'word_gap','dash_shape','fragment_boundary','word_end_dash'):
             if hasattr(source,name):setattr(result,name,getattr(source,name))
     return lexical,result
 

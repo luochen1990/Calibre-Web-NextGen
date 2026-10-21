@@ -5874,3 +5874,45 @@ def test_exact_divided_letters_can_be_corroborated_in_complete_context(evidence)
         assert result['tokens']==['rainfall']and not result['marked'],'A complete independent contextual pair can prove the already conserved prefix; isolated-word failure is not doubt in the joined word'
     else:
         assert pa._proved_wrap(source,'rainfall',witness,same_reading=True)is None,'A clipped, absent or competing contextual reading cannot certify a source division'
+
+
+@pytest.mark.parametrize('context',['complete','clipped','different_word','conflicting_pairs','explicit_doubt'])
+def test_reference_lexical_view_keeps_contextual_word_adjudication(context):
+    from cps.services.reflow import pixel_adjudication as pa,vision_pipeline as vp
+    tokens='A modern <n:note> sample remains readable.'.split()
+    source=words('A modem 2 sample remains readable.')
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda word:[[dict(w)for w in source]]*2
+    calls=[]
+    def contexts(word):
+        calls.append(word)
+        view=words('A '+('modem'if context=='different_word'else'modern')+' 2 sample remains readable.')
+        if context=='clipped':view[1]['bbox']=[27,20,38,32]
+        return [view,view]+([words('A modem 2 sample remains readable.')]*2 if context=='conflicting_pairs'else[])
+    witness.word_context_readings=contexts
+    proof={2:dict(status='PROVED',label='2',source_bbox=list(source[2]['bbox']))}
+    model,projected=vp._lexical_marker_view(tokens,witness,proof)
+    _,baseline=vp._lexical_marker_view(tokens,source,proof)
+    assert not calls,'Reserving reference ink is lazy'
+    result=pa.adjudicate(model,baseline,projected,uncertain={1}if context=='explicit_doubt'else())
+    note=result['word_notes'][1]
+    assert result['tokens'].count('<n:note>')==1
+    if context=='complete':
+        assert result['tokens'][1]=='modern'and note['status']=='RESOLVED'
+        assert not note.get('source_image_only')and note['method']=='contextual_pixel_corroboration_of_model','Reference reservation cannot discard the independent proof available to an ordinary prose word'
+        assert calls
+        assert all(w['text']!='2'for view in projected.word_context_readings(source[1])for w in view),'The same raised ink stays reserved in the contextual read'
+    else:
+        assert note['status']=='UNRESOLVED'and note.get('source_image_only'),'Incomplete, conflicting or explicitly doubtful evidence stays unresolved after projection'
+
+
+@pytest.mark.parametrize('capability',['word_gap','dash_shape','fragment_boundary','word_end_dash'])
+def test_reference_lexical_view_preserves_original_pixel_proofs(capability):
+    from cps.services.reflow import pixel_adjudication as pa,vision_pipeline as vp
+    witness=pa.CropWitness(words('A clear sample.'));calls=[]
+    def proof(*args):calls.append(args);return True
+    setattr(witness,capability,proof)
+    _,projected=vp._lexical_marker_view([],witness,{})
+    assert not calls
+    assert getattr(projected,capability,None)is proof,'Reserving a reference changes lexical inventory, not the available original-ink measurements'
+    assert getattr(projected,capability)(witness[0])and len(calls)==1
