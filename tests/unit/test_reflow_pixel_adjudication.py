@@ -5087,3 +5087,28 @@ def test_compact_body_proof_cannot_discard_its_complete_previous_column_opening(
         assert got[:len(first.split())]==first.split(), 'A complete earlier-column opening must not become a separate fallback unit'
         assert len(regions['p1'])>=2
     else:assert got[:len(first.split())]!=first.split(),'Unproved or separately owned words cannot be taken as a column opening'
+
+
+@pytest.mark.parametrize('evidence',['complete','missing','clipped','different','conflicting','counterreading','unknown_word'])
+def test_recovered_word_doubt_can_be_settled_by_complete_independent_context(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read this part beside the open window.',confidence=72)
+    witness=pa.CropWitness(words('Read this part beside the open window.',confidence=65))
+    views=[words('Read this part beside the open window.',confidence=97)]*2
+    if evidence=='missing':views=[]
+    if evidence=='clipped':
+        import copy
+        views=copy.deepcopy(views)
+        for view in views:view[2]['bbox']=[50,20,58,32]
+    if evidence=='different':views=[words('Read this path beside the open window.',confidence=97)]*2
+    if evidence=='conflicting':views +=[words('Read this path beside the open window.',confidence=97)]*2
+    if evidence=='counterreading':witness[2].update(text='path',confidence=97)
+    if evidence=='unknown_word':
+        import copy
+        views=copy.deepcopy(views);source[2]['text']='prlnted';witness[2]['text']='prlnted'
+        for view in views:view[2]['text']='prlnted'
+    witness.word_context_readings=lambda word:views
+    result=pa.adjudicate([w['text']for w in source],source,witness,uncertain={2},unresolved_source=True)
+    assert result['tokens']==[w['text']for w in source]
+    if evidence=='complete':assert 2 not in result['marked'],'Independent complete context settles this own occurrence, not dictionary familiarity'
+    else:assert result['word_notes'][2].get('source_image_only'),'Missing, partial or conflicting recognition cannot certify the local guess'

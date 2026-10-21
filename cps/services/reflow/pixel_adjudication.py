@@ -1223,6 +1223,19 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                           and not any(w.get('confidence',0)>=85 and _key(w['text'])!=_key(tokens[i])for w in own))
             if i not in notes and (own_exact or source_exact):
                 verified.append(i);continue
+            if (i not in notes and unresolved_source and len(source_own)==1
+                    and _key(source_own[0]['text'])==_key(tokens[i])
+                    and not getattr(witness,'failure',None)):
+                # A weak local flag can be settled by two independently
+                # trained contextual reads of this complete word. Familiarity
+                # only limits eligibility; it supplies neither letters nor
+                # geometry, and a complete counterreading still vetoes it.
+                from .text_quality import english_lexicon
+                lexical=''.join(c for c in tokens[i].casefold()if c.isalpha())
+                if (lexical in english_lexicon()
+                        and _context_model_choice(source_own[0],witness,tokens[i]) is not None
+                        and not _optical_counterread(source_own[0],witness,tokens[i])):
+                    verified.append(i);continue
             if i not in notes and context and all(w.get('confidence',0)>=90 for w in context) and all(
                     j in bounds and _same_occurrence(dict(bbox=bounds[j]),word)
                     for j,word in zip(range(left,right),context)):
