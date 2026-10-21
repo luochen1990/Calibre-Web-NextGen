@@ -4407,3 +4407,44 @@ def test_measured_ink_inside_padding_can_prove_a_complete_word(scope):
         assert chosen is not None and chosen['text']=='clear'
         assert pa._own_word_choice(original,witness)['text']=='clear'
     else:assert chosen is None,'Padding cannot waive cropped letters, remote ink or a credible alternative'
+
+
+@pytest.mark.parametrize('prefix',['damaged','dam aged'])
+def test_an_unproved_prefix_cannot_hide_a_conserved_punctuation_spaced_suffix(prefix):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read '+prefix+' Hill.(Q.minor,R.); Bay,Delta. now.')
+    witness=pa.CropWitness([]);witness.model_reading=True
+    result=pa.adjudicate('Read a different Hill. (Q. minor, R.); Bay, Delta. now.'.split(),source,witness)
+    suffix='Hill. (Q. minor, R.); Bay, Delta. now.'.split()
+    assert result['tokens'][-len(suffix):]==suffix
+    assert all(i<len(result['tokens'])-len(suffix)for i in result['marked'])
+    assert all(d.get('source_image_only')for d in result['word_notes'].values())
+    assert 'different'not in result['tokens']
+
+
+def test_a_conserved_letter_stream_does_not_certify_letter_to_letter_spaces():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read Ifa beside this box.')
+    witness=pa.CropWitness([]);witness.model_reading=True
+    result=pa.adjudicate('Read If a beside this box.'.split(),source,witness)
+    assert result['marked'], 'A literal printed space still needs its own pixel proof'
+    assert not result.get('verified_unchanged')or not {1,2}<=set(result['verified_unchanged'])
+
+
+@pytest.mark.parametrize('evidence',['complete','partial','different'])
+def test_unplaced_reference_ink_cannot_hide_its_independently_read_lexical_neighbor(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Observe pale stones, t beside this box.')
+    source[3]['bbox']=[58,20,63,32]
+    source[2]['bbox']=[40,20,57,32]
+    witness=pa.CropWitness(words('Observe pale stones, beside this box.'))
+    witness[2]['bbox']=([49,20,57,32]if evidence=='partial'else[40,20,57,32])
+    if evidence=='different':witness[2]['text']='stone,'
+    witness.model_reading=True
+    result=pa.adjudicate('Observe pale stones,‡ <n:note> beside this box.'.split(),source,witness)
+    if evidence=='complete':
+        assert result['tokens'][2:4]==['stones,‡','<n:note>']
+        assert not result['word_notes'].get(2,{}).get('source_image_only')
+        assert 't'not in result['tokens']
+    else:
+        assert result['word_notes'][2].get('source_image_only')

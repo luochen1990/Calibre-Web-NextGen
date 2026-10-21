@@ -418,6 +418,46 @@ def _recognized_letter_groups(source,witness):
         elif i not in occupied:result.append(word)
     return result
 
+def _conserved_token_chunks(original,candidate,a,z,b,y):
+    """Partition exact character runs only at both inventories' token edges.
+
+    Punctuation spacing can change the number of tokens in an intact suffix.
+    It must not couple that suffix to a different, unproved neighboring edit.
+    These chunks propose correspondence, not new letters or printed spaces.
+    """
+    left=original[a:z];right=candidate[b:y]
+    def boundaries(items):
+        result={0:0};position=0
+        for i,t in enumerate(items):position+=len(t);result[position]=i+1
+        return result
+    l,r=boundaries(left),boundaries(right)
+    anchors=[]
+    for i,j,n in SequenceMatcher(None,''.join(left),''.join(right),autojunk=False).get_matching_blocks():
+        pairs=[(k,j+k-i)for k in l if i<=k<=i+n and j+k-i in r]
+        if len(pairs)<2:continue
+        start,end=pairs[0],pairs[-1]
+        if end[0]-start[0]<2:continue
+        anchors.append((l[start[0]],l[end[0]],r[start[1]],r[end[1]]))
+    if not anchors:return [('replace',a,z,b,y)]
+    result=[];ls=rs=0
+    for i,k,j,h in anchors:
+        if ls<i or rs<j:result.append(('replace',a+ls,a+i,b+rs,b+j))
+        result.append(('replace',a+i,a+k,b+j,b+h));ls,rs=k,h
+    if ls<len(left)or rs<len(right):result.append(('replace',a+ls,z,b+rs,y))
+    return result
+
+
+def _punctuation_spacing_only(left,right):
+    """Conserve exact codepoints; a letter-to-letter boundary needs pixels."""
+    if ''.join(left)!=''.join(right):return False
+    def boundaries(items):
+        at=0;result=set()
+        for token in items[:-1]:at+=len(token);result.add(at)
+        return result
+    changed=boundaries(left)^boundaries(right);text=''.join(left)
+    return bool(changed)and all(not(text[i-1].isalnum()and text[i].isalnum())for i in changed)
+
+
 def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False, source_print=False, native_print_words=()):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
@@ -440,8 +480,11 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     matcher=SequenceMatcher(None, original, candidate, autojunk=False)
     placement=lambda t:''.join(c for c in unicodedata.normalize('NFKD',t.casefold())
                                if c.isalnum())
-    operations=[]
+    operations=[];chunks=[]
     for kind,a,z,b,y in matcher.get_opcodes():
+        chunks.extend(_conserved_token_chunks(original,candidate,a,z,b,y)
+            if kind=='replace' and 1<max(z-a,y-b)<=32 else [(kind,a,z,b,y)])
+    for kind,a,z,b,y in chunks:
         # An unreserved literal reference is still part of its lexical token.
         # Folding away that suffix would align the word while leaving the same
         # glyph's OCR letter as a new insertion. Keep the source fragments in
@@ -449,7 +492,8 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         unplaced_reference=any(proposed[j].endswith(('*','†','‡'))
             and visible[j][0]+1<len(model)
             and model[visible[j][0]+1].startswith('<n:')for j in range(b,y))
-        if kind!='replace' or max(z-a,y-b)>32 or unplaced_reference:
+        if (kind!='replace' or max(z-a,y-b)>32 or unplaced_reference
+                or ''.join(original[a:z])==''.join(candidate[b:y])):
             operations.append((kind,a,z,b,y));continue
         folded=SequenceMatcher(None,[placement(t) for t in original[a:z]],
             [placement(t) for t in candidate[b:y]],autojunk=False)
@@ -504,6 +548,41 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             placed.append(('replace'if left<z and right<y else 'delete'if left<z else 'insert',left,z,right,y))
     operations=placed
     for kind,a,z,b,y in operations:
+        if (z-a==2 and y-b==1 and proposed[b].endswith(('*','†','‡'))
+                and visible[b][0]+1<len(model)and model[visible[b][0]+1].startswith('<n:')
+                and getattr(witness,'model_reading',False)and not unresolved_source
+                and visible[b][0]not in pending):
+            lexical=proposed[b][:-1];word,glyph=source[a:z]
+            before,slot=word['bbox'],glyph['bbox']
+            own=_whole_view_word(word,witness)
+            separate_slot=(len(glyph['text'])==1 and 0<slot[2]-slot[0]<=before[3]-before[1]
+                and 0<=slot[0]-before[2]<=before[3]-before[1]
+                and min(slot[3],before[3])>max(slot[1],before[1]))
+            if (separate_slot and len(own)==1 and own[0].get('confidence',0)>=90
+                    and _key(own[0]['text'])==_key(lexical)):
+                # Corroboration of this complete lexical occurrence says
+                # nothing about the following glyph. Keep that literal and
+                # its typed reference separate for the existing verifier; a
+                # guessed OCR letter from its slot is not another body word.
+                record=None
+                if _key(word['text'])!=_key(lexical):
+                    record=dict(source=[word['text']],model=[lexical],chosen=[lexical],
+                        status='RESOLVED',method='complete_lexical_reading_beside_unplaced_reference',
+                        source_range=[a,a+1],model_range=[b,y])
+                    decisions.append(record)
+                chosen.append((proposed[b],word['bbox'],record))
+                continue
+        if (a<z and b<y and _punctuation_spacing_only(original[a:z],candidate[b:y])
+                and getattr(witness,'model_reading',False) and not unresolved_source
+                and not source_print and not native_print_words
+                and not getattr(witness,'failure',None)
+                and not any(visible[i][0]in pending for i in range(b,y))
+                and all(w.get('confidence',0)>=90 for w in source[a:z])):
+            box=[min(w['bbox'][0]for w in source[a:z]),min(w['bbox'][1]for w in source[a:z]),
+                 max(w['bbox'][2]for w in source[a:z]),max(w['bbox'][3]for w in source[a:z])]
+            for token in proposed[b:y]:
+                formatting.add(len(chosen));chosen.append((token,box,None))
+            continue
         if source_print or a<z and all(proved_native_occurrence(w['text'],w['bbox'],native_print_words)for w in source[a:z]):
             # This occurrence is reliably decoded visible native paint, even
             # when a page uses the vision route for layout or other units.
@@ -641,6 +720,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             # context and the separate two-sided blank-ink proof above.
             confident=evidence if seq else context
             if any(w.get('confidence',0)<85 for w in confident):continue
+            if (z-a>=3 and y-b==1 and len(seq)==1 and all(
+                    len(_key(t).strip('.,;:'))<=2 for t in source_tokens[a:z])):
+                own=[w['bbox']for w in source[a:z]]
+                envelope=[min(v[0]for v in own),min(v[1]for v in own),
+                    max(v[2]for v in own),max(v[3]for v in own)]
+                if len(evidence)!=1 or not _complete_recognition(dict(bbox=envelope),evidence[0]):continue
             if seq and a<z and any(w.get('confidence',0)<85 for w in context):
                 # Weak anchors cannot compensate for a clipped edit itself.
                 # All original edit ink must lie inside the positively read
@@ -818,8 +903,13 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             and getattr(witness,'model_reading',False) and not unresolved_source
             and not native_print_words and not(fused_model or wrapped or partial_wrap)
             and max(z-a,y-b)>1 and boundary is None
-            and ''.join(placement(t)for t in source_tokens[a:z])!=
-                ''.join(placement(t)for t in proposed[b:y]))
+            and (''.join(placement(t)for t in source_tokens[a:z])!=
+                ''.join(placement(t)for t in proposed[b:y])
+                # A run of separate letter atoms needs a complete observed
+                # word boundary before regrouping. Exact character alignment
+                # alone cannot turn a clipped or different read into proof.
+                or z-a>=3 and y-b==1 and all(
+                    len(_key(t).strip('.,;:'))<=2 for t in source_tokens[a:z])))
         name,literal,evidence=(supported[0] if resolved else
             boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or unproved_multiword or not proposed[b:y] else ('model',proposed[b:y],[]))
         record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=list(literal),
