@@ -311,7 +311,7 @@ def _weak_punctuation_tail(optical,model):
             and model.casefold()in vocabulary and tail.casefold()not in vocabulary)
 
 
-def _optical_counterread(source,witness,model,scope=None,*,complete_lexical_tail=False):
+def _optical_counterread(source,witness,model,scope=None,*,complete_lexical_tail=False,lexical_prefix=''):
     """Missing or split recognition is not a competing complete printed word."""
     if scope is not None:
         a=source['bbox'];source=dict(source,bbox=[min(a[0],scope[0]),min(a[1],scope[1]),
@@ -341,11 +341,15 @@ def _optical_counterread(source,witness,model,scope=None,*,complete_lexical_tail
             if (recognized==_letter_number_identity(source['text']).casefold()
                     and len(first)>len(recognized)>=2 and
                     (first.startswith(recognized)or first.endswith(recognized))):return None
-        if row and complete_lexical_tail and _dictionary_regression(model,row[0]['text']):
+        if row and complete_lexical_tail and _dictionary_regression(
+                lexical_prefix+model,lexical_prefix+row[0]['text']):
+            from .text_quality import english_lexicon
+            lexical_tail=_letter_number_identity(row[0]['text']).casefold()
             # This is only used after a separately proved printed prefix and
             # division. A weak suffix's nonword noise is not a complete lexical
-            # counter to the existing certain whole word. It supplies no letters.
-            return None
+            # counter to the existing certain whole word. A complete competing
+            # tail remains evidence even if that full compound is unfamiliar.
+            if lexical_tail not in english_lexicon():return None
         if (row and row[0].get('confidence',0)>=85 and _key(row[0]['text'])!=_key(model)
                 and (scope is None or _owns_complete_ink(row,scope))):return row[0]
         return None
@@ -752,19 +756,31 @@ def _retained_model_wrap(source,model,witness):
     if prefix+_key(tail['text'])==reading:return None
     ending=reading[len(prefix):]
     old=_letter_number_identity(tail['text']);new=_letter_number_identity(ending)
+    # A divided continuation is a fragment, not a separate lexical word.
+    # Judge a proposed counter with its positively read prefix. An unrelated
+    # weak nonword tail cannot defeat a certain complete first reading merely
+    # because the fragment itself differs in length or letters. The lexicon
+    # only vetoes that optical counter; it never supplies the chosen spelling.
+    weak_nonword_counter=_dictionary_regression(reading,prefix+_key(tail['text']))
     if (not old.isalpha()or not new.isalpha()or len(new)<len(old)
             or _small_mark_conflict(tail['text'],ending)
-            or SequenceMatcher(None,_key(tail['text']),ending).ratio()<.65):return None
+            or not weak_nonword_counter and
+                SequenceMatcher(None,_key(tail['text']),ending).ratio()<.65):return None
     a,b=head['bbox'],tail['bbox'];height=max(a[3]-a[1],b[3]-b[1],1)
     next_row=(b[0]<a[0] and .5*height<(b[1]+b[3]-a[1]-a[3])/2
         and -.5*min(a[3]-a[1],b[3]-b[1])<=b[1]-a[3]<=3*height)
     next_column=b[0]>a[2]+2*height and b[3]<a[1]-2*height
     if not(next_row or next_column):return None
     own=_whole_view_word(head,witness)
+    # A short continuation may have lost its first glyph in the source hint.
+    # Its confidence then covers only a tail, even if that tail is a known
+    # abbreviation. Require competing reads to cover the measured original
+    # ink; no neighbor's ink may enlarge this occurrence.
+    tail_scope=_incomplete_counter_scope(tail,witness,source)
     if (len(own)!=1 or own[0].get('confidence',0)<90
             or _key(own[0]['text'])!=_key(head['text'])
             or _optical_counterread(head,witness,head['text'])
-            or _optical_counterread(tail,witness,ending,complete_lexical_tail=True)):return None
+            or _optical_counterread(tail,witness,ending,tail_scope,complete_lexical_tail=True,lexical_prefix=prefix)):return None
     return [min(a[0],b[0]),min(a[1],b[1]),max(a[2],b[2]),max(a[3],b[3])]
 
 

@@ -6062,3 +6062,36 @@ def test_weak_nonlexical_punctuation_tail_cannot_dispute_a_complete_reader_word(
         assert result['tokens'][1]=='warden'and note['status']=='RESOLVED','A complete independently corroborated alternative still has authority to correct the first reading'
     else:
         assert note.get('status')!='RESOLVED','Explicit doubt, real quote, added punctuation, unknown spelling or mismatched tail case still needs positive pixel proof'
+
+
+@pytest.mark.parametrize('case',['short_noise','different_noise','long_noise','complete_counter','strong_source','explicit_doubt','fallback','unknown_model','different_prefix','same_row','clipped_abbreviation','complete_abbreviation','neighbor_ink'])
+def test_divided_word_counterevidence_is_judged_as_a_whole_lexical_word(monkeypatch,case):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset({'read','rainfall','rainbow','rain','fall','bow','sample','fxd'}))
+    # Synthetic print divides rainfall as rain-/fall. Fragment OCR supplies
+    # different incomplete tails; none is a proved replacement whole word.
+    tail={'short_noise':'fll','different_noise':'ucd','long_noise':'fxlll','complete_counter':'bow'}.get(case,'ucd')
+    source=[dict(text='Read',bbox=[100,20,130,32],confidence=99),
+        dict(text='rain-',bbox=[140,20,165,32],confidence=99),
+        dict(text=tail,bbox=[20,38,40,50],confidence=99 if case=='strong_source'else 80),
+        dict(text='sample',bbox=[50,38,90,50],confidence=99)]
+    if case in('clipped_abbreviation','complete_abbreviation','neighbor_ink'):
+        source[2]['text']='fxd'
+    if case=='clipped_abbreviation':source[2]['bbox'][0]=22
+    if case=='different_prefix':source[1]['text']='plain-'
+    if case=='same_row':source[2]['bbox']=[170,20,190,32]
+    witness=pa.CropWitness([dict(item,confidence=99)for item in source]);witness.model_reading=True
+    if case=='clipped_abbreviation':witness.word_scope=lambda word:[20,38,40,50]if word['text']=='fxd'else list(word['bbox'])
+    if case=='neighbor_ink':
+        witness.word_scope=lambda word:[15,38,40,50]if word['text']=='fxd'else list(word['bbox'])
+        witness.append(dict(text='a',bbox=[15,38,19,50],confidence=99))
+    witness.word_readings=lambda word:[[dict(item)for item in witness]]*2
+    model='rainxyz'if case=='unknown_model'else'rainfall'
+    result=pa.adjudicate(['Read',model,'sample'],source,witness,
+        uncertain={1}if case=='explicit_doubt'else(),unresolved_source=case=='fallback')
+    retained=any(d.get('method')=='complete_vision_reading_without_optical_counterevidence'for d in result['decisions'])
+    if case in('short_noise','different_noise','clipped_abbreviation'):
+        assert result['tokens']==['Read','rainfall','sample']
+        assert retained and result['word_notes'][1]['status']=='RESOLVED'
+        assert result['marked']=={1},'The actual model correction remains linked to its own original ink'
+    else:assert not retained,'A genuine counterword, strong original, deliberate doubt or unproved division stays independently adjudicated'
