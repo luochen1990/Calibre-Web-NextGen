@@ -276,6 +276,24 @@ def _incomplete_counter_scope(word,witness,neighbors):
     return scope
 
 
+def _incomplete_letter_prefix(optical,model):
+    """A slash or dash plus a nonword tail is not a complete lexical counter.
+
+    This may retain an existing certain reader word, never invent a spelling.
+    Complete words, punctuation attached to all the letters, accents and an
+    unknown reader word remain competing evidence requiring adjudication.
+    """
+    import re
+    from .text_quality import english_lexicon
+    a=re.fullmatch(r'[-/\\\\]{1,3}([A-Za-z]{3,})([.,;:!?]?)',_key(optical))
+    b=re.fullmatch(r'([A-Za-z]{4,})([.,;:!?]?)',_key(model))
+    if not a or not b or a[2]!=b[2]:return False
+    tail,whole=a[1].casefold(),b[1].casefold()
+    vocabulary=english_lexicon()
+    return (1<=len(whole)-len(tail)<=3 and whole.endswith(tail)
+            and whole in vocabulary and tail not in vocabulary)
+
+
 def _optical_counterread(source,witness,model,scope=None):
     """Missing or split recognition is not a competing complete printed word."""
     if scope is not None:
@@ -306,6 +324,7 @@ def _optical_counterread(source,witness,model,scope=None):
             if (recognized==_letter_number_identity(source['text']).casefold()
                     and len(first)>len(recognized)>=2 and
                     (first.startswith(recognized)or first.endswith(recognized))):return None
+        if row and _incomplete_letter_prefix(row[0]['text'],model):return None
         if (row and row[0].get('confidence',0)>=85 and _key(row[0]['text'])!=_key(model)
                 and (scope is None or _owns_complete_ink(row,scope))):return row[0]
         return None
@@ -1338,11 +1357,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             # Keep the exact original ink rather than certify its digit guess.
             supported=[];boundary=None
         partial_counter=(word_scope_conflict and word_scope is not None) or missing_ink_scope is not None
+        prefix_fragment=(z-a==y-b==1 and _incomplete_letter_prefix(source_tokens[a],proposed[b]))
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
-            and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter)
+            and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter or prefix_fragment)
             and not(ordinal_conflict or quote_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or word_scope_conflict and not partial_counter
-                    or _small_mark_conflict(source_tokens[a],proposed[b]))
+                    or not prefix_fragment and _small_mark_conflict(source_tokens[a],proposed[b]))
             and not _optical_counterread(source[a],witness,proposed[b],word_scope if partial_counter else None))
         if retained_vision:
             evidence=dict(source[a],text=proposed[b])
