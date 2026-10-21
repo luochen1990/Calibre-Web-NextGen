@@ -112,6 +112,13 @@ def _complete_model_ink_choice(source,witness,model):
     if not (scope[0]<=(a[0]+a[2])/2<=scope[2]
             and scope[1]<=(a[1]+a[3])/2<=scope[3]):return None
     bounds=[min(a[0],scope[0]),min(a[1],scope[1]),max(a[2],scope[2]),max(a[3],scope[3])]
+    # Measuring nearby connected components is not permission to merge a
+    # separately located neighbor. Single-word recognition can fuse its space
+    # in both networks; keep that enlarged territory unproved instead.
+    if any(any(c.isalnum()for c in word['text']) and not _same_occurrence(source,word)
+            and scope[0]<=(word['bbox'][0]+word['bbox'][2])/2<=scope[2]
+            and scope[1]<=(word['bbox'][1]+word['bbox'][3])/2<=scope[3]
+            for word in witness):return None
     complete=dict(source,bbox=bounds)
     choice=_paired_word_choice(complete,reader(complete))
     if (choice is None or choice.get('confidence',0)<90 or _key(choice['text'])!=_key(model)

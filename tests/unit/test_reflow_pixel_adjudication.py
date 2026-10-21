@@ -5114,7 +5114,7 @@ def test_recovered_word_doubt_can_be_settled_by_complete_independent_context(evi
     else:assert result['word_notes'][2].get('source_image_only'),'Missing, partial or conflicting recognition cannot certify the local guess'
 
 
-@pytest.mark.parametrize('proof',['whole','missing','different','still_clipped','competing'])
+@pytest.mark.parametrize('proof',['whole','missing','different','still_clipped','competing','neighbor_word'])
 def test_clipped_word_hint_is_reread_on_its_complete_measured_ink(proof):
     from cps.services.reflow import pixel_adjudication as pa
     source=words('This clear sample remains readable.')
@@ -5131,6 +5131,7 @@ def test_clipped_word_hint_is_reread_on_its_complete_measured_ink(proof):
         views=[[value],[dict(value)]]
         if proof=='competing':views +=[[dict(whole,text='clean')]]*2
         return views
+    if proof=='neighbor_word':witness.insert(1,dict(text='cl',bbox=[20,20,24,32],confidence=99))
     witness.word_readings=readings
     result=pa.adjudicate('This clear sample remains readable.'.split(),source,witness)
     note=result['word_notes'][1]
