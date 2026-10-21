@@ -620,7 +620,8 @@ def _proved_wrap(source,model,witness,same_reading=False):
     if _key(model)not in(_key(joined),_key(literal)):return None
     for left,right in zip(source,source[1:]):
         a,b=left['bbox'],right['bbox'];height=max(a[3]-a[1],b[3]-b[1],1)
-        next_row=(0<=b[1]-a[3]<=3*height and b[0]<a[0])
+        next_row=(b[0]<a[0] and .5*height<(b[1]+b[3]-a[1]-a[3])/2
+            and -.5*min(a[3]-a[1],b[3]-b[1])<=b[1]-a[3]<=3*height)
         next_column=(b[0]>a[2]+2*height and b[3]<a[1]-2*height)
         if not(next_row or next_column):return None
     # The first pixel reading and strong original occurrences already agree
@@ -672,7 +673,8 @@ def _retained_model_wrap(source,model,witness):
             or _small_mark_conflict(tail['text'],ending)
             or SequenceMatcher(None,_key(tail['text']),ending).ratio()<.65):return None
     a,b=head['bbox'],tail['bbox'];height=max(a[3]-a[1],b[3]-b[1],1)
-    next_row=0<=b[1]-a[3]<=3*height and b[0]<a[0]
+    next_row=(b[0]<a[0] and .5*height<(b[1]+b[3]-a[1]-a[3])/2
+        and -.5*min(a[3]-a[1],b[3]-b[1])<=b[1]-a[3]<=3*height)
     next_column=b[0]>a[2]+2*height and b[3]<a[1]-2*height
     if not(next_row or next_column):return None
     own=_whole_view_word(head,witness)

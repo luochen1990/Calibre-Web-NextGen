@@ -5830,3 +5830,24 @@ def test_clipped_divided_word_recovers_its_unclaimed_prefix_before_tail_adjudica
     result=vp._complete_optical_row_territory(block,dict(blocks=[block]),optical,
         SimpleNamespace(rect=pymupdf.Rect(0,0,260,160)),regions,{})
     assert result==([prefix]if obstruction=='none'else[]),'A uniquely anchored printed division can recover only its own exact unclaimed prefix'
+
+
+@pytest.mark.parametrize('case',['overlapping_ascenders','separate_rows','same_row','near_same_row','deep_overlap','distant_row','no_reset','different_letters'])
+def test_exact_printed_division_uses_row_centers_not_disjoint_letter_boxes(case):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=[dict(text='rain-',bbox=[140,20,170,32],confidence=95),
+            dict(text='fall',bbox=[20,29,42,41],confidence=95)]
+    if case=='separate_rows':source[1]['bbox']=[20,34,42,46]
+    if case=='same_row':source[1]['bbox']=[180,20,202,32]
+    if case=='near_same_row':source[1]['bbox']=[20,23,42,35]
+    if case=='deep_overlap':source[1]['bbox']=[20,25,42,37]
+    if case=='distant_row':source[1]['bbox']=[20,80,42,92]
+    if case=='no_reset':source[1]['bbox']=[180,29,202,41]
+    model='rainfalls'if case=='different_letters'else'rainfall'
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    result=pa.adjudicate([model],source,witness)
+    if case in('overlapping_ascenders','separate_rows'):
+        assert result['tokens']==['rainfall']and not result['marked'],'Conserved printed letters on adjacent physical rows are a joined word, even when glyph boxes overlap vertically'
+        assert result['conserved_boundaries']=={}
+    else:
+        assert pa._proved_wrap(source,model,witness,same_reading=True)is None,'Same-row, overlapping-line, distant, unreset or changed-letter input cannot prove a printed division'
