@@ -1149,6 +1149,14 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             marks.add(i)
             notes.setdefault(i,dict(source=[tokens[i]],model=[tokens[i]],chosen=[tokens[i]],
                 status='UNRESOLVED',method='reader_uncertainty'))
+            if unresolved_source and notes[i].get('method')=='reader_uncertainty':
+                lexical=''.join(c for c in _key(tokens[i]).casefold()if c.isalpha())
+                from .text_quality import english_lexicon
+                weak_source=(len(source_own)==1 and source_own[0].get('confidence',100)<85)
+                independent=own_exact
+                if weak_source and lexical and lexical not in english_lexicon() and not independent:
+                    notes[i]=dict(notes[i],source_image_only=True,source_bbox=list(bounds[i]),
+                        method='unproved_recovered_word')
     consumed=0;inserted=0
     for i,token in enumerate(model):
         if token.startswith('<n:'):

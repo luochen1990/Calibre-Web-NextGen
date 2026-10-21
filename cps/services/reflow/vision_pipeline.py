@@ -544,6 +544,49 @@ def _complete_note_tail_territory(block,answer,words,display,regions,local):
     return list(local)+selected
 
 
+def _complete_optical_row_territory(block,answer,pixels,display,regions,body_owners):
+    """Recover an exact unclaimed row tail before judging its cropped evidence.
+
+    The complete page recognizer already saw these instances. A unique model
+    suffix and adjacent physical row locate them; they confer no spelling
+    authority, and the widened crop still undergoes ordinary adjudication.
+    """
+    if block['role'] not in ('body','other','caption','footnote') or not pixels:return []
+    local=_owned_block_words(block,answer,pixels,display,regions,body_owners,ordered=True)
+    if len(local)<6:return []
+    import statistics
+    key=lambda t:''.join(c for c in vision_reading.normalized(t).casefold()if c.isalnum())
+    model=[key(t)for t in re.sub(r'<n:[^>]+>',' ',block['text']).split()]
+    anchor=[key(w['text'])for w in local[-3:]]
+    ends=[i+3 for i in range(len(model)-2)if model[i:i+3]==anchor]
+    if len(ends)!=1 or not 1<=len(model)-ends[0]<=20:return []
+    tail=model[ends[0]:]
+    row=_pixel_lines(local)[-1];last=row[-1];a=last['bbox']
+    height=statistics.median(w['bbox'][3]-w['bbox'][1]for w in row)
+    middle=statistics.median((w['bbox'][1]+w['bbox'][3])/2 for w in row)
+    envelope=block_rect(block,display);known={_source_instance(w)for w in local}
+    following=[]
+    for word in pixels:
+        box=word['bbox'];x=(box[0]+box[2])/2;y=(box[1]+box[3])/2
+        if (_source_instance(word)in known or box[0]<a[2]-.1*height
+                or abs(y-middle)>.5*height
+                or not(envelope[0]<=x<=envelope[2]and envelope[1]<=y<=envelope[3])):continue
+        claim=(regions or {}).get('_instances',{}).get(_source_instance(word))
+        if claim is not None and claim!=block['id']:continue
+        if any(other['id']!=block['id']and any(b[0]<=x<=b[2]and b[1]<=y<=b[3]
+               for b in (regions or {}).get(other['id'],[block_rect(other,display)]))
+               for other in answer['blocks']):continue
+        following.append(word)
+    following.sort(key=lambda w:w['bbox'][0])
+    selected=following[:len(tail)]
+    if [key(w['text'])for w in selected]!=tail:return []
+    previous=a
+    for word in selected:
+        if word['bbox'][0]-previous[2]>2*height:return []
+        previous=word['bbox']
+    return selected
+
+
 def _complete_closing_mark_territory(block,answer,words,pixel_words,display,regions,local):
     """Include one adjacent, independently recognized closing mark in its word."""
     if not local or not pixel_words:return None
@@ -2476,6 +2519,13 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             original=' '.join(w['text'] for w in local)
             original_quality=text_quality.inspect_disclosure('\n'.join(
                 ' '.join(w['text'] for w in row) for row in _pixel_lines(local)))
+            optical_tail=_complete_optical_row_territory(block,answer,pixel_words,display,regions,body_owners)
+            if optical_tail:
+                regions=dict(regions or {})
+                territories=list(territories)+[vision_reading.union([w['bbox']for w in optical_tail])]
+                regions[bid]=territories
+                regions['_instances']=dict(regions.get('_instances',{}))
+                regions['_instances'].update({_source_instance(w):bid for w in optical_tail})
             optical_evidence=owned(pixel_words) if pixel_words is not None else None
             punctuation_proof=(_caption_punctuation_anchors(optical_evidence,
                 list(range(len(optical_evidence))),block['text'])
@@ -2487,6 +2537,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                        if punctuation_proof else vision_reading.UNALIGNED_RUN)
             result=vision_reading.align(block['text'],local,block['low_confidence'],
                 has_layer=bool(words),pixel_words=optical_evidence,run_limit=run_limit)
+            if optical_tail:result['guard'].append(dict(kind='complete_optical_row_territory',restored_words=len(optical_tail)))
             evidence_boxes=result['boxes'];wraps=set();optical_local=[];independent_optical_fallback=False
             if pixel_words is not None:
                 optical_local=_note_lexical_evidence(_owned_block_words(block,answer,pixel_words,display,regions,body_owners,ordered=True),opening_proof)

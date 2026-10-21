@@ -4811,3 +4811,53 @@ def test_source_only_ordinary_number_keeps_existing_conservation_contract():
     result = pa.adjudicate('Read entry now.'.split(), source, witness)
     index = result['tokens'].index('71')
     assert not result['word_notes'][index].get('source_image_only')
+
+
+@pytest.mark.parametrize('obstruction',['none','other_owner','different_text'])
+def test_clipped_final_row_uses_unclaimed_complete_optical_territory(tmp_path,monkeypatch,obstruction):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    text='The sample keeps every clear word close to the end today.'
+    with pymupdf.open()as drawing,pymupdf.open()as doc:
+        page=drawing.new_page(width=400,height=160)
+        page.insert_text((30,80),text,fontsize=10)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        doc.new_page(width=400,height=160).insert_image(page.rect,stream=page.get_pixmap().tobytes('png'))
+        display=SourceDisplay(doc,0)
+        own=block(text if obstruction!='different_text'else text.replace('today.','tomorrow.'),ident='p1',bbox=(50,350,950,600))
+        clip=vp.vision_reading.union([w['bbox']for w in source[:7]])
+        regions={'p1':[clip],'_instances':{vp._source_instance(w):'p1'for w in source[:7]}}
+        answer={'blocks':[own]}
+        if obstruction=='other_owner':
+            other=block('to the end today.',ident='p2',bbox=(600,350,950,600))
+            answer['blocks'].append(other)
+            regions['p2']=[vp.vision_reading.union([w['bbox']for w in source[7:]])]
+            regions['_instances'].update({vp._source_instance(w):'p2'for w in source[7:]})
+        monkeypatch.setattr(pa,'read_crop',lambda display,boxes,cache:pa.CropWitness([
+            dict(w)for w in source if any(vp.owned_words([w],b)for b in boxes)]))
+        _,report=vp.compile_page(answer,[],display,0,Package(),{},pixel_words=source,regions=regions,
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+        record=next(b for b in report['blocks']if b['id']=='p1')
+        extended=any(g['kind']=='complete_optical_row_territory'for g in record['guard'])
+        if obstruction=='none':
+            assert record['published_tokens']==text.split()
+            assert not record['marked'],'A clipped evidence strip cannot manufacture doubt on its complete printed tail'
+            assert extended
+        else:assert not extended,'A differing or separately owned tail cannot be borrowed'
+
+
+def test_unsettled_recovered_nonword_cannot_remain_a_live_transcription():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The prlnted sample stays readable.',confidence=80)
+    witness=pa.CropWitness(words('The prlnted sample stays readable.',confidence=75))
+    witness.model_reading=True
+    witness.word_readings=lambda word:[words('The printed sample stays readable.',confidence=30)]*2
+    result=pa.adjudicate([w['text']for w in source],source,witness,uncertain={1},unresolved_source=True)
+    assert result['tokens'][1]=='prlnted','Unsettled ink must not be guessed from the dictionary'
+    assert result['word_notes'][1].get('source_image_only'),'A weak recovered nonword needs original ink, not wrong live text'
+    assert result['word_notes'][1]['source_bbox']==source[1]['bbox']
