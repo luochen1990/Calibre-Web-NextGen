@@ -384,7 +384,35 @@ def _proved_wrap(source,model,witness,same_reading=False):
 
 
 
-def _recognized_letter_groups(source,witness):
+def _conserved_group_boundary(items,witness,model_words):
+    """Prove only a boundary when three readings conserve every source letter.
+
+    Moderate confidence in unusual typography cannot choose a new spelling.
+    A certain first reader and both separate word networks must repeat exactly
+    the existing character inventory. Conflicting pairs still decline proof.
+    """
+    literal=''.join(w['text']for w in items)
+    key=_key(literal).casefold()
+    if (not literal.isascii() or key not in model_words
+            or any(w.get('confidence') is not None and w['confidence']<85 for w in items)):
+        return False
+    reader=getattr(witness,'word_readings',None)
+    if reader is None:return False
+    bounds=[min(w['bbox'][0]for w in items),min(w['bbox'][1]for w in items),
+            max(w['bbox'][2]for w in items),max(w['bbox'][3]for w in items)]
+    original=dict(text=literal,bbox=bounds)
+    views=reader(original)
+    if not views or len(views)%2:return False
+    choices=set()
+    for start in range(0,len(views),2):
+        pair=[_whole_view_word(original,view)for view in views[start:start+2]]
+        if not all(len(row)==1 and row[0].get('confidence',0)>=50 for row in pair):continue
+        first,second=(_key(row[0]['text']).casefold()for row in pair)
+        if first==second:choices.add(first)
+    return choices=={key}
+
+
+def _recognized_letter_groups(source,witness,model_words=frozenset()):
     """Regroup exact letter fragments using a complete observed word boundary.
 
     No spelling comes from this operation. It conserves the source characters
@@ -392,7 +420,7 @@ def _recognized_letter_groups(source,witness):
     """
     groups={};occupied=set()
     for word in witness:
-        if word.get('confidence',0)<85:continue
+        if word.get('confidence',0)<85 and _key(word['text']).casefold()not in model_words:continue
         box=word['bbox']
         indices=[i for i,item in enumerate(source)
             if box[0]-.2<=(item['bbox'][0]+item['bbox'][2])/2<=box[2]+.2
@@ -402,6 +430,7 @@ def _recognized_letter_groups(source,witness):
         if any(len(_key(w['text']).strip('.,;:'))>2 for w in items):continue
         literal=''.join(w['text']for w in items)
         if _key(literal).casefold()!=_key(word['text']).casefold():continue
+        if word.get('confidence',0)<85 and not _conserved_group_boundary(items,witness,model_words):continue
         bounds=[min(w['bbox'][0]for w in items),min(w['bbox'][1]for w in items),
                 max(w['bbox'][2]for w in items),max(w['bbox'][3]for w in items)]
         if not _complete_recognition(dict(bbox=bounds),word):continue
@@ -465,8 +494,15 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     prove a deletion. Repeated phrases require a unique surrounding sequence.
     Source rectangles belong to occurrences, rather than spelling lookups.
     """
+    uncertain=set(uncertain)
     if not source_print and not native_print_words:
-        source=_recognized_letter_groups(source,witness)
+        model_words=set()
+        if (getattr(witness,'model_reading',False) and not unresolved_source
+                and not getattr(witness,'failure',None)):
+            doubtful={_key(t).casefold()for i,t in enumerate(model)if i in uncertain}
+            model_words={_key(t).casefold()for i,t in enumerate(model)
+                if i not in uncertain and not t.startswith('<n:')}-doubtful
+        source=_recognized_letter_groups(source,witness,model_words)
     source=_terminal_word_view(model,source)
     witness=_terminal_word_view(model,witness)
     corroboration=_terminal_word_view(model,corroboration)

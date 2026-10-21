@@ -4472,3 +4472,53 @@ def test_short_cross_column_regions_keep_their_admitted_reading_flow():
     assert regions['b1'][0][1]>regions['b1'][1][1], 'Short consecutive columns have a source-proven return to the upper row'
     own=vp._owned_block_words(reading['blocks'][0],reading,source,display,regions,ordered=True)
     assert [w['text']for w in own]==text.split()
+
+
+@pytest.mark.parametrize('evidence', [
+    'complete_boundary', 'missing_pair', 'weak_pair', 'different_letters',
+    'clipped_pair', 'explicit_reader_doubt', 'source_fallback',
+    'failed_witness', 'conflicting_pair', 'weak_source',
+])
+def test_conserved_letter_groups_need_boundary_proof_not_a_new_spelling(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    # Independently written synthetic atoms. OCR confidence in an unusual
+    # typeface does not choose any letter: both original inventories already
+    # contain exactly the same letters, and two networks locate their word.
+    source = words('This label R i v e r stays readable.')
+    for i, item in enumerate(source[2:7]):
+        item['bbox'] = [40 + i * 6, 20, 45 + i * 6, 32]
+    for i, item in enumerate(source[7:]):
+        item['bbox'] = [100 + i * 30, 20, 118 + i * 30, 32]
+    word = dict(text='RIVER', bbox=[40, 20, 69, 32], confidence=47)
+    witness = pa.CropWitness([*source[:2], word, *source[7:]])
+    witness.model_reading = True
+    pair = [[dict(word, confidence=63)], [dict(word, confidence=77)]]
+    if evidence == 'missing_pair':
+        pair = []
+    elif evidence == 'weak_pair':
+        pair[1][0]['confidence'] = 40
+    elif evidence == 'different_letters':
+        for view in pair:
+            view[0]['text'] = 'RIMER'
+    elif evidence == 'clipped_pair':
+        for view in pair:
+            view[0]['bbox'] = [52, 20, 69, 32]
+    elif evidence == 'failed_witness':
+        witness.failure = 'synthetic failed second read'
+    elif evidence == 'conflicting_pair':
+        pair += [[dict(word, text='RIMER', confidence=95)]] * 2
+    elif evidence == 'weak_source':
+        source[3]['confidence'] = 40
+    witness.word_readings = lambda item: pair
+    result = pa.adjudicate(
+        'This label RIVER stays readable.'.split(), source, witness,
+        uncertain={2} if evidence == 'explicit_reader_doubt' else (),
+        unresolved_source=evidence == 'source_fallback',
+    )
+    live = [token for i, token in enumerate(result['tokens'])
+            if not result['word_notes'].get(i, {}).get('source_image_only')]
+    if evidence == 'complete_boundary':
+        assert live == 'This label RIVER stays readable.'.split()
+        assert result['tokens'][2] == 'RIVER'
+    else:
+        assert 'RIVER' not in live, 'No spelling or missing boundary may be supplied by confidence alone'
