@@ -4712,3 +4712,41 @@ def test_fragment_boundary_measures_pixels_without_recognizing_the_spelling(layo
         terminal = pa._terminal_word_view([], witness)
         assert terminal.fragment_boundary(dict(bbox=bounds)) is result
     assert result is (True if layout == 'tight' else None if layout in ('blank', 'overflow') else False)
+
+
+@pytest.mark.parametrize('evidence', ['complete_original', 'printed_space', 'unknown_space', 'clipped_own_views', 'weak_original', 'explicit_doubt', 'different_letters', 'other_row'])
+def test_clipped_context_cannot_hide_a_conserved_word_from_its_complete_own_crop(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source = words('This label H a r b o r stays readable.')
+    for i, item in enumerate(source[2:8]):
+        item['bbox'] = [40 + i * 6, 20, 45 + i * 6, 32]
+    for i, item in enumerate(source[8:]):
+        item['bbox'] = [110 + i * 30, 20, 128 + i * 30, 32]
+    word = dict(text='HARBOR', bbox=[40, 20, 75, 32], confidence=94)
+    # The contextual recognizer discarded the prefix before the lazy word
+    # query. Its tail rectangle cannot bound the complete independent crop.
+    clipped = dict(word, bbox=[53, 20, 75, 32])
+    witness = pa.CropWitness([*source[:2], clipped, *source[8:]])
+    witness.model_reading = True
+    pair = [[dict(word, confidence=91)]] * 2
+    if evidence == 'clipped_own_views': pair = [[clipped]] * 2
+    elif evidence == 'weak_original': source[3]['confidence'] = 40
+    elif evidence == 'different_letters':
+        for item in pair: item[0] = dict(word, text='HARROW', confidence=91)
+    elif evidence == 'other_row': source[4]['bbox'] = [52, 45, 57, 57]
+    calls = []
+    def own(item):
+        calls.append(item['bbox'])
+        return pair
+    witness.word_readings = own
+    witness.fragment_boundary = lambda item: {'printed_space': False, 'unknown_space': None}.get(evidence, True)
+    result = pa.adjudicate('This label HARBOR stays readable.'.split(), source, witness,
+                          uncertain={2} if evidence == 'explicit_doubt' else ())
+    live = [token for i, token in enumerate(result['tokens'])
+            if not result['word_notes'].get(i, {}).get('source_image_only')]
+    if evidence == 'complete_original':
+        assert live == 'This label Harbor stays readable.'.split()
+        assert [40, 20, 75, 32] in calls, 'The original inventory bounds the complete own-word read'
+        assert not result['marked']
+    else:
+        assert 'HARBOR' not in live and 'Harbor' not in live

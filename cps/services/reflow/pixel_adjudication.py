@@ -473,6 +473,32 @@ def _recognized_letter_groups(source,witness,model_words=frozenset()):
             confidence=min(w.get('confidence',0)for w in items),
             **({'conserved_fragment_boundary':True} if boundary=='word_boundary_only' else {})))
         occupied.update(indices)
+    # A contextual recognition can already discard a prefix. It must not
+    # decide whether the complete own-word crop is ever queried. Exact source
+    # and first-reader inventories propose the bounded fragment run; measured
+    # absence of a printed space and complete independent views admit it.
+    measured=getattr(witness,'fragment_boundary',None)
+    if model_words and measured is not None:
+        for start in range(len(source)):
+            if start in occupied:continue
+            for end in range(min(len(source),start+16),start+2,-1):
+                indices=range(start,end);items=source[start:end]
+                if any(i in occupied for i in indices):continue
+                if any(len(_key(w['text']).strip('.,;:'))>2 for w in items):continue
+                literal=''.join(w['text']for w in items)
+                if _key(literal).casefold()not in model_words:continue
+                bounds=[min(w['bbox'][0]for w in items),min(w['bbox'][1]for w in items),
+                        max(w['bbox'][2]for w in items),max(w['bbox'][3]for w in items)]
+                if any(b['bbox'][0]<a['bbox'][2]-.2 or
+                       abs(b['bbox'][1]-a['bbox'][1])>.5*(bounds[3]-bounds[1])
+                       for a,b in zip(items,items[1:])):continue
+                if measured(dict(text=literal,bbox=bounds))is not True:continue
+                if not _conserved_group_boundary(items,witness,model_words):continue
+                groups[start]=(end-1,dict(text=literal,bbox=bounds,
+                    confidence=min(w.get('confidence',0)for w in items),
+                    conserved_fragment_boundary=True))
+                occupied.update(indices)
+                break
     result=[]
     for i,word in enumerate(source):
         if i in groups:result.append(groups[i][1])
