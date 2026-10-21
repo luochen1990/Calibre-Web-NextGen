@@ -4343,3 +4343,27 @@ def test_letter_split_note_tail_can_continue_on_same_row_and_wrap(boundary):
         result=vp._complete_note_tail_territory(own,{'blocks':[own]},source,SourceDisplay(drawing,0),regions,local)
         if boundary=='own':assert result==source,'Every exact adjacent tail atom must enter the adjudicated crop'
         else:assert result is None,'Foreign ownership, different letters and remote lines cannot extend a note'
+
+
+@pytest.mark.parametrize('optical',['complete','changed_letter','partial','separate_words'])
+def test_small_cap_fragments_remain_separate_from_a_neighboring_unproved_edit(optical):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('The entry F E N N W I C K repairmanual stays here.')
+    for i,w in enumerate(source[2:10]):w['bbox']=[40+i*6,20,45+i*6,32]
+    for i,w in enumerate(source[10:]):w['bbox']=[100+i*40,20,138+i*40,32]
+    baseline=pa.CropWitness([dict(w)for w in source[:2]]+[
+        dict(text='FENNWICK'if optical!='changed_letter'else'FENNMICK',bbox=[40,20,87,32],confidence=99),
+        *[dict(w)for w in source[10:]]])
+    if optical=='partial':baseline[2]['bbox']=[55,20,87,32]
+    if optical=='separate_words':
+        source[2]['text']='Go';source[3]['text']='to'
+    baseline.model_reading=True
+    result=pa.adjudicate('The entry FENNWICK blue counter stays here.'.split(),source,baseline)
+    if optical=='complete':
+        assert result['tokens'][2]=='FENNWICK'
+        assert 2 not in result.get('source_image_words',())
+        assert not result['word_notes'].get(2,{}).get('source_image_only')
+        assert 'blue'not in result['tokens']and'counter'not in result['tokens']
+    else:
+        assert not any(t=='FENNWICK'and not result['word_notes'].get(i,{}).get('source_image_only')
+                       for i,t in enumerate(result['tokens']))

@@ -358,6 +358,41 @@ def _proved_wrap(source,model,witness,same_reading=False):
             max(b[2]for b in boxes),max(b[3]for b in boxes)]
 
 
+
+def _recognized_letter_groups(source,witness):
+    """Regroup exact letter fragments using a complete observed word boundary.
+
+    No spelling comes from this operation. It conserves the source characters
+    and does not join ordinary adjacent words or incomplete recognitions.
+    """
+    groups={};occupied=set()
+    for word in witness:
+        if word.get('confidence',0)<85:continue
+        box=word['bbox']
+        indices=[i for i,item in enumerate(source)
+            if box[0]-.2<=(item['bbox'][0]+item['bbox'][2])/2<=box[2]+.2
+            and box[1]-.2<=(item['bbox'][1]+item['bbox'][3])/2<=box[3]+.2]
+        if len(indices)<3 or indices!=list(range(indices[0],indices[-1]+1)):continue
+        items=[source[i]for i in indices]
+        if any(len(_key(w['text']).strip('.,;:'))>2 for w in items):continue
+        literal=''.join(w['text']for w in items)
+        if _key(literal).casefold()!=_key(word['text']).casefold():continue
+        bounds=[min(w['bbox'][0]for w in items),min(w['bbox'][1]for w in items),
+                max(w['bbox'][2]for w in items),max(w['bbox'][3]for w in items)]
+        if not _complete_recognition(dict(bbox=bounds),word):continue
+        if any(i in occupied for i in indices):return source
+        if any(b['bbox'][0]<a['bbox'][2]-.2 or
+               abs(b['bbox'][1]-a['bbox'][1])>.5*(bounds[3]-bounds[1])
+               for a,b in zip(items,items[1:])):continue
+        groups[indices[0]]=(indices[-1],dict(text=literal,bbox=bounds,
+            confidence=min(w.get('confidence',0)for w in items)))
+        occupied.update(indices)
+    result=[]
+    for i,word in enumerate(source):
+        if i in groups:result.append(groups[i][1])
+        elif i not in occupied:result.append(word)
+    return result
+
 def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False, source_print=False, native_print_words=()):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
@@ -365,6 +400,8 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     prove a deletion. Repeated phrases require a unique surrounding sequence.
     Source rectangles belong to occurrences, rather than spelling lookups.
     """
+    if not source_print and not native_print_words:
+        source=_recognized_letter_groups(source,witness)
     source=_terminal_word_view(model,source)
     witness=_terminal_word_view(model,witness)
     corroboration=_terminal_word_view(model,corroboration)
