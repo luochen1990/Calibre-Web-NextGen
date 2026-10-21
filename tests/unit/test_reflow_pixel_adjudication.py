@@ -5135,9 +5135,9 @@ def test_clipped_word_hint_is_reread_on_its_complete_measured_ink(proof):
     witness.word_readings=readings
     result=pa.adjudicate('This clear sample remains readable.'.split(),source,witness)
     note=result['word_notes'][1]
-    if proof=='whole':
+    if proof in('whole','missing','still_clipped'):
         assert result['tokens'][1]=='clear'and note['status']=='RESOLVED'
-        assert not note.get('source_image_only'),'The old clipped spelling must not veto a complete independent read of the original word'
+        assert not note.get('source_image_only'),'A missing or clipped reread is no complete counterevidence to the certain first reading'
         assert result['boxes'][1]==whole['bbox']
     else:assert note['status']=='UNRESOLVED'and note.get('source_image_only')
 
@@ -5243,3 +5243,39 @@ def test_contextual_word_reads_include_the_complete_measured_original_ink(monkey
         assert chosen['bbox']==complete
         assert all(frame[1]<=25 and frame[3]>=40 for frame in frames),'A contextual reread cannot discard the measured ascender or prefix'
     else:assert chosen is None,'Missing geometry, another word or conflicting complete readings cannot certify the model'
+
+
+@pytest.mark.parametrize('evidence',[
+    'clipped_prefix','clipped_vertical','unmeasured','contained','foreign_word',
+    'complete_competitor','complete_uncommon_competitor','explicit_doubt',
+    'source_fallback','failed_witness','different_occurrence','complete_source','baseline_owner'])
+def test_positive_missing_ink_defeats_optical_confidence_not_the_complete_model(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('This clcar sample remains readable.')
+    source[1]['bbox']=[20,24,38,30]if evidence=='clipped_vertical'else[27,20,38,32]
+    complete=[20,20,38,32]
+    if evidence=='complete_source':source[1]['bbox']=list(complete)
+    if evidence=='baseline_owner':source[0]['bbox']=[20,20,24,32]
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    def read(word):
+        view=[dict(w)for w in source]
+        if evidence in('complete_competitor','complete_uncommon_competitor'):
+            view[1]=dict(text='clean'if evidence=='complete_competitor'else'prlnted',bbox=complete,confidence=99)
+        return [view,[dict(w)for w in view]]
+    witness.word_readings=read
+    witness.word_scope=lambda word:(None if evidence=='unmeasured'else
+        list(source[1]['bbox'])if evidence=='contained'else
+        [0,20,18,32]if evidence=='different_occurrence'else complete)
+    if evidence=='foreign_word':witness.insert(1,dict(text='a',bbox=[20,20,24,32],confidence=99))
+    if evidence=='failed_witness':witness.failure='recognition unavailable';witness.model_reading=False
+    result=pa.adjudicate('This clear sample remains readable.'.split(),source,witness,
+        uncertain={1}if evidence=='explicit_doubt'else(),unresolved_source=evidence=='source_fallback')
+    note=result['word_notes'][1]
+    if evidence in('clipped_prefix','clipped_vertical'):
+        assert result['tokens'][1]=='clear'
+        assert note['status']=='RESOLVED'and not note.get('source_image_only')
+        assert note['method']=='complete_vision_reading_without_optical_counterevidence'
+        assert result['boxes'][1]==complete,'The retained reading still owns all measured original ink'
+    else:
+        assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+        assert result['marked']=={1},'Incomplete recognition cannot weaken a complete competing word, explicit doubt or source fallback'

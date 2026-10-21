@@ -216,8 +216,42 @@ def _context_model_choice(source,witness,model):
     return next((w for w in choices if w.get('confidence',0)>=90),None)
 
 
+
+def _owns_complete_ink(words,scope):
+    """Every measured ink edge must be inside the observed word rectangle.
+
+    A percentage overlap tolerates losing an entire first letter or descender.
+    Half a source point accommodates coordinate rounding, not missing glyphs.
+    """
+    return bool(scope is not None and len(words)==1 and
+        words[0]['bbox'][0]<=scope[0]+.5 and words[0]['bbox'][1]<=scope[1]+.5 and
+        words[0]['bbox'][2]>=scope[2]-.5 and words[0]['bbox'][3]>=scope[3]-.5)
+
+
+def _incomplete_counter_scope(word,witness,neighbors):
+    """Positive missing ink invalidates this occurrence's optical confidence.
+
+    This measures completeness only. It cannot supply letters, settle an
+    explicitly doubtful reading, or borrow another source word's original ink.
+    """
+    reader=getattr(witness,'word_scope',None)
+    scope=reader(word)if reader is not None else None
+    a=word['bbox']
+    if scope is None or _owns_complete_ink([word],scope):return None
+    if not(scope[0]<=(a[0]+a[2])/2<=scope[2]
+            and scope[1]<=(a[1]+a[3])/2<=scope[3]):return None
+    if any(any(c.isalnum()for c in other['text'])and not _same_occurrence(word,other)
+            and scope[0]<=(other['bbox'][0]+other['bbox'][2])/2<=scope[2]
+            and scope[1]<=(other['bbox'][1]+other['bbox'][3])/2<=scope[3]
+            for other in list(neighbors)+list(witness)):return None
+    return scope
+
+
 def _optical_counterread(source,witness,model,scope=None):
     """Missing or split recognition is not a competing complete printed word."""
+    if scope is not None:
+        a=source['bbox'];source=dict(source,bbox=[min(a[0],scope[0]),min(a[1],scope[1]),
+            max(a[2],scope[2]),max(a[3],scope[3])])
     views=[witness]
     for name in ('word_readings','resampled','alternates'):
         reader=getattr(witness,name,None)
@@ -237,8 +271,18 @@ def _optical_counterread(source,witness,model,scope=None):
                     and _complete_word_occurrence(source,w)
                     and min(a[3],w['bbox'][3])-max(a[1],w['bbox'][1])>=.55*(a[3]-a[1])):
                     row=owned
+        if row and scope is not None:
+            first=_letter_number_identity(model).casefold()
+            recognized=_letter_number_identity(row[0]['text']).casefold()
+            # Enlarging a request cannot turn the same cropped prefix/tail
+            # into a newly observed complete word. Its missing letters remain
+            # precisely the disputed original ink, even if a lazy adapter echoes
+            # the enlarged request rectangle into its answer.
+            if (recognized==_letter_number_identity(source['text']).casefold()
+                    and len(first)>len(recognized)>=2 and
+                    (first.startswith(recognized)or first.endswith(recognized))):continue
         if (row and row[0].get('confidence',0)>=85 and _key(row[0]['text'])!=_key(model)
-                and (scope is None or _covers_ink_scope(row,scope))):return True
+                and (scope is None or _owns_complete_ink(row,scope))):return True
     return False
 
 
@@ -1133,13 +1177,20 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 word_scope=scope_reader(source[a])
                 word_scope_conflict=not _covers_ink_scope(supported[0][2],word_scope)
                 if word_scope_conflict:supported=[];boundary=None
+        missing_ink_scope=(_incomplete_counter_scope(source[a],witness,source[:a]+source[z:])
+            if z-a==y-b==1 else None)
+        if (missing_ink_scope is not None and len(supported)==1
+                and not _owns_complete_ink(supported[0][2],missing_ink_scope)):
+            supported=[];boundary=None;word_choice=None;resampled=None;alternate=None
+            word_scope_conflict=True
+        if missing_ink_scope is not None:word_scope=missing_ink_scope
         symbol_conflict=(z-a==y-b==1 and _symbol_identity_conflict(
             proposed[b],source_tokens[a]))
         if symbol_conflict:
             # Neither alphabetic network is a mathematical-glyph classifier.
             # Keep the exact original ink rather than certify its digit guess.
             supported=[];boundary=None
-        partial_counter=word_scope_conflict and word_scope is not None
+        partial_counter=(word_scope_conflict and word_scope is not None) or missing_ink_scope is not None
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
             and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter)
