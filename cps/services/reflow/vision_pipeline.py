@@ -3093,7 +3093,11 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             import statistics
             opening_left=(statistics.median(min(w['bbox'][0] for w in row) for row in rows[1:4])
                           if len(rows)>1 else None)
-            printed_head,printed_tail=_published_pixel_edges(result['tokens'],geometry_words)
+            # Original-ink word images carry no live spelling. Rejected OCR
+            # labels must not become structural anchors for that publication.
+            live_tokens=[t for i,t in enumerate(result['tokens'])
+                if not result.get('word_notes',{}).get(i,{}).get('source_image_only')]
+            printed_head,printed_tail=_published_pixel_edges(live_tokens,geometry_words)
             head_variant=None
             visible=[t for t in result['tokens'] if not t.startswith('<n:')]
             if printed_head is None and visible and optical_local:
@@ -3677,10 +3681,21 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                 # union with later full rows must not swallow an omitted prefix
                 # or a neighboring paragraph on that same physical baseline.
                 first=min(j for i,j in core);last=max(j for i,j in core)
+                restored=[]
                 for leading in (True,False):
-                    if not leading:territories.append(vision_reading.union([optical[i]['bbox'] for i,j in core]))
+                    if not leading:restored.append(vision_reading.union([optical[i]['bbox'] for i,j in core]))
                     rows=_pixel_lines([optical[i] for i,j in edge if (j<first if leading else j>last)])
-                    territories.extend(vision_reading.union([w['bbox'] for w in row]) for row in rows)
+                    restored.extend(vision_reading.union([w['bbox'] for w in row]) for row in rows)
+                # Model token positions can place the continuation of a
+                # divided word before its upper-line stem. This component's
+                # physical rows, rather than that lexical alignment, order its
+                # crops. Remove contained regions so the same continuation
+                # cannot be recognized twice. Separate columns remain separate
+                # components in the transition proof above.
+                restored=[r for i,r in enumerate(restored) if not any(
+                    j!=i and q[0]<=r[0] and q[1]<=r[1] and q[2]>=r[2] and q[3]>=r[3]
+                    and (q!=r or j<i) for j,q in enumerate(restored))]
+                territories.extend(sorted(restored,key=lambda r:(r[1],r[0])))
             elif block['role']=='caption':
                 # A caption's partial first row may sit beside unrelated prose.
                 # Completing its later rows must not turn their bounding union
@@ -3690,6 +3705,18 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             else:territories.append(rect)
         if interior_rows:
             territories=sorted(territories+interior_rows,key=lambda rect:(rect[1],rect[0]))
+        if block['role']=='body' and any(b[1]<a[1]-height for a,b in zip(territories,territories[1:])):
+            owned=[optical[i]for i in available if any(owned_words([optical[i]],r)for r in territories)]
+            _,columns_proved=_proved_recovery_columns(owned)
+            if not columns_proved:
+                # A lexical anchor for a divided word can put its lower-line
+                # continuation before the stem, even across separate restored
+                # components. A real column transition keeps its flow order;
+                # a single-column return uses physical row order once only.
+                territories=[r for i,r in enumerate(territories) if not any(
+                    j!=i and q[0]<=r[0] and q[1]<=r[1] and q[2]>=r[2] and q[3]>=r[3]
+                    and(q!=r or j<i)for j,q in enumerate(territories))]
+                territories.sort(key=lambda r:(r[1],r[0]))
         if len(territories)>1 and regions is None:
             reject('Disjoint printed reading requires source region ownership')
         if regions is not None:regions[block['id']]=territories
