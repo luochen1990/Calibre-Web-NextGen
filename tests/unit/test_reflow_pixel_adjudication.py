@@ -5279,3 +5279,39 @@ def test_positive_missing_ink_defeats_optical_confidence_not_the_complete_model(
     else:
         assert note['status']=='UNRESOLVED'and note.get('source_image_only')
         assert result['marked']=={1},'Incomplete recognition cannot weaken a complete competing word, explicit doubt or source fallback'
+
+
+@pytest.mark.parametrize('proof',['unmeasured','measured','neighbor_limit','other_word','conflicting_networks','missing_network'])
+def test_contextual_reread_does_not_reuse_a_recognizers_clipped_vertical_frame(monkeypatch,tmp_path,proof):
+    import pymupdf
+    from types import SimpleNamespace
+    from cps.services.reflow import pixel_adjudication as pa
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=200,height=100)
+        page.insert_text((40,50),'clear',fontsize=14)
+        printed=page.get_text('words')[0]
+        assert printed[4]=='clear'
+        full=list(printed[:4])
+    height=full[3]-full[1]
+    cropped=[full[0],full[1]+height*.25,full[2],full[3]-height*.15]
+    source=dict(text='clcar',bbox=cropped,confidence=99)
+    frames=[]
+    def recognize(display,regions,cache,**kwargs):
+        if kwargs.get('psm')!=7:return [dict(source)]
+        frames.append(regions[0])
+        if proof=='missing_network'and kwargs.get('language')=='LatinRaw':return []
+        intact=regions[0][1]<=full[1]and regions[0][3]>=full[3]
+        token='clear'if intact else'clcar'
+        if proof=='other_word'or proof=='conflicting_networks'and kwargs.get('scale')==4:token='clean'
+        return [dict(text=token,bbox=full if intact else cropped,confidence=99)]
+    monkeypatch.setattr(pa,'_read_crop',recognize)
+    monkeypatch.setattr(pa,'_latin_directory',lambda engine:tmp_path)
+    monkeypatch.setattr(pa,'_word_ink_scope',lambda *a,**k:full if proof=='measured'else None)
+    if proof=='neighbor_limit':monkeypatch.setattr(pa,'_neighbor_line_limits',lambda *a:(cropped[1],cropped[3]))
+    witness=pa.read_crop(SimpleNamespace(rect=pymupdf.Rect(0,0,200,100)),[cropped],tmp_path)
+    choice=pa._context_model_choice(source,witness,'clear')
+    if proof in('unmeasured','measured'):
+        assert choice is not None and choice['text']=='clear'
+        assert choice['bbox']==full
+        assert all(box[1]<=full[1]and box[3]>=full[3]for box in frames)
+    else:assert choice is None,'Incomplete, unavailable or different contextual reads cannot certify the first word'

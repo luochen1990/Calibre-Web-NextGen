@@ -1478,8 +1478,18 @@ def read_crop(display, regions, cache):
                 width,height=bounds[2]-bounds[0],bounds[3]-bounds[1]
                 if not(0<width<=200 and 0<height<=80):return []
                 complete=_context_ink_source(dict(bbox=list(bounds)),result)['bbox']
-                context=[max(display.rect.x0,complete[0]-4*height),complete[1],
-                         min(display.rect.x1,complete[2]+4*height),complete[3]]
+                # A failed tight ink measurement must not reuse the very OCR
+                # strip whose missing ascenders/descenders caused this reread.
+                # Neighboring rows bound a modest original-pixel expansion;
+                # they supply no transcription and cannot cut known own ink.
+                top,bottom=_neighbor_line_limits(bounds,result)
+                upper=max(display.rect.y0,min(complete[1],bounds[1]-.75*height))
+                lower=min(display.rect.y1,max(complete[3],bounds[3]+.75*height))
+                if top is not None:upper=max(upper,top)
+                if bottom is not None:lower=min(lower,bottom)
+                if upper>complete[1]or lower<complete[3]:return []
+                context=[max(display.rect.x0,complete[0]-4*height),upper,
+                         min(display.rect.x1,complete[2]+4*height),lower]
                 return [_read_crop(display,[context],cache,language=language,
                     scale=scale,tessdata=data,psm=7)
                     for scale in (3,4)for language,data in(('eng',None),('LatinRaw',directory))]
