@@ -5020,7 +5020,7 @@ def test_clipped_middle_row_recovers_its_printed_tail_beyond_a_bad_model_hint(tm
         else:assert not extended,'A differing or separately owned tail cannot be borrowed'
 
 
-@pytest.mark.parametrize('ink',['absent','end_of_row','intervening_row'])
+@pytest.mark.parametrize('ink',['absent','end_of_row','intervening_row','raised_end','lower_start'])
 def test_model_insertion_across_a_wrap_requires_both_original_empty_margins(tmp_path,monkeypatch,ink):
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
@@ -5035,6 +5035,8 @@ def test_model_insertion_across_a_wrap_requires_both_original_empty_margins(tmp_
         page=drawing.new_page(width=400,height=180)
         page.insert_text((30,70),first,fontsize=10)
         if ink=='end_of_row':page.insert_text((190,70),'sixth',fontsize=10)
+        if ink=='raised_end':page.insert_text((190,57),'sixth',fontsize=7)
+        if ink=='lower_start':page.insert_text((10,101),'sixth',fontsize=7)
         if ink=='intervening_row':page.insert_text((30,88),'sixth',fontsize=10)
         page.insert_text((30,106 if ink=='intervening_row'else 88),second,fontsize=10)
         source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')if w[4]!='sixth']

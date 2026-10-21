@@ -265,8 +265,12 @@ def blank_wrap_margins(display,left,right):
     advance=(b[1]+b[3]-a[1]-a[3])/2
     if height<=0 or not height*.8<=advance<=height*1.8 or b[0]>=a[0]:return False
     if b[1]<a[3]:return False
-    margins=[extract.pymupdf.Rect(a[2]+.1,a[1],display.rect.x1,a[3]),
-             extract.pymupdf.Rect(display.rect.x0,b[1],b[0]-.1,b[3])]
+    # OCR letter bounds omit raised/lowered ink. An empty baseline strip is
+    # not an empty wrap: include the adjacent line cell around both anchors.
+    margins=[extract.pymupdf.Rect(a[2]+.1,max(display.rect.y0,a[1]-height),
+                                 display.rect.x1,min(display.rect.y1,a[3]+height*.25)),
+             extract.pymupdf.Rect(display.rect.x0,max(display.rect.y0,b[1]-height*.25),
+                                 b[0]-.1,min(display.rect.y1,b[3]+height))]
     if any(box.is_empty or box.width<1 for box in margins):return False
     for box in margins:
         pix=display.pixmap(box,scale=4,max_pixels=200_000)
