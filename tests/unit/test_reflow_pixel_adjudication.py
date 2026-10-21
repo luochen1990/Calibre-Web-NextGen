@@ -5731,3 +5731,40 @@ def test_nonword_doubt_requires_an_actual_pixel_stroke_relation_and_avoids_irrel
     witness.word_readings=read;witness.word_context_readings=read
     assert pa._unsettled_optical_nonword(word,witness)is None
     if case=='no_possible_stroke_word':assert not calls,'Vocabulary only filters eligibility; no possible stroke counter needs no OCR'
+
+
+@pytest.mark.parametrize('case',['detached_prefix','complete','separate_neighbor','ambiguous_locations','fused_location','different_row'])
+def test_complete_occurrence_location_seeds_ink_search_without_borrowing_other_words(tmp_path,monkeypatch,case):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    # Procedural strokes: a detached initial component, then four tail letters.
+    # The second recognizer locates the whole occurrence without reading it.
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=180,height=100)
+        page.draw_rect(pymupdf.Rect(55,48,57,58),color=None,fill=(0,0,0))
+        for x in(60,65,70,75):page.draw_rect(pymupdf.Rect(x,51,x+3,58),color=None,fill=(0,0,0))
+        source=dict(text='rain',bbox=[60,51,78,58],confidence=99)
+        if case=='complete':source['bbox']=[55,48,78,58]
+        located=dict(text='lrain',bbox=[55,48,78,58],confidence=25)
+        if case=='fused_location':located['bbox']=[55,48,115,58]
+        if case=='different_row':located['bbox']=[55,80,78,90]
+        locations=[located]
+        if case=='ambiguous_locations':locations.append(dict(located,bbox=[54,48,78,58]))
+        monkeypatch.setattr(pa,'_read_crop',lambda *args,**kwargs:locations)
+        witness=pa.read_crop(SourceDisplay(doc,0),[[50,45,120,62]],tmp_path)
+        if case=='separate_neighbor':
+            witness.neighbor_occurrences=[source,dict(text='a',bbox=[55,48,57,58],confidence=20)]
+        scope=witness.word_scope(source)
+        assert scope is not None
+        if case in('detached_prefix','complete'):
+            assert scope==pytest.approx([55,48,78,58],abs=.2),'A separately located own initial stroke is part of the word, even without a correct spelling'
+        else:
+            assert scope==pytest.approx([60,51,78,58],abs=.2),'Ambiguous, oversized, different-row or separately owned ink is not an own-word certificate'
+        if case=='detached_prefix':
+            witness.word_readings=lambda word:[[dict(source,text='rain',confidence=99)]]*2
+            witness.word_context_readings=lambda word:[]
+            witness.alternates=lambda:[];witness.resampled=lambda:[];witness.model_reading=True
+            result=pa.adjudicate(['grain'],[source],witness)
+            assert result['tokens']==['grain'],'Repeated recognition of only the tail cannot erase the complete first reading'
+            assert result['word_notes'][0]['method']=='complete_vision_reading_without_optical_counterevidence'

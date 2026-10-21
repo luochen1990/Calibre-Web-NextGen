@@ -1759,8 +1759,10 @@ def read_crop(display, regions, cache):
         def word_scope(bounds):
             if display is None:return None
             try:
-                limits,columns=neighboring_limits(bounds)
-                return _word_ink_scope(display,dict(bbox=bounds),line_limits=limits,word_limits=columns)
+                located=_located_word_envelope(bounds,
+                    (result,getattr(result,'neighbor_occurrences',())))
+                limits,columns=neighboring_limits(located)
+                return _word_ink_scope(display,dict(bbox=located),line_limits=limits,word_limits=columns)
             except (RuntimeError,OSError,ValueError,KeyError):return None
         @lru_cache(maxsize=128)
         def word_separation(bounds,parts):
@@ -1921,6 +1923,34 @@ def _neighbor_line_limits(bounds,words):
         row=[b for b in below if b[1]-edge<=.5*height]
         if len({tuple(b)for b in row})>=2:bottom=(edge+a[3])/2
     return top,bottom
+
+
+def _located_word_envelope(bounds,inventories):
+    """Seed original-ink measurement with a unique complete occurrence location.
+
+    A tail-only hint need not touch its detached initial stroke. Another read
+    can locate that stroke without recognizing its letter. Its box supplies
+    geometry only; oversized, ambiguous or separately owned ink is excluded.
+    """
+    a=list(bounds);width=a[2]-a[0];height=a[3]-a[1]
+    if width<=0 or height<=0:return a
+    inventories=tuple(inventories);candidates=[]
+    for words in inventories:
+        own=[w for w in words if _same_occurrence(dict(bbox=a),w)]
+        if len(own)!=1:continue
+        b=own[0]['bbox']
+        if not(b[0]<=(a[0]+a[2])/2<=b[2]
+               and b[1]<=(a[1]+a[3])/2<=b[3]):continue
+        envelope=[min(a[0],b[0]),min(a[1],b[1]),max(a[2],b[2]),max(a[3],b[3])]
+        if envelope[2]-envelope[0]>1.75*width or envelope[3]-envelope[1]>2*height:continue
+        if any(not _same_occurrence(dict(bbox=a),other)
+               and envelope[0]<=(other['bbox'][0]+other['bbox'][2])/2<=envelope[2]
+               and envelope[1]<=(other['bbox'][1]+other['bbox'][3])/2<=envelope[3]
+               for inventory in inventories for other in inventory):continue
+        candidates.append(envelope)
+    if not candidates:return a
+    return [min(a[0],*(b[0]for b in candidates)),min(a[1],*(b[1]for b in candidates)),
+            max(a[2],*(b[2]for b in candidates)),max(a[3],*(b[3]for b in candidates))]
 
 
 def _neighbor_word_limits(bounds,words):
