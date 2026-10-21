@@ -5802,3 +5802,31 @@ def test_repeated_tail_cannot_certify_losing_a_prefix_after_an_anomalous_blank(c
     else:
         assert result['tokens'][at]==tail
         assert result['word_notes'][at]['status']=='RESOLVED','Normal spacing, explicit print or insufficient geometry must not invent missing ink'
+
+
+@pytest.mark.parametrize('obstruction',['none','different_prefix','no_division','other_owner','distant_tail','same_row','intervening_row','ambiguous_anchor'])
+def test_clipped_divided_word_recovers_its_unclaimed_prefix_before_tail_adjudication(obstruction):
+    from types import SimpleNamespace
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    optical=[]
+    for row,text in enumerate(['Read this clear before rain-','fall covers the open garden today.']):
+        for col,token in enumerate(text.split()):
+            optical.append(dict(text=token,bbox=[10+col*30,20+row*15,33+col*30,30+row*15],confidence=99))
+    prefix=optical[4];tail=optical[5]
+    if obstruction=='different_prefix':prefix['text']='hail-'
+    if obstruction=='no_division':prefix['text']='rain'
+    if obstruction=='distant_tail':
+        for w in optical[5:]:w['bbox'][1]+=60;w['bbox'][3]+=60
+    if obstruction=='same_row':tail['bbox']=[160,20,183,30]
+    if obstruction=='intervening_row':optical.append(dict(text='Other',bbox=[10,31,33,34],confidence=99))
+    text='Read this clear before rainfall covers the open garden today.'
+    if obstruction=='ambiguous_anchor':text+=' this clear before'
+    block=dict(id='sample',role='body',text=text,bbox=[0,0,1000,1000])
+    regions={'sample':[[5,18,126,31],[5,34,190,46]],'_instances':{vp._source_instance(w):'sample'for w in optical if w is not prefix}}
+    if obstruction=='distant_tail':regions['sample'][1]=[5,94,190,106]
+    if obstruction=='same_row':regions['sample'][1]=[5,18,190,46]
+    if obstruction=='other_owner':regions['_instances'][vp._source_instance(prefix)]='foreign'
+    result=vp._complete_optical_row_territory(block,dict(blocks=[block]),optical,
+        SimpleNamespace(rect=pymupdf.Rect(0,0,260,160)),regions,{})
+    assert result==([prefix]if obstruction=='none'else[]),'A uniquely anchored printed division can recover only its own exact unclaimed prefix'

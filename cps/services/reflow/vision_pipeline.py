@@ -564,7 +564,9 @@ def _complete_optical_row_territory(block,answer,pixels,display,regions,body_own
     if sum(n for _,_,n in alignment.get_matching_blocks())<6:return []
     known={_source_instance(w)for w in local};result=[]
     for kind,a,z,b,y in alignment.get_opcodes():
-        if kind!='insert' or a==0 or not 1<=y-b<=20:continue
+        divided=(kind=='replace' and z-a==y-b==1 and source[a]
+            and len(model[b])>len(source[a]) and model[b].endswith(source[a]))
+        if (kind!='insert' and not divided) or a==0 or not 1<=y-b<=20:continue
         anchor=model[max(0,b-3):b]
         if len(anchor)<3 or sum(model[i:i+3]==anchor for i in range(len(model)-2))!=1:continue
         left=local[a-1]['bbox'];height=left[3]-left[1]
@@ -585,6 +587,23 @@ def _complete_optical_row_territory(block,answer,pixels,display,regions,body_own
                    for other in answer['blocks']):continue
             following.append(word)
         following.sort(key=lambda w:w['bbox'][0]);selected=following[:y-b]
+        if divided:
+            # A clipped row-ending prefix and the owned next-row tail are one
+            # source occurrence only when their printed division and unique
+            # anchors prove it. This extends geometry, never spelling proof.
+            if (source[max(0,a-3):a]!=anchor or next_box is None
+                    or not .5*height<(next_box[1]+next_box[3])/2-middle<=2.5*height
+                    or next_box[0]>=left[0] or len(selected)!=1):continue
+            prefix=selected[0];box=prefix['bbox']
+            if (not prefix['text'].rstrip().endswith(('-', '­', '‐'))
+                    or key(prefix['text'])+source[a]!=model[b]
+                    or box[0]-left[2]>2*height):continue
+            tail_middle=(next_box[1]+next_box[3])/2
+            if any(next_box[0]-.5*height<=(w['bbox'][0]+w['bbox'][2])/2<=box[2]+.5*height
+                   and middle+.5*height<(w['bbox'][1]+w['bbox'][3])/2<tail_middle-.3*height
+                   for w in pixels):continue
+            result.append(prefix);known.add(_source_instance(prefix))
+            continue
         # A bad rectangle may end before the final printed row altogether.
         # Three unique preceding source/model anchors and an exact next-row
         # prefix locate that same ending; neither a distant word nor a foreign
