@@ -5535,3 +5535,41 @@ def test_explicitly_doubtful_fragment_needs_complete_word_evidence(case):
         assert target in result['marked']
     else:
         assert note['status']=='RESOLVED','Ordinary gaps or authoritative print do not invent new uncertainty'
+
+
+@pytest.mark.parametrize('case',['matching','different_letters','missing_network','no_spaces','explicit_doubt','fallback','failed_pixels'])
+def test_complete_ink_groups_prove_spaces_in_a_fused_four_word_reading(tmp_path,monkeypatch,case):
+    import pymupdf
+    import shutil
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    from cps.services.reflow.source_display import SourceDisplay
+    text='Keep these clear samples'
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset(text.casefold().split()))
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=300,height=100)
+        page.insert_text((20,50),text.replace(' ','')if case=='no_spaces'else text,fontsize=12)
+        printed=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        box=[min(w['bbox'][0]for w in printed),min(w['bbox'][1]for w in printed),
+             max(w['bbox'][2]for w in printed),max(w['bbox'][3]for w in printed)]
+        source=dict(text=text.replace(' ',''),bbox=box,confidence=99)
+        def read(display,regions,cache,**kwargs):
+            if case=='failed_pixels':raise RuntimeError('synthetic recognition failure')
+            if case=='missing_network'and kwargs.get('language')=='LatinRaw':return []
+            inside=[dict(w)for w in printed if any(r[0]-.5<=sum(w['bbox'][::2])/2<=r[2]+.5 for r in regions)]
+            if len(inside)>1:return [dict(source)]
+            if case=='different_letters'and inside:inside[0]['text']='other'
+            return inside
+        monkeypatch.setattr(pa,'_read_crop',read)
+        monkeypatch.setattr(pa,'_latin_directory',lambda engine:tmp_path)
+        locate=shutil.which
+        monkeypatch.setattr(shutil,'which',lambda name:str(tmp_path/'synthetic-engine')if name=='tesseract'else locate(name))
+        witness=pa.read_crop(SourceDisplay(doc,0),[box],tmp_path)
+        witness.model_reading=True
+        result=pa.adjudicate(text.split(),[source],witness,
+            uncertain=(1,)if case=='explicit_doubt'else(),unresolved_source=case=='fallback')
+    assert result['tokens']==([source['text']]if case=='fallback'else text.split())
+    if case=='matching':
+        assert not result['marked'],'Complete independently read groups prove the conserved spaces'
+        assert not result['word_notes']
+    else:
+        assert result['marked'],'An unavailable, conflicting or rejected read supplies no boundary proof'

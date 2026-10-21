@@ -1652,7 +1652,18 @@ def read_crop(display, regions, cache):
             except (RuntimeError,OSError,ValueError,KeyError):return None
         @lru_cache(maxsize=128)
         def word_separation(bounds,parts):
-            try:return _word_separation(display,dict(bbox=bounds),parts)
+            try:
+                measured=_word_separation(display,dict(bbox=bounds),parts)
+                if measured is not None:return measured
+                groups=_separated_word_ink(display,dict(bbox=bounds),parts)
+                if groups is None:return None
+                # Touching letters can defeat character-component counting.
+                # Independently read each complete ink group instead; both
+                # language networks must confirm the existing literal parts.
+                for part,box in zip(parts,groups):
+                    choice=_paired_word_choice(dict(bbox=box),own_word(tuple(box)))
+                    if choice is None or _key(choice['text'])!=_key(part):return None
+                return True
             except (RuntimeError,OSError,ValueError,KeyError):return None
         @lru_cache(maxsize=128)
         def fragment_boundary(bounds):
@@ -1741,6 +1752,36 @@ def _word_separation(display,word,parts):
     if all(gap>=height*.25 for gap in cuts):return True
     if all(gap<=height*.15 for gap in cuts):return False
     return None
+
+
+def _separated_word_ink(display,word,parts):
+    """Locate separately printed word groups without guessing their letters.
+
+    Clear spaces locate candidate groups even when connected letters prevent
+    counting character runs. Callers still need independent recognition of
+    every complete group; the number of gaps alone proves no transcription.
+    """
+    from . import extract,vision_pixels
+    if not(2<=len(parts)<=8 and all(p.isascii()and p.isalpha()for p in parts)):return None
+    a=word['bbox'];height=a[3]-a[1]
+    if not(0<height<=80 and 0<a[2]-a[0]<=200):return None
+    box=extract.pymupdf.Rect(a)
+    if not display.rect.contains(box):return None
+    picture,components=vision_pixels._word_ink_components(
+        display.pixmap(box,scale=8,max_pixels=200_000))
+    if not components:return None
+    # PDF font boxes include ascent/descent padding. The printed letter height
+    # measures spaces; metadata padding must not make a real space too narrow.
+    ink_height=max(c[3]-c[1]for c in components)*box.height/picture.height
+    groups=[]
+    for left,top,right,bottom in sorted(components):
+        if groups and (left-groups[-1][2])*box.width/picture.width<ink_height*.25:
+            old=groups[-1];old[1]=min(old[1],top);old[2]=max(old[2],right);old[3]=max(old[3],bottom)
+        else:groups.append([left,top,right,bottom])
+    if len(groups)!=len(parts):return None
+    sx=box.width/picture.width;sy=box.height/picture.height
+    return [[box.x0+left*sx,box.y0+top*sy,box.x0+right*sx,box.y0+bottom*sy]
+        for left,top,right,bottom in groups]
 
 
 def _neighbor_line_limits(bounds,words):
