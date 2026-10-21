@@ -4972,3 +4972,44 @@ def test_a_complete_uncommon_printed_word_cannot_be_rejected_by_the_dictionary()
     assert note['status']=='UNRESOLVED','A complete printed alternative is evidence even if it is uncommon'
     assert note.get('source_image_only'),'A dictionary preference cannot publish the differing model word'
     assert result['marked']=={1}
+
+
+@pytest.mark.parametrize('obstruction',['none','other_owner','different_text'])
+def test_clipped_middle_row_recovers_its_printed_tail_beyond_a_bad_model_hint(tmp_path,monkeypatch,obstruction):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    first='The sample keeps every clear word close to the end today.'
+    second='A short final row follows.'
+    with pymupdf.open()as drawing,pymupdf.open()as doc:
+        page=drawing.new_page(width=400,height=160)
+        page.insert_text((30,70),first,fontsize=10)
+        page.insert_text((30,88),second,fontsize=10)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        doc.new_page(width=400,height=160).insert_image(page.rect,stream=page.get_pixmap().tobytes('png'))
+        display=SourceDisplay(doc,0)
+        text=first+' '+second
+        own=block(text if obstruction!='different_text'else text.replace('today.','tomorrow.'),ident='p1',bbox=(50,300,500,700))
+        kept=source[:7]+source[len(first.split()):]
+        regions={'p1':[vp.vision_reading.union([w['bbox']for w in source[:7]]),vp.vision_reading.union([w['bbox']for w in source[len(first.split()):]])],
+            '_instances':{vp._source_instance(w):'p1'for w in kept}}
+        answer={'blocks':[own]}
+        if obstruction=='other_owner':
+            other=block('to the end today.',ident='p2',bbox=(500,300,950,500));answer['blocks'].append(other)
+            regions['p2']=[vp.vision_reading.union([w['bbox']for w in source[7:len(first.split())]])]
+            regions['_instances'].update({vp._source_instance(w):'p2'for w in source[7:len(first.split())]})
+        monkeypatch.setattr(pa,'read_crop',lambda display,boxes,cache:pa.CropWitness([
+            dict(w)for w in source if any(vp.owned_words([w],b)for b in boxes)]))
+        _,report=vp.compile_page(answer,[],display,0,Package(),{},pixel_words=source,regions=regions,
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+        record=next(b for b in report['blocks']if b['id']=='p1')
+        extended=any(g['kind']=='complete_optical_row_territory'for g in record['guard'])
+        if obstruction=='none':
+            assert record['published_tokens']==text.split()
+            assert not record['marked'],'The row after a clipped row must not hide its missing printed words'
+            assert extended
+        else:assert not extended,'A differing or separately owned tail cannot be borrowed'

@@ -545,46 +545,54 @@ def _complete_note_tail_territory(block,answer,words,display,regions,local):
 
 
 def _complete_optical_row_territory(block,answer,pixels,display,regions,body_owners):
-    """Recover an exact unclaimed row tail before judging its cropped evidence.
+    """Recover exact unclaimed words at any clipped physical row edge.
 
-    The complete page recognizer already saw these instances. A unique model
-    suffix and adjacent physical row locate them; they confer no spelling
-    authority, and the widened crop still undergoes ordinary adjudication.
+    Page recognition locates the missing instances before crop adjudication.
+    Model rectangles are hints: an adjacent proved row may extend beyond one.
+    Other owners, distant ink and ambiguous model anchors remain excluded.
+    Widening a territory confers no spelling authority.
     """
     if block['role'] not in ('body','other','caption','footnote') or not pixels:return []
-    local=_owned_block_words(block,answer,pixels,display,regions,body_owners,ordered=True)
+    local=_pixel_line_order(_owned_block_words(block,answer,pixels,display,regions,body_owners,ordered=True))
     if len(local)<6:return []
     import statistics
+    from difflib import SequenceMatcher
     key=lambda t:''.join(c for c in vision_reading.normalized(t).casefold()if c.isalnum())
     model=[key(t)for t in re.sub(r'<n:[^>]+>',' ',block['text']).split()]
-    anchor=[key(w['text'])for w in local[-3:]]
-    ends=[i+3 for i in range(len(model)-2)if model[i:i+3]==anchor]
-    if len(ends)!=1 or not 1<=len(model)-ends[0]<=20:return []
-    tail=model[ends[0]:]
-    row=_pixel_lines(local)[-1];last=row[-1];a=last['bbox']
-    height=statistics.median(w['bbox'][3]-w['bbox'][1]for w in row)
-    middle=statistics.median((w['bbox'][1]+w['bbox'][3])/2 for w in row)
-    envelope=block_rect(block,display);known={_source_instance(w)for w in local}
-    following=[]
-    for word in pixels:
-        box=word['bbox'];x=(box[0]+box[2])/2;y=(box[1]+box[3])/2
-        if (_source_instance(word)in known or box[0]<a[2]-.1*height
-                or abs(y-middle)>.5*height
-                or not(envelope[0]<=x<=envelope[2]and envelope[1]<=y<=envelope[3])):continue
-        claim=(regions or {}).get('_instances',{}).get(_source_instance(word))
-        if claim is not None and claim!=block['id']:continue
-        if any(other['id']!=block['id']and any(b[0]<=x<=b[2]and b[1]<=y<=b[3]
-               for b in (regions or {}).get(other['id'],[block_rect(other,display)]))
-               for other in answer['blocks']):continue
-        following.append(word)
-    following.sort(key=lambda w:w['bbox'][0])
-    selected=following[:len(tail)]
-    if [key(w['text'])for w in selected]!=tail:return []
-    previous=a
-    for word in selected:
-        if word['bbox'][0]-previous[2]>2*height:return []
-        previous=word['bbox']
-    return selected
+    source=[key(w['text'])for w in local]
+    alignment=SequenceMatcher(None,source,model,autojunk=False)
+    if sum(n for _,_,n in alignment.get_matching_blocks())<6:return []
+    known={_source_instance(w)for w in local};result=[]
+    for kind,a,z,b,y in alignment.get_opcodes():
+        if kind!='insert' or a==0 or not 1<=y-b<=20:continue
+        anchor=model[max(0,b-3):b]
+        if len(anchor)<3 or sum(model[i:i+3]==anchor for i in range(len(model)-2))!=1:continue
+        left=local[a-1]['bbox'];height=left[3]-left[1]
+        if height<=0:continue
+        middle=(left[1]+left[3])/2
+        next_box=local[a]['bbox']if a<len(local)else None
+        same_next=next_box is not None and abs((next_box[1]+next_box[3])/2-middle)<=.5*height
+        following=[]
+        for word in pixels:
+            box=word['bbox'];x=(box[0]+box[2])/2;y0=(box[1]+box[3])/2
+            if (_source_instance(word)in known or box[0]<left[2]-.1*height
+                    or abs(y0-middle)>.5*height or not .5*height<=box[3]-box[1]<=1.8*height
+                    or same_next and box[2]>next_box[0]+.1*height):continue
+            claim=(regions or {}).get('_instances',{}).get(_source_instance(word))
+            if claim is not None and claim!=block['id']:continue
+            if any(other['id']!=block['id']and any(r[0]<=x<=r[2]and r[1]<=y0<=r[3]
+                   for r in (regions or {}).get(other['id'],[block_rect(other,display)]))
+                   for other in answer['blocks']):continue
+            following.append(word)
+        following.sort(key=lambda w:w['bbox'][0]);selected=following[:y-b]
+        if [key(w['text'])for w in selected]!=model[b:y]:continue
+        previous=left
+        for word in selected:
+            if word['bbox'][0]-previous[2]>2*height:break
+            previous=word['bbox']
+        else:
+            result.extend(selected);known.update(_source_instance(w)for w in selected)
+    return result
 
 
 def _complete_closing_mark_territory(block,answer,words,pixel_words,display,regions,local):
@@ -710,6 +718,17 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
             import statistics
             prior=ordered_groups[-1][0] if ordered_groups else None
             height=statistics.median(w['bbox'][3]-w['bbox'][1]for w in local)
+            additions=(regions or {}).get('_row_additions',{}).get(block['id'],())
+            if additions and any(tuple(territory)==item[1]for item in additions):
+                # Exact added row words keep the position of their neighbouring
+                # original ink. Appending their crop after later rows must not
+                # duplicate them as a second reading at the end of the unit.
+                targets=[group for _,group in ordered_groups if any(
+                    abs((w['bbox'][1]+w['bbox'][3]-v['bbox'][1]-v['bbox'][3])/2)<=.5*height
+                    and -.1*height<=w['bbox'][0]-v['bbox'][2]<=2*height
+                    for w in local for v in group)]
+                if len(targets)==1:
+                    targets[0].extend(local);continue
             overlap=(min(prior[2],territory[2])-max(prior[0],territory[0]) if prior else 0)
             same_column=(prior is not None and overlap>=.5*min(prior[2]-prior[0],territory[2]-territory[0])
                          and prior[1]<=territory[1]<=prior[3]+2*height)
@@ -2516,16 +2535,24 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             # A footnote label is preserved as a label, outside its lexical reading.
             if role=='footnote' and local and vision_reading.normalized(local[0]['text']).strip('.,:;()[]{}')==vision_reading.normalized(block['marker']).strip('.,:;()[]{}'):
                 local=local[1:]
-            original=' '.join(w['text'] for w in local)
-            original_quality=text_quality.inspect_disclosure('\n'.join(
-                ' '.join(w['text'] for w in row) for row in _pixel_lines(local)))
             optical_tail=_complete_optical_row_territory(block,answer,pixel_words,display,regions,body_owners)
             if optical_tail:
                 regions=dict(regions or {})
-                territories=list(territories)+[vision_reading.union([w['bbox']for w in optical_tail])]
+                territories=list(territories)+[list(w['bbox'])for w in optical_tail]
                 regions[bid]=territories
                 regions['_instances']=dict(regions.get('_instances',{}))
                 regions['_instances'].update({_source_instance(w):bid for w in optical_tail})
+                regions['_row_additions']=dict(regions.get('_row_additions',{}))
+                regions['_row_additions'][bid]=tuple(_source_instance(w)for w in optical_tail)
+                local=_owned_block_words(block,answer,words,display,regions,body_owners,ordered=True)
+                local=_native_lexical_view(display,local,
+                    re.findall(r'(?:^|\s)([^\s<>]+)\s*<n:[^>]+>',block['text']))
+                local=_note_lexical_evidence(local,opening_proof)
+                if role=='footnote' and local and vision_reading.normalized(local[0]['text']).strip('.,:;()[]{}')==vision_reading.normalized(block['marker']).strip('.,:;()[]{}'):
+                    local=local[1:]
+            original=' '.join(w['text'] for w in local)
+            original_quality=text_quality.inspect_disclosure('\n'.join(
+                ' '.join(w['text'] for w in row) for row in _pixel_lines(local)))
             optical_evidence=owned(pixel_words) if pixel_words is not None else None
             punctuation_proof=(_caption_punctuation_anchors(optical_evidence,
                 list(range(len(optical_evidence))),block['text'])
