@@ -4477,7 +4477,7 @@ def test_short_cross_column_regions_keep_their_admitted_reading_flow():
 @pytest.mark.parametrize('evidence', [
     'complete_boundary', 'missing_pair', 'weak_pair', 'different_letters',
     'clipped_pair', 'explicit_reader_doubt', 'source_fallback',
-    'failed_witness', 'conflicting_pair', 'weak_source',
+    'failed_witness', 'conflicting_pair', 'weak_source', 'matching_pair_with_one_competitor',
 ])
 def test_conserved_letter_groups_need_boundary_proof_not_a_new_spelling(evidence):
     from cps.services.reflow import pixel_adjudication as pa
@@ -4509,6 +4509,8 @@ def test_conserved_letter_groups_need_boundary_proof_not_a_new_spelling(evidence
         pair += [[dict(word, text='RIMER', confidence=95)]] * 2
     elif evidence == 'weak_source':
         source[3]['confidence'] = 40
+    elif evidence == 'matching_pair_with_one_competitor':
+        pair += [[dict(word, text='LIVER', confidence=91)], [dict(word, text='RIVXR', confidence=17)]]
     witness.word_readings = lambda item: pair
     result = pa.adjudicate(
         'This label RIVER stays readable.'.split(), source, witness,
@@ -4517,7 +4519,7 @@ def test_conserved_letter_groups_need_boundary_proof_not_a_new_spelling(evidence
     )
     live = [token for i, token in enumerate(result['tokens'])
             if not result['word_notes'].get(i, {}).get('source_image_only')]
-    if evidence == 'complete_boundary':
+    if evidence in ('complete_boundary', 'matching_pair_with_one_competitor'):
         assert live == 'This label RIVER stays readable.'.split()
         assert result['tokens'][2] == 'RIVER'
     else:

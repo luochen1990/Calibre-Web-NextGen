@@ -429,8 +429,8 @@ def _conserved_group_boundary(items,witness,model_words):
                     and value.rstrip('.,;:!?')not in vocabulary
                     for value in(first,second))):
             boundary_noise=True
-    if competing:return False
     if choices=={key}:return 'matching_letters'
+    if competing:return False
     return 'word_boundary_only' if not choices and boundary_noise else False
 
 
