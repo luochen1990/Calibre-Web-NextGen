@@ -5647,3 +5647,24 @@ def test_lazy_word_scope_stops_at_separately_located_neighbor_ink(tmp_path,monke
     if case in('bounded','missing_prefix'):
         assert scope==pytest.approx([60,50,78,58],abs=.2)
     else:assert scope is None,'Absent or contradictory ownership cannot certify a complete word'
+
+
+@pytest.mark.parametrize('case',['nonword_tail','complete_counter','strong_source','uncertain_model','fallback','no_division'])
+def test_a_weak_divided_nonword_tail_cannot_overrule_a_complete_reader_word(monkeypatch,case):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset({'read','rainfall','rain','fall','fail','sample'}))
+    # Synthetic print is rainfall, divided rain-/fall at the line boundary.
+    source=[dict(text='Read',bbox=[100,20,130,32],confidence=99),
+        dict(text='rain-'if case!='no_division'else'rain',bbox=[140,20,165,32],confidence=99),
+        dict(text='fali',bbox=[20,38,40,50],confidence=99 if case=='strong_source'else 40),
+        dict(text='sample',bbox=[50,38,90,50],confidence=99)]
+    witness=pa.CropWitness([dict(w,confidence=99)for w in source]);witness.model_reading=True
+    if case=='complete_counter':witness[2]['text']='fail'
+    result=pa.adjudicate(['Read','rainfall','sample'],source,witness,
+        uncertain={1}if case=='uncertain_model'else(),unresolved_source=case=='fallback')
+    if case=='nonword_tail':
+        assert result['tokens']==['Read','rainfall','sample']
+        note=result['word_notes'][1]
+        assert note['status']=='RESOLVED'and not note.get('source_image_only')
+        assert result['marked']=={1},'A model correction keeps its own source control'
+    else:assert not any(d.get('method')=='complete_vision_reading_without_optical_counterevidence'for d in result['decisions'])

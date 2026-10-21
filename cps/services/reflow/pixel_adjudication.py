@@ -295,7 +295,7 @@ def _incomplete_letter_prefix(optical,model):
             and whole in vocabulary and tail not in vocabulary)
 
 
-def _optical_counterread(source,witness,model,scope=None):
+def _optical_counterread(source,witness,model,scope=None,*,complete_lexical_tail=False):
     """Missing or split recognition is not a competing complete printed word."""
     if scope is not None:
         a=source['bbox'];source=dict(source,bbox=[min(a[0],scope[0]),min(a[1],scope[1]),
@@ -325,6 +325,11 @@ def _optical_counterread(source,witness,model,scope=None):
             if (recognized==_letter_number_identity(source['text']).casefold()
                     and len(first)>len(recognized)>=2 and
                     (first.startswith(recognized)or first.endswith(recognized))):return None
+        if row and complete_lexical_tail and _dictionary_regression(model,row[0]['text']):
+            # This is only used after a separately proved printed prefix and
+            # division. A weak suffix's nonword noise is not a complete lexical
+            # counter to the existing certain whole word. It supplies no letters.
+            return None
         if (row and row[0].get('confidence',0)>=85 and _key(row[0]['text'])!=_key(model)
                 and (scope is None or _owns_complete_ink(row,scope))):return row[0]
         return None
@@ -641,7 +646,7 @@ def _retained_model_wrap(source,model,witness):
     if (len(own)!=1 or own[0].get('confidence',0)<90
             or _key(own[0]['text'])!=_key(head['text'])
             or _optical_counterread(head,witness,head['text'])
-            or _optical_counterread(tail,witness,ending)):return None
+            or _optical_counterread(tail,witness,ending,complete_lexical_tail=True)):return None
     return [min(a[0],b[0]),min(a[1],b[1]),max(a[2],b[2]),max(a[3],b[3])]
 
 
