@@ -4974,7 +4974,7 @@ def test_a_complete_uncommon_printed_word_cannot_be_rejected_by_the_dictionary()
     assert result['marked']=={1}
 
 
-@pytest.mark.parametrize('obstruction',['none','other_owner','different_text'])
+@pytest.mark.parametrize('obstruction',['none','other_owner','different_text','optical_spelling','different_native_word'])
 def test_clipped_middle_row_recovers_its_printed_tail_beyond_a_bad_model_hint(tmp_path,monkeypatch,obstruction):
     import pymupdf
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
@@ -5004,11 +5004,16 @@ def test_clipped_middle_row_recovers_its_printed_tail_beyond_a_bad_model_hint(tm
             regions['_instances'].update({vp._source_instance(w):'p2'for w in source[7:len(first.split())]})
         monkeypatch.setattr(pa,'read_crop',lambda display,boxes,cache:pa.CropWitness([
             dict(w)for w in source if any(vp.owned_words([w],b)for b in boxes)]))
-        _,report=vp.compile_page(answer,[],display,0,Package(),{},pixel_words=source,regions=regions,
+        import copy
+        optical=copy.deepcopy(source);original=[]
+        if obstruction in ('optical_spelling','different_native_word'):
+            original=copy.deepcopy(source);optical[7]['text']='te'
+            if obstruction=='different_native_word':original[7]['text']='te'
+        _,report=vp.compile_page(answer,original,display,0,Package(),{},pixel_words=optical,regions=regions,
             note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
         record=next(b for b in report['blocks']if b['id']=='p1')
         extended=any(g['kind']=='complete_optical_row_territory'for g in record['guard'])
-        if obstruction=='none':
+        if obstruction in ('none','optical_spelling'):
             assert record['published_tokens']==text.split()
             assert not record['marked'],'The row after a clipped row must not hide its missing printed words'
             assert extended

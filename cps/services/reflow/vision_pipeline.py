@@ -544,7 +544,7 @@ def _complete_note_tail_territory(block,answer,words,display,regions,local):
     return list(local)+selected
 
 
-def _complete_optical_row_territory(block,answer,pixels,display,regions,body_owners):
+def _complete_optical_row_territory(block,answer,pixels,display,regions,body_owners,source_words=()):
     """Recover exact unclaimed words at any clipped physical row edge.
 
     Page recognition locates the missing instances before crop adjudication.
@@ -585,7 +585,17 @@ def _complete_optical_row_territory(block,answer,pixels,display,regions,body_own
                    for other in answer['blocks']):continue
             following.append(word)
         following.sort(key=lambda w:w['bbox'][0]);selected=following[:y-b]
-        if [key(w['text'])for w in selected]!=model[b:y]:continue
+        if len(selected)!=y-b:continue
+        def located(word,expected):
+            if key(word['text'])==expected:return True
+            # An original text occurrence can locate the same printed word
+            # when page OCR spells it differently. It supplies geometry only;
+            # the widened original crop still adjudicates both readings.
+            from .pixel_adjudication import _complete_word_occurrence
+            matches=[w for w in source_words if key(w['text'])==expected
+                and _complete_word_occurrence(w,word)]
+            return len(matches)==1
+        if not all(located(w,expected)for w,expected in zip(selected,model[b:y])):continue
         previous=left
         for word in selected:
             if word['bbox'][0]-previous[2]>2*height:break
@@ -2535,7 +2545,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             # A footnote label is preserved as a label, outside its lexical reading.
             if role=='footnote' and local and vision_reading.normalized(local[0]['text']).strip('.,:;()[]{}')==vision_reading.normalized(block['marker']).strip('.,:;()[]{}'):
                 local=local[1:]
-            optical_tail=_complete_optical_row_territory(block,answer,pixel_words,display,regions,body_owners)
+            optical_tail=_complete_optical_row_territory(block,answer,pixel_words,display,regions,body_owners,words)
             if optical_tail:
                 regions=dict(regions or {})
                 territories=list(territories)+[list(w['bbox'])for w in optical_tail]
