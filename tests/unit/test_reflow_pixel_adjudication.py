@@ -5214,3 +5214,32 @@ def test_clipped_model_tail_can_own_its_exact_adjacent_next_printed_line(obstruc
     if obstruction=='other_owner':regions['_instances']={vp._source_instance(w):'foreign'for w in tail}
     got=vp._complete_optical_row_territory(block,answer,optical,display,regions,owners)
     assert got==(tail if obstruction=='none'else[]),'Only the adjacent uniquely matched unclaimed printed tail belongs to this reading'
+
+
+@pytest.mark.parametrize('evidence',['complete','unmeasured','foreign_word','different','conflicting_pairs'])
+def test_contextual_word_reads_include_the_complete_measured_original_ink(monkeypatch,tmp_path,evidence):
+    from types import SimpleNamespace
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    source=dict(text='clcar',bbox=[30,30,45,40],confidence=97)
+    complete=[25,25,45,40]
+    frames=[]
+    def recognize(display,regions,cache,**kwargs):
+        if kwargs.get('psm')!=7:return [dict(source)]
+        frames.append(regions[0])
+        intact=regions[0][0]<=25 and regions[0][1]<=25
+        token='clear'if intact else'clcar'
+        if evidence=='different'or evidence=='conflicting_pairs'and kwargs.get('scale')==4:token='clean'
+        return [dict(text=token,bbox=list(complete if intact else source['bbox']),confidence=99)]
+    monkeypatch.setattr(pa,'_read_crop',recognize)
+    monkeypatch.setattr(pa,'_latin_directory',lambda engine:tmp_path)
+    monkeypatch.setattr(pa,'_word_ink_scope',lambda *a,**k:None if evidence=='unmeasured'else complete)
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,100,80))
+    witness=pa.read_crop(display,[source['bbox']],tmp_path)
+    if evidence=='foreign_word':witness.append(dict(text='a',bbox=[25,25,29,40],confidence=99))
+    chosen=pa._context_model_choice(source,witness,'clear')
+    if evidence=='complete':
+        assert chosen is not None and chosen['text']=='clear'
+        assert chosen['bbox']==complete
+        assert all(frame[1]<=25 and frame[3]>=40 for frame in frames),'A contextual reread cannot discard the measured ascender or prefix'
+    else:assert chosen is None,'Missing geometry, another word or conflicting complete readings cannot certify the model'

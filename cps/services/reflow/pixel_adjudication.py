@@ -178,6 +178,26 @@ def _model_word_choice(source,witness,model):
                  and w.get('confidence',0)>=90),None)
 
 
+def _context_ink_source(source,witness):
+    """Extend a contextual reread to measured ink without borrowing a neighbor.
+
+    The old recognition rectangle is a location hint. Only connected original
+    ink at that occurrence may enlarge it; no letters are inferred here.
+    """
+    reader=getattr(witness,'word_scope',None)
+    scope=reader(source)if reader is not None else None
+    if scope is None or _covers_ink_scope([source],scope):return source
+    a=source['bbox']
+    if not(scope[0]<=(a[0]+a[2])/2<=scope[2]
+            and scope[1]<=(a[1]+a[3])/2<=scope[3]):return source
+    if any(any(c.isalnum()for c in word['text'])and not _same_occurrence(source,word)
+            and scope[0]<=(word['bbox'][0]+word['bbox'][2])/2<=scope[2]
+            and scope[1]<=(word['bbox'][1]+word['bbox'][3])/2<=scope[3]
+            for word in witness):return source
+    return dict(source,bbox=[min(a[0],scope[0]),min(a[1],scope[1]),
+                             max(a[2],scope[2]),max(a[3],scope[3])])
+
+
 def _context_model_choice(source,witness,model):
     """Two complete contextual networks may corroborate the existing model.
 
@@ -186,10 +206,11 @@ def _context_model_choice(source,witness,model):
     """
     reader=getattr(witness,'word_context_readings',None)
     if reader is None:return None
-    views=reader(source)
+    complete=_context_ink_source(source,witness)
+    views=reader(complete)
     choices=[]
     for i in range(0,len(views)-1,2):
-        choice=_paired_word_choice(source,views[i:i+2])
+        choice=_paired_word_choice(complete,views[i:i+2])
         if choice is not None:choices.append(choice)
     if not choices or any(_key(w['text'])!=_key(model)for w in choices):return None
     return next((w for w in choices if w.get('confidence',0)>=90),None)
@@ -1405,8 +1426,9 @@ def read_crop(display, regions, cache):
                 if not directory:return []
                 width,height=bounds[2]-bounds[0],bounds[3]-bounds[1]
                 if not(0<width<=200 and 0<height<=80):return []
-                context=[max(display.rect.x0,bounds[0]-4*height),bounds[1],
-                         min(display.rect.x1,bounds[2]+4*height),bounds[3]]
+                complete=_context_ink_source(dict(bbox=list(bounds)),result)['bbox']
+                context=[max(display.rect.x0,complete[0]-4*height),complete[1],
+                         min(display.rect.x1,complete[2]+4*height),complete[3]]
                 return [_read_crop(display,[context],cache,language=language,
                     scale=scale,tessdata=data,psm=7)
                     for scale in (3,4)for language,data in(('eng',None),('LatinRaw',directory))]
