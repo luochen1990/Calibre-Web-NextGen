@@ -2693,7 +2693,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             return (b[0]-a[2]>=h*.15 and
                                 pixel_adjudication.blank_between(display,left,right,territories))
                         conflicts=pixel_adjudication.audit_agreement(adjudication['tokens'],baseline,witness,
-                            boundary_proof=printed_space,word_boxes=adjudication['boxes'])
+                            boundary_proof=printed_space,word_boxes=adjudication['boxes'],
+                            conserved_boundaries=adjudication.get('conserved_boundaries'))
                         for i,decision in conflicts.items():
                             if pixel_adjudication.proved_native_occurrence(adjudication['tokens'][i],adjudication['boxes'].get(i),native_print_words):continue
                             adjudication['marked'].add(i)

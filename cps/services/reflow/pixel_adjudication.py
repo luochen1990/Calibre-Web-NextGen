@@ -385,11 +385,12 @@ def _proved_wrap(source,model,witness,same_reading=False):
 
 
 def _conserved_group_boundary(items,witness,model_words):
-    """Prove only a boundary when three readings conserve every source letter.
+    """Prove a word boundary without choosing letters from uncertain OCR.
 
-    Moderate confidence in unusual typography cannot choose a new spelling.
-    A certain first reader and both separate word networks must repeat exactly
-    the existing character inventory. Conflicting pairs still decline proof.
+    The source and certain first reader already conserve every letter. Separate
+    networks must locate a complete word: matching readings can support it;
+    different nonword guesses can prove only its boundary. A credible competing
+    word or an agreeing different spelling still declines regrouping.
     """
     literal=''.join(w['text']for w in items)
     key=_key(literal).casefold()
@@ -403,13 +404,35 @@ def _conserved_group_boundary(items,witness,model_words):
     original=dict(text=literal,bbox=bounds)
     views=reader(original)
     if not views or len(views)%2:return False
-    choices=set()
+    choices=set();boundary_noise=False;competing=False
+    from . import text_quality
+    vocabulary=text_quality.english_lexicon()
+    body=key.rstrip('.,;:!?');suffix=key[len(body):]
     for start in range(0,len(views),2):
         pair=[_whole_view_word(original,view)for view in views[start:start+2]]
-        if not all(len(row)==1 and row[0].get('confidence',0)>=50 for row in pair):continue
-        first,second=(_key(row[0]['text']).casefold()for row in pair)
-        if first==second:choices.add(first)
-    return choices=={key}
+        if not all(len(row)==1 for row in pair):continue
+        first,second=(_key(row[0]['text']).strip().casefold()for row in pair)
+        if all(row[0].get('confidence',0)>=50 for row in pair) and first==second:
+            choices.add(first)
+        if any(value!=key and value.rstrip('.,;:!?')in vocabulary
+                and row[0].get('confidence',0)>=50
+                for value,row in zip((first,second),pair)):
+            competing=True
+        # Independent decoders can locate the same small-cap word while
+        # disagreeing about its letters. Their different nonword guesses prove
+        # only the boundary, never a spelling. Preserve the exact existing
+        # source/first-reader letters; the ordinary word adjudicator still
+        # judges any credible complete alternative after regrouping.
+        if (first!=second and body.isalpha()
+                and all(value.rstrip('.,;:!?').isalpha()
+                    and value[len(value.rstrip('.,;:!?')):]==suffix
+                    and value.rstrip('.,;:!?')not in vocabulary
+                    for value in(first,second))):
+            boundary_noise=True
+    if competing:return False
+    if choices=={key}:return 'matching_letters'
+    return 'word_boundary_only' if not choices and boundary_noise else False
+
 
 
 def _recognized_letter_groups(source,witness,model_words=frozenset()):
@@ -420,7 +443,7 @@ def _recognized_letter_groups(source,witness,model_words=frozenset()):
     """
     groups={};occupied=set()
     for word in witness:
-        if word.get('confidence',0)<85 and _key(word['text']).casefold()not in model_words:continue
+        if word.get('confidence',0)<85 and not model_words:continue
         box=word['bbox']
         indices=[i for i,item in enumerate(source)
             if box[0]-.2<=(item['bbox'][0]+item['bbox'][2])/2<=box[2]+.2
@@ -429,17 +452,20 @@ def _recognized_letter_groups(source,witness,model_words=frozenset()):
         items=[source[i]for i in indices]
         if any(len(_key(w['text']).strip('.,;:'))>2 for w in items):continue
         literal=''.join(w['text']for w in items)
-        if _key(literal).casefold()!=_key(word['text']).casefold():continue
-        if word.get('confidence',0)<85 and not _conserved_group_boundary(items,witness,model_words):continue
+        contextual=(_key(literal).casefold()==_key(word['text']).strip().casefold()
+            and word.get('confidence',0)>=85)
+        boundary=not contextual and _conserved_group_boundary(items,witness,model_words)
+        if not(contextual or boundary):continue
         bounds=[min(w['bbox'][0]for w in items),min(w['bbox'][1]for w in items),
                 max(w['bbox'][2]for w in items),max(w['bbox'][3]for w in items)]
-        if not _complete_recognition(dict(bbox=bounds),word):continue
+        if not boundary and not _complete_recognition(dict(bbox=bounds),word):continue
         if any(i in occupied for i in indices):return source
         if any(b['bbox'][0]<a['bbox'][2]-.2 or
                abs(b['bbox'][1]-a['bbox'][1])>.5*(bounds[3]-bounds[1])
                for a,b in zip(items,items[1:])):continue
         groups[indices[0]]=(indices[-1],dict(text=literal,bbox=bounds,
-            confidence=min(w.get('confidence',0)for w in items)))
+            confidence=min(w.get('confidence',0)for w in items),
+            **({'conserved_fragment_boundary':True} if boundary=='word_boundary_only' else {})))
         occupied.update(indices)
     result=[]
     for i,word in enumerate(source):
@@ -512,7 +538,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     original=[_key(t) for t in source_tokens]
     candidate=[_key(t) for t in proposed]
     pixels=[_key(w['text']) for w in witness]
-    changes=[];chosen=[];decisions=[];pending=set(uncertain);formatting=set()
+    changes=[];chosen=[];decisions=[];pending=set(uncertain);formatting=set();conserved=set()
     matcher=SequenceMatcher(None, original, candidate, autojunk=False)
     placement=lambda t:''.join(c for c in unicodedata.normalize('NFKD',t.casefold())
                                if c.isalnum())
@@ -638,6 +664,18 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 chosen.append((word['text'],word['bbox'],note))
             if changed and a==z:changes.append((len(chosen),record,None))
             continue
+        if (z-a==y-b==1 and source[a].get('conserved_fragment_boundary')
+                and _key(source_tokens[a]).casefold()==_key(proposed[b]).casefold()
+                and getattr(witness,'model_reading',False) and not unresolved_source
+                and visible[b][0]not in pending):
+            # The source and first reader conserve every letter. The separate
+            # networks proved one complete word, but their nonword spellings
+            # cannot authorize a lexical edit or invalidate those letters.
+            # Keep source codepoints/capitalization; only extraction-inserted
+            # boundaries change, so no model correction is silently applied.
+            formatting.add(len(chosen));conserved.add(len(chosen))
+            chosen.append((source_tokens[a],source[a]['bbox'],None))
+            continue
         wrap=(_proved_wrap(source[a:z],proposed[b],witness,
                 same_reading=bool(getattr(witness,'model_reading',False) and not unresolved_source
                     and not any(visible[i][0]in pending for i in range(b,y))))
@@ -654,6 +692,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 formatting.add(len(chosen));chosen.append((proposed[b],own[0]['bbox'],None));continue
         if kind=='equal':
             for token,index in zip(proposed[b:y],range(a,z)):
+                if (source[index].get('conserved_fragment_boundary')
+                        and getattr(witness,'model_reading',False) and not unresolved_source
+                        and visible[b+index-a][0]not in pending):
+                    formatting.add(len(chosen));conserved.add(len(chosen))
+                    chosen.append((token,source[index]['bbox'],None))
+                    continue
                 own=[word for word in witness if _complete_word_occurrence(source[index],word)]
                 word=own[0] if len(own)==1 else None
                 if (token in ('–','—') and word and word.get('confidence',0)>=90
@@ -1069,8 +1113,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             tokens.insert(at,token)
             bounds={j+(j>=at):v for j,v in bounds.items()}
             marks={j+(j>=at) for j in marks};notes={j+(j>=at):v for j,v in notes.items()}
+            conserved={j+(j>=at) for j in conserved}
         else:consumed+=1
-    return dict(tokens=tokens,boxes=bounds,marked=marks,decisions=decisions,word_notes=notes,verified_unchanged=verified)
+    return dict(tokens=tokens,boxes=bounds,marked=marks,decisions=decisions,word_notes=notes,verified_unchanged=verified,
+        conserved_boundaries={i:tokens[i]for i in conserved})
 
 
 def _engine_identity(engine):
@@ -1444,7 +1490,7 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
     return dict(tokens=output,boxes=bounds,marked=set(notes),word_notes=notes,decisions=decisions)
 
 
-def audit_agreement(tokens, source, witness, boundary_proof=None, word_boxes=None):
+def audit_agreement(tokens, source, witness, boundary_proof=None, word_boxes=None,conserved_boundaries=None):
     """Flag pixel conflicts even where a layer and the first reading agree.
 
     A recognizer's different spelling is evidence of a conflict, not authority
@@ -1489,6 +1535,12 @@ def audit_agreement(tokens, source, witness, boundary_proof=None, word_boxes=Non
              _complete_recognition(word,w))]
         if len(overlapping)!=1:continue
         other=overlapping[0]
+        if ((conserved_boundaries or {}).get(i)==token
+                and _dictionary_regression(token,other['text'])):
+            # Carry the source/reader letter-conservation and independently
+            # proved boundary through this second sweep. A rejected nonword
+            # guess cannot become new uncertainty on the conserved word.
+            continue
         if other.get('confidence',0)<85 or _key(other['text'])==_key(token):continue
         if (token in ('–','—') and other['text'] in ('-','–','—') and
                 _complete_word_occurrence(word,other)):continue

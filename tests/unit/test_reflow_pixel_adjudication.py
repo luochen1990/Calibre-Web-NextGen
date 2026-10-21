@@ -4522,3 +4522,92 @@ def test_conserved_letter_groups_need_boundary_proof_not_a_new_spelling(evidence
         assert result['tokens'][2] == 'RIVER'
     else:
         assert 'RIVER' not in live, 'No spelling or missing boundary may be supplied by confidence alone'
+
+
+@pytest.mark.parametrize('evidence', ['different_nonwords', 'different_nonword_lengths', 'label_space', 'missing_other', 'clipped_other', 'credible_word'])
+def test_fragment_boundary_noise_cannot_choose_or_change_the_conserved_letters(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    # These abstract inventories are independently written for this test. Two
+    # decoders locate one word but disagree on a letter; neither supplies text.
+    source = words('This label H a r b o r stays readable.')
+    for i, item in enumerate(source[2:8]):
+        item['bbox'] = [40 + i * 6, 20, 45 + i * 6, 32]
+    for i, item in enumerate(source[8:]):
+        item['bbox'] = [110 + i * 30, 20, 128 + i * 30, 32]
+    word = dict(text='HARBXR', bbox=[40, 20, 75, 32], confidence=92)
+    witness = pa.CropWitness([*source[:2], word, *source[8:]])
+    witness.model_reading = True
+    pair = [[dict(word, confidence=59)], [dict(word, text='HARBKR', confidence=17)]]
+    if evidence == 'different_nonword_lengths':
+        pair[1][0]['text'] = 'HARBBKR'
+    elif evidence == 'label_space':
+        word.update(text=' HARBOR', confidence=2)
+        pair = [[dict(word, text='HARBOR', confidence=91)]] * 2
+    elif evidence == 'missing_other':
+        pair[1] = []
+    elif evidence == 'clipped_other':
+        pair[1][0]['bbox'] = [55, 20, 75, 32]
+    elif evidence == 'credible_word':
+        pair[1][0].update(text='HARROW', confidence=91)
+    witness.word_readings = lambda item: pair
+    result = pa.adjudicate('This label HARBOR stays readable.'.split(), source, witness)
+    live = [token for i, token in enumerate(result['tokens'])
+            if not result['word_notes'].get(i, {}).get('source_image_only')]
+    if evidence in ('different_nonwords', 'different_nonword_lengths', 'label_space'):
+        expected = 'HARBOR' if evidence == 'label_space' else 'Harbor'
+        assert live == f'This label {expected} stays readable.'.split()
+        assert not any(t in result['tokens'] for t in ('HARBXR', 'HARBKR'))
+        conflicts = pa.audit_agreement(result['tokens'], source, witness,
+            word_boxes=result['boxes'], conserved_boundaries=result.get('conserved_boundaries'))
+        assert 2 not in conflicts, 'A later sweep must keep the same proved letter conservation'
+    else:
+        assert 'HARBOR' not in live, 'Incomplete or credible competing evidence cannot supply a boundary'
+
+
+@pytest.mark.parametrize('competing', [False, True])
+def test_compilation_preserves_conserved_fragment_letters_through_both_sweeps(tmp_path, monkeypatch, competing):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp, pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def __init__(self): self.images = {}
+        def image(self, name, data): self.images[name] = data
+        def disclosure_image(self, name, display, rect):
+            self.images[name] = display.pixmap(rect, scale=2, max_pixels=100000).tobytes('jpg')
+    printed = 'Please keep this label Harbor beside the open window so every printed word remains readable.'
+    with pymupdf.open() as drawing, pymupdf.open() as doc:
+        leaf = drawing.new_page(width=640, height=150)
+        leaf.insert_text((25, 60), printed, fontsize=9)
+        whole = [dict(text=w[4], bbox=list(w[:4]), confidence=99) for w in leaf.get_text('words')]
+        target = next(w for w in whole if w['text'] == 'Harbor')
+        chars = [c for b in leaf.get_text('rawdict')['blocks'] for line in b.get('lines', [])
+                 for span in line['spans'] for c in span['chars']
+                 if target['bbox'][0] <= (c['bbox'][0] + c['bbox'][2]) / 2 <= target['bbox'][2]]
+        source = []
+        for word in whole:
+            source.extend([dict(text=c['c'], bbox=list(c['bbox'])) for c in chars]
+                          if word is target else [word])
+        pixels = [dict(w, text='HARBXR', confidence=92) if w is target else w for w in whole]
+        raster = leaf.get_pixmap(matrix=pymupdf.Matrix(2, 2), alpha=False).tobytes('png')
+        doc.new_page(width=640, height=150).insert_image(leaf.rect, stream=raster)
+        assert not doc[0].get_text()
+        def independent(*args):
+            witness = pa.CropWitness(pixels)
+            second = 'HARROW' if competing else 'HARBKR'
+            witness.word_readings = lambda word: [[dict(target, text='HARBXR', confidence=59)],
+                                                   [dict(target, text=second, confidence=91 if competing else 17)]]
+            witness.alternates = lambda: [pixels, [dict(w, text=second) if w['text'] == 'HARBXR' else w for w in pixels]]
+            return witness
+        monkeypatch.setattr(pa, 'read_crop', independent)
+        page, report = vp.compile_page({'blocks': [block(printed, bbox=(0, 0, 1000, 1000))]},
+            source, SourceDisplay(doc, 0), 0, Package(), {}, pixel_words=source,
+            note_context={'cache': tmp_path/'cache', 'labels': {}, 'catalogue': {}, 'refs': {}})
+    own = report['blocks'][0]
+    body = vp._seam_text(' '.join(page['body']))
+    if competing:
+        assert 'Harbor' not in body and own['source_image_words']
+    else:
+        assert body == printed
+        assert own['source_image_words'] == []
+        assert 'HARBXR' not in body and 'HARBKR' not in body
