@@ -4657,3 +4657,58 @@ def test_conserved_word_boundaries_do_not_choose_recognizer_terminal_punctuation
         assert 'HARBOR,.' not in live
     else:
         assert 'HARBOR,' not in live
+
+
+@pytest.mark.parametrize('evidence', ['no_space', 'unknown_space', 'printed_space', 'credible_word', 'clipped_pair', 'explicit_doubt'])
+def test_measured_unbroken_ink_can_locate_conserved_fragment_letters(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source = words('This label H a r b o r stays readable.')
+    for i, item in enumerate(source[2:8]):
+        item['bbox'] = [40 + i * 6, 20, 45 + i * 6, 32]
+    for i, item in enumerate(source[8:]):
+        item['bbox'] = [110 + i * 30, 20, 128 + i * 30, 32]
+    word = dict(text='HARBXR', bbox=[40, 20, 75, 32], confidence=47)
+    witness = pa.CropWitness([*source[:2], word, *source[8:]])
+    witness.model_reading = True
+    pair = [[dict(word, text='HARBKR', confidence=71)]] * 2
+    if evidence == 'credible_word':
+        pair = [[dict(word, text='HARROW', confidence=91)]] * 2
+    elif evidence == 'clipped_pair':
+        pair = [[dict(word, text='HARBKR', bbox=[55, 20, 75, 32], confidence=71)]] * 2
+    witness.word_readings = lambda item: pair
+    witness.fragment_boundary = lambda item: {'unknown_space': None, 'printed_space': False}.get(evidence, True)
+    result = pa.adjudicate('This label HARBOR stays readable.'.split(), source, witness,
+                          uncertain={2} if evidence == 'explicit_doubt' else ())
+    live = [token for i, token in enumerate(result['tokens'])
+            if not result['word_notes'].get(i, {}).get('source_image_only')]
+    if evidence == 'no_space':
+        assert live == 'This label Harbor stays readable.'.split()
+        assert not result['marked']
+    else:
+        assert 'Harbor' not in live and 'HARBOR' not in live
+
+
+@pytest.mark.parametrize('layout', ['tight', 'space', 'blank', 'overflow'])
+def test_fragment_boundary_measures_pixels_without_recognizing_the_spelling(layout, tmp_path, monkeypatch):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=200, height=100)
+        if layout != 'blank':
+            # The fixed synthetic letters and large intervening space are
+            # authored here. No OCR answer is passed to this pixel measure.
+            page.insert_text((25, 50), 'RIV ER' if layout == 'space' else 'RIVER', fontsize=12)
+            boxes = page.get_text('words')
+            bounds = [min(w[0] for w in boxes), min(w[1] for w in boxes),
+                      max(w[2] for w in boxes), max(w[3] for w in boxes)]
+        else: bounds = [25, 35, 70, 52]
+        if layout == 'overflow': bounds = [-10, 35, 70, 52]
+        measure = getattr(pa, '_fragment_word_boundary', lambda *args: None)
+        display = SourceDisplay(doc, 0)
+        result = measure(display, dict(bbox=bounds))
+        monkeypatch.setattr(pa, '_read_crop', lambda *args, **kwargs: [])
+        witness = pa.read_crop(display, [bounds], tmp_path/'cache')
+        terminal = pa._terminal_word_view([], witness)
+        assert terminal.fragment_boundary(dict(bbox=bounds)) is result
+    assert result is (True if layout == 'tight' else None if layout in ('blank', 'overflow') else False)

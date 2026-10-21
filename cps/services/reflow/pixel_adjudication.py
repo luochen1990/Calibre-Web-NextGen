@@ -277,9 +277,9 @@ def _terminal_word_view(model, words):
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
         else:result.append(word)
-    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','word_scope','word_separation','model_reading','failure')):
+    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','word_scope','word_separation','fragment_boundary','model_reading','failure')):
         result=CropWitness(result)
-        for name in ('alternates','resampled','mark_absence','word_readings','word_scope','word_separation','model_reading','failure'):
+        for name in ('alternates','resampled','mark_absence','word_readings','word_scope','word_separation','fragment_boundary','model_reading','failure'):
             if hasattr(words,name):setattr(result,name,getattr(words,name))
     return result
 
@@ -404,7 +404,7 @@ def _conserved_group_boundary(items,witness,model_words):
     original=dict(text=literal,bbox=bounds)
     views=reader(original)
     if not views or len(views)%2:return False
-    choices=set();boundary_noise=False;competing=False
+    choices=set();boundary_noise=False;competing=False;complete_pair=False
     from . import text_quality
     vocabulary=text_quality.english_lexicon()
     # Terminal recognition noise cannot choose punctuation. This helper only
@@ -414,6 +414,7 @@ def _conserved_group_boundary(items,witness,model_words):
     for start in range(0,len(views),2):
         pair=[_whole_view_word(original,view)for view in views[start:start+2]]
         if not all(len(row)==1 for row in pair):continue
+        complete_pair=True
         first,second=(_key(row[0]['text']).strip().casefold()for row in pair)
         if all(row[0].get('confidence',0)>=50 for row in pair) and first.rstrip('.,;:!?')==second.rstrip('.,;:!?'):
             choices.add(first.rstrip('.,;:!?'))
@@ -433,6 +434,9 @@ def _conserved_group_boundary(items,witness,model_words):
             boundary_noise=True
     if choices=={body}:return 'matching_letters'
     if competing:return False
+    measured=getattr(witness,'fragment_boundary',None)
+    if complete_pair and measured is not None and measured(original) is True:
+        return 'word_boundary_only'
     return 'word_boundary_only' if not choices and boundary_noise else False
 
 
@@ -1224,6 +1228,11 @@ def read_crop(display, regions, cache):
         def word_separation(bounds,parts):
             try:return _word_separation(display,dict(bbox=bounds),parts)
             except (RuntimeError,OSError,ValueError,KeyError):return None
+        @lru_cache(maxsize=128)
+        def fragment_boundary(bounds):
+            try:return _fragment_word_boundary(display,dict(bbox=bounds))
+            except (RuntimeError,OSError,ValueError,KeyError):return None
+        result.fragment_boundary=lambda word:fragment_boundary(tuple(word['bbox']))
         result.word_separation=lambda word,parts:word_separation(tuple(word['bbox']),tuple(parts))
         result.word_scope=lambda word:word_scope(tuple(word['bbox']))
         result.word_readings=lambda word:own_word(tuple(word['bbox']))
@@ -1233,6 +1242,33 @@ def read_crop(display, regions, cache):
         result = CropWitness()
         result.failure = f'{type(error).__name__}: {error}'
         return result
+
+
+def _fragment_word_boundary(display,word):
+    """Prove absence of an internal word space without supplying any letters.
+
+    This is only used when the source and certain first reader conserve every
+    character, and separate word networks locate the complete same occurrence.
+    Closely spaced ink runs establish one boundary; touching, missing or widely
+    spaced ink cannot prove a spelling and is never used as a replacement.
+    """
+    from . import extract,vision_pixels
+    a=word['bbox'];height=a[3]-a[1]
+    if not(0<height<=80 and 0<a[2]-a[0]<=200):return None
+    box=extract.pymupdf.Rect(a)
+    if not display.rect.contains(box):return None
+    pix=display.pixmap(box,scale=8,max_pixels=200_000)
+    picture,components=vision_pixels._word_ink_components(pix)
+    runs=[]
+    for left,right in sorted((c[0],c[2])for c in components):
+        if runs and left<=runs[-1][1]:runs[-1][1]=max(runs[-1][1],right)
+        else:runs.append([left,right])
+    if len(runs)<2:return None
+    gaps=[(right[0]-left[1])*box.width/picture.width/height
+          for left,right in zip(runs,runs[1:])]
+    if max(gaps)<=.2:return True
+    if max(gaps)>=.25:return False
+    return None
 
 
 def _word_separation(display,word,parts):
