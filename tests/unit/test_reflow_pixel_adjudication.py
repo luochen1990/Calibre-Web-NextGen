@@ -5449,3 +5449,36 @@ def test_complete_original_terminal_dash_can_close_its_matching_word_evidence(tm
     else:
         assert note['status']=='UNRESOLVED'
         assert note['method']!='complete_original_terminal_dash_corroboration'
+
+
+@pytest.mark.parametrize('proof',['weak_tail','unavailable_tail_read','same_letters','source_counter','pixel_counter','uncertain_model','local_fallback','failed_pixels','different_prefix','shorter_tail','same_row','no_hyphen','punctuation_counter'])
+def test_a_certain_complete_wrapped_word_needs_a_complete_counterreading(proof):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=[dict(text='Read',bbox=[110,20,135,32],confidence=99),
+        dict(text='syn-'if proof!='no_hyphen'else'syn',bbox=[140,20,165,32],confidence=99),
+        dict(text='uhetic',bbox=[20,38,58,50],confidence=30),
+        dict(text='sample',bbox=[65,38,100,50],confidence=99)]
+    if proof=='same_letters':source[2]['text']='thetic'
+    if proof=='source_counter':source[2]['confidence']=99
+    if proof=='punctuation_counter':source[2]['text']='uhetic;'
+    if proof=='same_row':source[2]['bbox']=[172,20,210,32]
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    if proof=='pixel_counter':witness[2].update(text='theory',confidence=99)
+    if proof=='failed_pixels':witness.failure='local recognition failed'
+    if proof=='unavailable_tail_read':witness.pop(2)
+    model='Read '+('sympathetic'if proof=='different_prefix'else'synthe'if proof=='shorter_tail'else'synthetic')+' sample'
+    result=pa.adjudicate(model.split(),source,witness,
+        uncertain={1}if proof=='uncertain_model'else(),unresolved_source=proof=='local_fallback')
+    assert result['marked'],'A changed OCR word always has its own source record'
+    if proof in('weak_tail','unavailable_tail_read'):
+        assert result['tokens']==['Read','synthetic','sample']
+        assert result['marked']=={1}
+        note=result['word_notes'][1]
+        assert note['status']=='RESOLVED'and not note.get('source_image_only')
+        assert note['method']=='complete_vision_reading_without_optical_counterevidence'
+        assert note['source']==['syn-','uhetic']and note['model']==['synthetic']
+        assert note['source_range']==[1,3]and note['model_range']==[1,2]
+        assert note.get('mapping')!='unplaced_within_span','The physical printed parts locate exactly one word'
+    else:
+        assert not any(d.get('method')=='complete_vision_reading_without_optical_counterevidence'
+            and len(d.get('source',[]))>1 for d in result['decisions'])

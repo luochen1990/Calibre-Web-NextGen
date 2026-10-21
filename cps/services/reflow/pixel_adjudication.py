@@ -565,6 +565,40 @@ def _proved_wrap(source,model,witness,same_reading=False):
             max(b[2]for b in boxes),max(b[3]for b in boxes)]
 
 
+def _retained_model_wrap(source,model,witness):
+    """A weak continuation is not a complete counterword to a certain read.
+
+    The prefix and its printed division need a complete independent pixel
+    occurrence. This only retains the existing first reading across that same
+    adjacent division; it cannot delete letters, fuse printed same-row words,
+    dismiss a strong source continuation, or invent another spelling.
+    """
+    if len(source)!=2 or getattr(witness,'failure',None):return None
+    head,tail=source
+    if (head.get('confidence',0)<90 or tail.get('confidence',100)>=85
+            or not head['text'].endswith(('-', '\u00ad', '\u2010', '\u2011'))):return None
+    prefix=_key(head['text'][:-1]);reading=_key(model)
+    if not prefix.isascii()or not prefix.isalpha()or not reading.startswith(prefix):return None
+    # Exact letters have no model correction to record. Their separate
+    # formatting/conservation contract is handled by _proved_wrap above.
+    if prefix+_key(tail['text'])==reading:return None
+    ending=reading[len(prefix):]
+    old=_letter_number_identity(tail['text']);new=_letter_number_identity(ending)
+    if (not old.isalpha()or not new.isalpha()or len(new)<len(old)
+            or _small_mark_conflict(tail['text'],ending)
+            or SequenceMatcher(None,_key(tail['text']),ending).ratio()<.65):return None
+    a,b=head['bbox'],tail['bbox'];height=max(a[3]-a[1],b[3]-b[1],1)
+    next_row=0<=b[1]-a[3]<=3*height and b[0]<a[0]
+    next_column=b[0]>a[2]+2*height and b[3]<a[1]-2*height
+    if not(next_row or next_column):return None
+    own=_whole_view_word(head,witness)
+    if (len(own)!=1 or own[0].get('confidence',0)<90
+            or _key(own[0]['text'])!=_key(head['text'])
+            or _optical_counterread(head,witness,head['text'])
+            or _optical_counterread(tail,witness,ending)):return None
+    return [min(a[0],b[0]),min(a[1],b[1]),max(a[2],b[2]),max(a[3],b[3])]
+
+
 
 def _conserved_group_boundary(items,witness,model_words):
     """Prove a word boundary without choosing letters from uncertain OCR.
@@ -925,6 +959,14 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
               if kind!='equal'and y-b==1 else None)
         if wrap is not None:
             formatting.add(len(chosen));chosen.append((proposed[b],wrap,None));continue
+        if (kind!='equal'and y-b==1 and getattr(witness,'model_reading',False)
+                and not unresolved_source and visible[b][0]not in pending):
+            complete_wrap=_retained_model_wrap(source[a:z],proposed[b],witness)
+            if complete_wrap is not None:
+                record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=proposed[b:y],
+                    status='RESOLVED',method='complete_vision_reading_without_optical_counterevidence',
+                    source_range=[a,z],model_range=[b,y])
+                decisions.append(record);chosen.append((proposed[b],complete_wrap,record));continue
         if (z-a==y-b==1 and source_tokens[a] in ('–','—') and proposed[b] in ('–','—')):
             own=[word for word in witness if _complete_word_occurrence(source[a],word)]
             if (len(own)==1 and own[0].get('confidence',0)>=90 and
