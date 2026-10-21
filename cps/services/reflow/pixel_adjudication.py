@@ -610,7 +610,20 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             if not seq and (absence_proof is None or not absence_proof(source[a-1],source[z])):continue
             start=locations[0]+len(left)
             evidence=witness[start:start+len(seq)]
-            if any(w.get('confidence',0)<85 for w in witness[locations[0]:locations[0]+len(left+seq+right)]):continue
+            # Exact surrounding occurrences locate this edit; uncertainty in
+            # their recognitions is not uncertainty in an independently read
+            # edited word. Empty alternatives still need the full confident
+            # context and the separate two-sided blank-ink proof above.
+            confident=evidence if seq else context
+            if any(w.get('confidence',0)<85 for w in confident):continue
+            if seq and a<z and any(w.get('confidence',0)<85 for w in context):
+                # Weak anchors cannot compensate for a clipped edit itself.
+                # All original edit ink must lie inside the positively read
+                # nonempty sequence, even when its word counts differ.
+                own=[w['bbox']for w in source[a:z]]
+                envelope=[min(v[0]for v in own),min(v[1]for v in own),
+                          max(v[2]for v in own),max(v[3]for v in own)]
+                if not _covers_ink_scope(evidence,envelope):continue
             supported.append((name,literal,evidence))
         supported=direct or supported
         # One fused optical token is not proof that a first reader invented a

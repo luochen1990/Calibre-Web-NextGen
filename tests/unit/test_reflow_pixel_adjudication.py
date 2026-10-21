@@ -4367,3 +4367,26 @@ def test_small_cap_fragments_remain_separate_from_a_neighboring_unproved_edit(op
     else:
         assert not any(t=='FENNWICK'and not result['word_notes'].get(i,{}).get('source_image_only')
                        for i,t in enumerate(result['tokens']))
+
+
+@pytest.mark.parametrize('evidence',['own','weak_own','different_occurrence','missing_word'])
+def test_weak_neighbor_cannot_make_a_complete_independently_read_edit_unplaced(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('This hcre.')
+    source[1]['bbox']=[30,20,98,32]
+    witness=pa.CropWitness([
+        dict(text='This',bbox=source[0]['bbox'],confidence=40),
+        dict(text='stays',bbox=[30,20,60,32],confidence=99),
+        dict(text='here.',bbox=[65,20,98,32],confidence=99)])
+    if evidence=='weak_own':witness[1]['confidence']=40
+    if evidence=='different_occurrence':
+        for word in witness:word['bbox']=[v+(200 if i%2==0 else 0)for i,v in enumerate(word['bbox'])]
+    if evidence=='missing_word':witness.pop(1)
+    witness.model_reading=True
+    result=pa.adjudicate('This stays here.'.split(),source,witness)
+    if evidence=='own':
+        assert result['tokens']==['This','stays','here.']
+        assert result['marked']=={1,2},'Model corrections retain their individual source-linked records'
+        assert all(note['status']=='RESOLVED'for note in result['word_notes'].values())
+        assert result['boxes'][1]==witness[1]['bbox']and result['boxes'][2]==witness[2]['bbox']
+    else:assert any(note['status']=='UNRESOLVED'for note in result['word_notes'].values())
