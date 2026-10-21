@@ -585,6 +585,43 @@ def _complete_optical_row_territory(block,answer,pixels,display,regions,body_own
                    for other in answer['blocks']):continue
             following.append(word)
         following.sort(key=lambda w:w['bbox'][0]);selected=following[:y-b]
+        # A bad rectangle may end before the final printed row altogether.
+        # Three unique preceding source/model anchors and an exact next-row
+        # prefix locate that same ending; neither a distant word nor a foreign
+        # owner can enlarge the territory. It still earns no spelling proof.
+        if (len(selected)!=y-b and a==len(local) and y==len(model)
+                and source[max(0,a-3):a]==anchor
+                and sum(source[i:i+3]==anchor for i in range(len(source)-2))==1):
+            prefix=list(selected)if all(key(w['text'])==expected for w,expected in zip(selected,model[b:y]))else[]
+            if prefix and (prefix[0]['bbox'][0]-left[2]>2*height
+                    or any(right['bbox'][0]-left_word['bbox'][2]>2*height for left_word,right in zip(prefix,prefix[1:]))):prefix=[]
+            territory=[r for r in (regions or {}).get(block['id'],[])
+                if r[0]<=sum(left[::2])/2<=r[2] and r[1]<=middle<=r[3]]
+            if territory and (not selected or prefix):
+                lo=min(r[0]for r in territory);hi=max(r[2]for r in territory)
+                below=[w for w in pixels if lo-.5*height<=(w['bbox'][0]+w['bbox'][2])/2<=hi+.5*height
+                    and middle+.5*height<(w['bbox'][1]+w['bbox'][3])/2<=middle+2.5*height
+                    and .5*height<=w['bbox'][3]-w['bbox'][1]<=1.8*height]
+                rows=_pixel_lines(below)
+                if rows:
+                    first=sorted(rows[0],key=lambda w:w['bbox'][0]);candidate=first[:y-b-len(prefix)]
+                    def available(word):
+                        r=word['bbox'];x=(r[0]+r[2])/2;cy=(r[1]+r[3])/2
+                        return (_source_instance(word)not in known
+                            and (regions or {}).get('_instances',{}).get(_source_instance(word),block['id'])==block['id']
+                            and not any(other['id']!=block['id']and any(v[0]<=x<=v[2]and v[1]<=cy<=v[3]
+                                for v in (regions or {}).get(other['id'],[block_rect(other,display)]))for other in answer['blocks']))
+                    if len(candidate)+len(prefix)==y-b and all(available(w)for w in prefix+candidate):
+                        selected=prefix+candidate
+                        previous_box=None
+                        for word in selected:
+                            if previous_box and abs(sum(word['bbox'][1::2])-sum(previous_box[1::2]))<=height and word['bbox'][0]-previous_box[2]>2*height:break
+                            previous_box=word['bbox']
+                        else:
+                            if all(key(w['text'])==expected for w,expected in zip(selected,model[b:y])):
+                                result.extend(selected);known.update(_source_instance(w)for w in selected)
+                                continue
+                        selected=[]
         if len(selected)!=y-b:continue
         def located(word,expected):
             if key(word['text'])==expected:return True
@@ -5855,6 +5892,41 @@ def _omission_coverage(answer,display,regions,optical=None):
     return coverage
 
 
+def _recovery_visual_tail(words):
+    """Keep a compact trailing diagram out of an omitted prose transcription.
+
+    Several centered, sparse glyph rows below a colon are original visual
+    evidence, not reliable prose merely because a recognizer assigned digits.
+    Ordinary word rows, wide tables and ambiguous geometry retain their route.
+    """
+    import statistics
+    rows=_pixel_lines(words)
+    if len(rows)<6:return None
+    tail=[]
+    for row in reversed(rows):
+        if not(1<=len(row)<=3)or any(len(w['text'])>3 for w in row):break
+        tail.insert(0,row)
+        if len(tail)>8:return None
+    if len(tail)<3 or len(rows)-len(tail)<3:return None
+    head=rows[:-len(tail)]
+    if not head[-1][-1]['text'].endswith(':'):return None
+    prose=[row for row in head if len(row)>=4]
+    if len(prose)<3:return None
+    from .text_quality import english_lexicon
+    vocabulary=english_lexicon()
+    if sum(''.join(c for c in w['text'].casefold()if c.isalpha())in vocabulary
+           for row in tail for w in row if any(c.isalpha()for c in w['text']))>1:return None
+    width=statistics.median(max(w['bbox'][2]for w in row)-min(w['bbox'][0]for w in row)for row in prose)
+    height=statistics.median(w['bbox'][3]-w['bbox'][1]for row in prose for w in row)
+    if width<=15*height:return None
+    boxes=[vision_reading.union([w['bbox']for w in row])for row in tail]
+    if any(b[2]-b[0]>.4*width for b in boxes):return None
+    centers=[(b[0]+b[2])/2 for b in boxes]
+    if max(centers)-min(centers)>1.5*height:return None
+    if not 0<=boxes[0][1]-max(w['bbox'][3]for w in head[-1])<=3*height:return None
+    return ([w for row in head for w in row],[w for row in tail for w in row])
+
+
 def cover_missing_lines(answer,optical,source_words,display,regions=None,body_owners=None):
     """Recover line-sized printed text omitted entirely by the page reader.
 
@@ -5880,14 +5952,34 @@ def cover_missing_lines(answer,optical,source_words,display,regions=None,body_ow
     partitioned=[]
     for run in runs:
         columns,proved=_proved_recovery_columns(run)
-        partitioned.extend((column,proved) for column in columns)
+        for column in columns:
+            visual_tail=_recovery_visual_tail(column)
+            if visual_tail:
+                prose,artwork=visual_tail
+                partitioned.extend(((prose,proved,False),(artwork,proved,True)))
+            else:partitioned.append((column,proved,False))
     recovered=[];pixel_rows=_pixel_row_ids(optical)
     # A covered foreign word still occupies its place on the source row.
     # Exact consecutive physical instances prohibit jumping across that ink.
     row_pairs={(_source_instance(left),_source_instance(right))
                for row in _pixel_lines(optical) for left,right in zip(row,row[1:])}
-    for index,(run,proved_column) in enumerate(partitioned):
+    for index,(run,proved_column,is_visual) in enumerate(partitioned):
         bbox=vision_reading.union([w['bbox'] for w in run])
+        if is_visual:
+            ident='recovered-visual-'+hashlib.sha256(repr(tuple(round(v,3)for v in bbox)).encode()).hexdigest()[:16]
+            while any(b['id']==ident for b in blocks):ident+='x'
+            r=display.rect
+            normalized=[bbox[0]/r.width*1000,bbox[1]/r.height*1000,bbox[2]/r.width*1000,bbox[3]/r.height*1000]
+            block=dict(id=ident,role='figure',text='Original printed diagram',marker='',bbox=normalized,
+                low_confidence=[],continues_previous=False,continues_next=False)
+            neighbours=[(i,b)for i,b in enumerate(blocks)
+                if b['bbox'][0]<normalized[2]and normalized[0]<b['bbox'][2]and b['bbox'][3]<=normalized[1]+5]
+            at=max(neighbours,key=lambda p:p[1]['bbox'][3])[0]+1 if neighbours else 0
+            blocks.insert(at,block);recovered.append(ident)
+            if regions is not None:
+                regions[ident]=[bbox]
+                regions.setdefault('_instances',{}).update((_source_instance(w),ident)for w in run)
+            continue
         local=[w for w in owned_words(source_words,bbox) if not covered(w)]
         if proved_column:local=_pixel_line_order(local)
         # A legible original layer is preferred; a sparse/garbage layer cannot

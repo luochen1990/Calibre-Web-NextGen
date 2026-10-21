@@ -1283,7 +1283,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             if unresolved_source and notes[i].get('method')=='reader_uncertainty':
                 weak_source=(len(source_own)==1 and source_own[0].get('confidence',100)<85)
                 independent=own_exact
-                if weak_source and any(c.isalnum()for c in tokens[i])and not independent:
+                if weak_source and tokens[i] and not independent:
                     notes[i]=dict(notes[i],source_image_only=True,source_bbox=list(bounds[i]),
                         method='unproved_recovered_word')
     consumed=0;inserted=0

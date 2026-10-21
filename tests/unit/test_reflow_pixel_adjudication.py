@@ -5140,3 +5140,77 @@ def test_clipped_word_hint_is_reread_on_its_complete_measured_ink(proof):
         assert not note.get('source_image_only'),'The old clipped spelling must not veto a complete independent read of the original word'
         assert result['boxes'][1]==whole['bbox']
     else:assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+
+
+@pytest.mark.parametrize('shape',['diagram','two_rows','words','wide','no_colon'])
+def test_missing_prose_cannot_turn_a_compact_trailing_diagram_into_ocr_words(shape):
+    from types import SimpleNamespace
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    optical=[]
+    for line,text in enumerate(['This synthetic paragraph remains ordinary prose here.',
+                               'Its separate printed words keep their own places.',
+                               'Read the following simple drawing carefully:']):
+        for i,token in enumerate(text.split()):
+            optical.append(dict(text=token,bbox=[10+i*30,10+line*15,37+i*30,20+line*15],confidence=99))
+    if shape=='no_colon':optical[-1]['text']='carefully.'
+    for line in range(2 if shape=='two_rows'else 4):
+        values=['one','two']if shape=='words'else ['9','>)']
+        for i,token in enumerate(values):
+            x=15+i*180 if shape=='wide'else 100+i*20
+            optical.append(dict(text=token,bbox=[x,60+line*15,x+8,70+line*15],confidence=98))
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,260,150))
+    # cover_missing_lines accepts the same typed page envelope used by callers.
+    answer=dict(page=0,blocks=[])
+    result,recovered=vp.cover_missing_lines(answer,optical,[],display,{},{} )
+    figures=[b for b in result['blocks']if b['role']=='figure']
+    if shape=='diagram':
+        assert len(figures)==1,'A compact nonprose drawing is original artwork, not digit-shaped OCR words'
+        prose=[b for b in result['blocks']if b['role']!='figure']
+        assert ' '.join(b['text']for b in prose)==' '.join(w['text']for w in optical[:-8])
+        assert all('>)'not in b['text']for b in result['blocks'])
+        assert vp.block_rect(figures[0],display)==pytest.approx([100,60,128,115],abs=1e-9)
+        assert figures[0]['id']in recovered
+    else:
+        assert not figures,'Insufficient or prose-shaped evidence must not reclassify text'
+        assert ' '.join(b['text']for b in result['blocks'])==' '.join(w['text']for w in optical)
+
+
+@pytest.mark.parametrize('proof',['missing','different','exact'])
+def test_weak_recovered_punctuation_needs_its_own_printed_identity(proof):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Read >) here.');source[1]['confidence']=40
+    witness=pa.CropWitness(words('Read >) here.'))
+    if proof=='missing':witness.pop(1)
+    elif proof=='different':witness[1].update(text='→',confidence=50)
+    result=pa.adjudicate('Read >) here.'.split(),source,witness,uncertain={1},unresolved_source=True)
+    assert result['tokens']==['Read','>)','here.']
+    if proof=='exact':assert 1 not in result['marked']
+    else:assert result['word_notes'][1].get('source_image_only'),'Weak punctuation can be a misread graphical glyph; disclose only that own occurrence'
+
+
+@pytest.mark.parametrize('layout',['new_line','split_line'])
+@pytest.mark.parametrize('obstruction',['none','other_owner','different','distant','intervening'])
+def test_clipped_model_tail_can_own_its_exact_adjacent_next_printed_line(obstruction,layout):
+    from types import SimpleNamespace
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    optical=[]
+    lines=['The garden visitors can read this notice',
+           'and keep every complete printed word near',
+           'the window.']
+    for row,text in enumerate(lines):
+        for col,token in enumerate(text.split()):
+            optical.append(dict(text=token,bbox=[10+col*25,20+row*15,33+col*25,30+row*15],confidence=99))
+    tail=optical[-2:]
+    if layout=='split_line':tail[0]['bbox']=[195,35,218,45]
+    if obstruction=='different':tail[-1]['text']='door.'
+    if obstruction=='distant':
+        for w in tail:w['bbox'][1]+=70;w['bbox'][3]+=70
+    if obstruction=='intervening':optical.insert(-2,dict(text='Other',bbox=[10,46,33,51],confidence=99))
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,260,160))
+    block=dict(id='sample',role='body',text=' '.join(lines),bbox=[0,100,950,300])
+    answer=dict(blocks=[block]);regions={'sample':[[5,18,195,46]]};owners={}
+    if obstruction=='other_owner':regions['_instances']={vp._source_instance(w):'foreign'for w in tail}
+    got=vp._complete_optical_row_territory(block,answer,optical,display,regions,owners)
+    assert got==(tail if obstruction=='none'else[]),'Only the adjacent uniquely matched unclaimed printed tail belongs to this reading'
