@@ -96,6 +96,30 @@ def _own_word_choice(source,witness):
     return _paired_word_choice(inner,views)if inner is not source else None
 
 
+def _complete_model_ink_choice(source,witness,model):
+    """Reread a clipped hint on measured original ink, keeping model letters.
+
+    The larger envelope can only corroborate the existing complete reading.
+    A second word, conflicting pair, incomplete crop or complete alternative
+    cannot supply a different spelling or clear the disagreement.
+    """
+    scope_reader=getattr(witness,'word_scope',None)
+    reader=getattr(witness,'word_readings',None)
+    if scope_reader is None or reader is None:return None
+    scope=scope_reader(source)
+    if scope is None or _covers_ink_scope([source],scope):return None
+    a=source['bbox']
+    if not (scope[0]<=(a[0]+a[2])/2<=scope[2]
+            and scope[1]<=(a[1]+a[3])/2<=scope[3]):return None
+    bounds=[min(a[0],scope[0]),min(a[1],scope[1]),max(a[2],scope[2]),max(a[3],scope[3])]
+    complete=dict(source,bbox=bounds)
+    choice=_paired_word_choice(complete,reader(complete))
+    if (choice is None or choice.get('confidence',0)<90 or _key(choice['text'])!=_key(model)
+            or not _covers_ink_scope([choice],scope)
+            or _optical_counterread(complete,witness,model,scope)):return None
+    return choice
+
+
 def _paired_word_choice(source,views):
     """Each pair uses separate language networks on the complete occurrence."""
     if not views or len(views)%2:return None
@@ -1018,6 +1042,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             if word_choice is None:
                 word_choice=_model_word_choice(source[a],witness,proposed[b])
                 word_method='intact_pixel_corroboration_of_model'
+            if ((word_choice is None or _key(word_choice['text'])!=_key(proposed[b]))
+                    and getattr(witness,'model_reading',False) and not unresolved_source
+                    and visible[b][0]not in pending):
+                measured_choice=_complete_model_ink_choice(source[a],witness,proposed[b])
+                if measured_choice is not None:
+                    word_choice=measured_choice;word_method='complete_original_word_ink_corroboration'
             if word_choice and _accent_conflict(word_choice['text'],proposed[b]):word_choice=None
             if word_choice and max(SequenceMatcher(None,placement(word_choice['text']),placement(t)).ratio()
                                    for t in (source_tokens[a],proposed[b]))<.65:word_choice=None

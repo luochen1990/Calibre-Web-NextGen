@@ -5112,3 +5112,30 @@ def test_recovered_word_doubt_can_be_settled_by_complete_independent_context(evi
     assert result['tokens']==[w['text']for w in source]
     if evidence=='complete':assert 2 not in result['marked'],'Independent complete context settles this own occurrence, not dictionary familiarity'
     else:assert result['word_notes'][2].get('source_image_only'),'Missing, partial or conflicting recognition cannot certify the local guess'
+
+
+@pytest.mark.parametrize('proof',['whole','missing','different','still_clipped','competing'])
+def test_clipped_word_hint_is_reread_on_its_complete_measured_ink(proof):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('This clear sample remains readable.')
+    source[1].update(text='clcar',bbox=[27,20,38,32])
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    whole=dict(text='clear',bbox=[20,20,38,32],confidence=99)
+    witness.word_scope=lambda word:[20,20,38,32]
+    def readings(word):
+        if word['bbox'][0]>20:return [[dict(source[1])]]*2
+        if proof=='missing':return []
+        value=dict(whole)
+        if proof=='different':value['text']='clean'
+        if proof=='still_clipped':value['bbox']=[27,20,38,32]
+        views=[[value],[dict(value)]]
+        if proof=='competing':views +=[[dict(whole,text='clean')]]*2
+        return views
+    witness.word_readings=readings
+    result=pa.adjudicate('This clear sample remains readable.'.split(),source,witness)
+    note=result['word_notes'][1]
+    if proof=='whole':
+        assert result['tokens'][1]=='clear'and note['status']=='RESOLVED'
+        assert not note.get('source_image_only'),'The old clipped spelling must not veto a complete independent read of the original word'
+        assert result['boxes'][1]==whole['bbox']
+    else:assert note['status']=='UNRESOLVED'and note.get('source_image_only')
