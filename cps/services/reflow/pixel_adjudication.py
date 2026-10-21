@@ -1004,6 +1004,19 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 formatting.add(len(chosen));chosen.append((proposed[b],own[0]['bbox'],None));continue
         if kind=='equal':
             for token,index in zip(proposed[b:y],range(a,z)):
+                if (not source_print and visible[b+index-a][0]in pending
+                        and len(_letter_number_identity(token))<=2
+                        and not proved_native_occurrence(token,source[index]['bbox'],native_print_words)
+                        and _anomalous_leading_word_gap(source,index)):
+                    # Exact agreement on a deliberately doubtful damaged tail
+                    # is no stronger than the same tail with different terminal
+                    # punctuation. Keep the equal-token path equally contained.
+                    record=dict(source=[token],model=[token],chosen=[token],
+                        status='UNRESOLVED',method='unproved_doubtful_leading_word_ink',
+                        source_image_only=True,source_bbox=list(source[index]['bbox']),
+                        source_range=[index,index+1],model_range=[b+index-a,b+index-a+1])
+                    decisions.append(record);chosen.append((token,source[index]['bbox'],record))
+                    continue
                 if (source[index].get('conserved_fragment_boundary')
                         and getattr(witness,'model_reading',False) and not unresolved_source
                         and visible[b+index-a][0]not in pending):

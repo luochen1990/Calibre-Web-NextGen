@@ -5507,7 +5507,7 @@ def test_productive_inflection_does_not_certify_a_shared_fused_stroke(monkeypatc
         assert result['tokens'][2]=='modemly'
 
 
-@pytest.mark.parametrize('case',['damaged_prefix','ordinary_spacing','justified_spacing','certain_model','visible_native','long_gap_without_neighbors'])
+@pytest.mark.parametrize('case',['damaged_prefix','same_fragment','ordinary_spacing','justified_spacing','certain_model','visible_native','long_gap_without_neighbors'])
 def test_explicitly_doubtful_fragment_needs_complete_word_evidence(case):
     from cps.services.reflow import pixel_adjudication as pa
     # Synthetic printed row: a blank damaged initial leaves only the tail ox.
@@ -5521,7 +5521,7 @@ def test_explicitly_doubtful_fragment_needs_complete_word_evidence(case):
         for i,w in enumerate(source):w['bbox']=[i*28,10,i*28+18,20]
     if case=='long_gap_without_neighbors':source=source[2:3]
     target=0 if case=='long_gap_without_neighbors'else 2
-    source[target]['text']='0x'
+    source[target]['text']='ox'if case=='same_fragment'else'0x'
     model=[w['text']for w in source];model[target]='ox'
     witness=pa.CropWitness([dict(w,text='ox'if i==target else w['text'])for i,w in enumerate(source)])
     witness.model_reading=True
@@ -5529,7 +5529,7 @@ def test_explicitly_doubtful_fragment_needs_complete_word_evidence(case):
     result=pa.adjudicate(model,source,witness,uncertain=()if case=='certain_model'else(target,),
         source_print=case=='visible_native')
     note=result['word_notes'][target]
-    if case=='damaged_prefix':
+    if case in ('damaged_prefix','same_fragment'):
         assert note['status']=='UNRESOLVED'and note.get('source_image_only')
         assert note['method']=='unproved_doubtful_leading_word_ink'
         assert target in result['marked']
