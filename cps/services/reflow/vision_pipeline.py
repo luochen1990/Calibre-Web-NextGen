@@ -3668,6 +3668,28 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                     additions.extend((lookup[id(w)],position) for w in candidates[0][1:])
             anchors=list(dict.fromkeys(anchors+additions))
             anchors.sort(key=lambda a:(a[1],optical[a[0]]['bbox'][0]))
+        if block['role']=='body' and anchors:
+            # A compact proof can locate the continuation but omit the entire
+            # opening at the foot of the preceding printed column. Only a
+            # complete unique prefix at the two column edges can extend it;
+            # source instances reserved by another owner remain unavailable.
+            edge=min(j for i,j in anchors)
+            if 6<=edge<=32:
+                opening=unique_anchors(optical,available,candidate[:edge])
+                if {j for i,j in opening}==set(range(edge)):
+                    first=optical[min(anchors,key=lambda pair:pair[1])[0]]['bbox']
+                    head=[optical[i]['bbox']for i,j in opening]
+                    envelope=vision_reading.union(head)
+                    height=statistics.median(b[3]-b[1]for b in head)
+                    column_return=(envelope[2]+3<first[0]
+                        and envelope[1]>=display.rect.y0+.8*display.rect.height
+                        and first[1]<=display.rect.y0+.25*display.rect.height
+                        and .6*height<=statistics.median(optical[i]['bbox'][3]-optical[i]['bbox'][1]
+                            for i,j in anchors)<=1.5*height)
+                    if column_return:
+                        anchors=sorted(set(opening+anchors),key=lambda pair:pair[1])
+                        repairs.append(dict(block=block['id'],
+                            method='complete_previous_column_opening',source_word_count=edge))
         core_anchors=set(anchors)
         if block['role']=='body' and anchors and regions is not None:
             # A valid model rectangle can begin/end inside a printed paragraph.

@@ -5053,3 +5053,37 @@ def test_model_insertion_across_a_wrap_requires_both_original_empty_margins(tmp_
             assert any(d['model']==['sixth']and not d['chosen']and d['status']=='RESOLVED'
                 for d in record['adjudication'])
         else:assert 'sixth'in record['published_tokens'], 'Original ink or an intervening row cannot prove deletion'
+
+
+@pytest.mark.parametrize('opening',['complete','mixed_metrics','other_owner','different_text','not_column_edge'])
+def test_compact_body_proof_cannot_discard_its_complete_previous_column_opening(opening):
+    from types import SimpleNamespace
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    from tests.unit.test_reflow_vision_pilot import block
+    first='Quiet visitors walk beside the wide garden gate and carry their small bags home before sunset'
+    rest=('The next printed column keeps this complete paragraph readable while ordinary workers prepare tools for tomorrow. '
+          'Fresh panels stand beside the window and several boxes wait near the wooden table. '
+          'These separate sentences supply enough source anchors for the complete passage to keep its own location.')
+    optical=[]
+    for text,x,y in [(first,20,330 if opening!='not_column_edge'else 160),(rest,220,40)]:
+        for i,t in enumerate(text.split()):
+            xx=x+(i%5)*31;yy=y+(i//5)*13
+            optical.append(dict(text=t,bbox=[xx,yy,xx+27,yy+9],confidence=99))
+    if opening=='mixed_metrics':optical[2]['bbox'][1]+=5
+    # One recognition error inside the long continuation must not make its
+    # compact suffix window erase a separately complete source opening.
+    optical[len(first.split())+19]['text']='wind0w'
+    own=block((first if opening!='different_text'else first.replace('Quiet','Noisy'))+' '+rest,
+        ident='p1',bbox=(520,80,990,700))
+    answer={'blocks':[own]}
+    if opening=='other_owner':answer['blocks'].insert(0,block(first,ident='p0',bbox=(0,800,470,990)))
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,400,400));regions={}
+    bound,_=vp.bind_geometry(answer,optical,display,regions)
+    local=vp._owned_block_words(next(b for b in bound['blocks']if b['id']=='p1'),bound,
+        optical,display,regions,ordered=True)
+    got=[w['text']for w in local]
+    if opening in ('complete','mixed_metrics'):
+        assert got[:len(first.split())]==first.split(), 'A complete earlier-column opening must not become a separate fallback unit'
+        assert len(regions['p1'])>=2
+    else:assert got[:len(first.split())]!=first.split(),'Unproved or separately owned words cannot be taken as a column opening'
