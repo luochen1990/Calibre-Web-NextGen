@@ -1650,8 +1650,11 @@ def _word_ink_scope(display,word,*,line_limits=(None,None)):
     from . import extract,vision_pixels
     a=word['bbox'];height=a[3]-a[1];width=a[2]-a[0]
     if not(0<height<=80 and 0<width<=200):return None
-    bounds=extract.pymupdf.Rect(a[0]-2*height,a[1]-.75*height,
-                               a[2]+2*height,a[3]+.75*height)&display.rect
+    # Sample a one-point vertical guard so ink starting exactly at the
+    # nominal search edge can demonstrate blank pixels beyond it. A component
+    # continuing through the guarded frame still cannot prove completeness.
+    bounds=extract.pymupdf.Rect(a[0]-2*height,a[1]-.75*height-1,
+                               a[2]+2*height,a[3]+.75*height+1)&display.rect
     top,bottom=line_limits
     if top is not None:bounds.y0=max(bounds.y0,top)
     if bottom is not None:bounds.y1=min(bounds.y1,bottom)
@@ -1679,8 +1682,11 @@ def _word_ink_scope(display,word,*,line_limits=(None,None)):
     if left<=bounds.x0+sx or right>=bounds.x1-sx:return None
     if right-left>2.5*width:return None
     ink=[b for b in boxes if b[0]<=right and b[2]>=left]
-    if top is not None and min(b[1]for b in ink)<=bounds.y0+sy:return None
-    if bottom is not None and max(b[3]for b in ink)>=bounds.y1-sy:return None
+    # A clipped upper/lower component may belong to another row, or to an
+    # unobserved part of this word. Neither proves a complete owned scope.
+    # Unknown row limits do not make the search frame's cut ink complete.
+    if min(b[1]for b in ink)<=bounds.y0+sy:return None
+    if max(b[3]for b in ink)>=bounds.y1-sy:return None
     return [left,min(b[1]for b in ink),right,max(b[3]for b in ink)]
 
 

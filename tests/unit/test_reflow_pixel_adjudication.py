@@ -5342,3 +5342,21 @@ def test_a_new_isolated_word_guess_needs_corroboration_before_doubting_a_certain
     else:
         assert note['status']=='UNRESOLVED'
     assert result['marked']=={1},'Each changed source word keeps exactly its own reading record'
+
+
+@pytest.mark.parametrize('ink',['clear','above','below','own_ascender','bounded_above','bounded_below'])
+def test_original_word_scope_cannot_claim_clipped_ink_from_its_search_frame(ink):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=140,height=100)
+        page.draw_rect(pymupdf.Rect(40,50,60,60),color=None,fill=(0,0,0))
+        if ink in('above','bounded_above'):page.draw_rect(pymupdf.Rect(42,39,58,45),color=None,fill=(0,0,0))
+        if ink in('below','bounded_below'):page.draw_rect(pymupdf.Rect(42,65,58,72),color=None,fill=(0,0,0))
+        if ink=='own_ascender':page.draw_rect(pymupdf.Rect(45,40,55,52),color=None,fill=(0,0,0))
+        limits=(47,None)if ink=='bounded_above'else(None,63)if ink=='bounded_below'else(None,None)
+        scope=pa._word_ink_scope(SourceDisplay(drawing,0),dict(bbox=[40,50,60,60]),line_limits=limits)
+    if ink in('above','below','own_ascender'):
+        assert scope is None,'A cut component cannot prove the complete ink or ownership of this word'
+    else:assert scope==pytest.approx([40,50,60,60],abs=.2)
