@@ -1070,7 +1070,17 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 # It is not exempt from the edit's source-ink containment.
                 # Equal, independently retained punctuation never enters this
                 # differing-source branch and remains live as before.
-                if word['text'] and (weak or counter or collision or unproved_multiword):withheld.add(j)
+                # Source-only labels can confuse a numeral and a letter at
+                # high confidence. Without a settled independent occurrence,
+                # conserve that mixed glyph sequence as ink, not a guessed
+                # live identifier. Native paint and proved local reads have
+                # already returned above; ordinary numbers are unchanged.
+                numeric = _key(word['text']).strip('.,;:!?()[]')
+                ambiguous_numeric = (any(c.isdigit() for c in numeric)
+                    and any(c.isalpha() for c in numeric)
+                    and all(c in '0123456789OIlioSBZ' for c in numeric))
+                if word['text'] and (weak or counter or collision or unproved_multiword
+                                     or ambiguous_numeric):withheld.add(j)
             if withheld:record['method']='unproved_source_transcription_change'
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else

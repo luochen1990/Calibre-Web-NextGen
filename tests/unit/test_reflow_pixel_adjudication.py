@@ -4777,3 +4777,37 @@ def test_proved_independent_punctuation_is_not_hidden_by_an_unrelated_word_edit(
     result = pa.adjudicate('Read | the clear sample now.'.split(), source, witness)
     assert result['tokens'][1] == '|'
     assert 1 not in result['marked']
+
+
+@pytest.mark.parametrize('evidence', ['missing', 'weak_other_glyph', 'matching_pixels', 'visible_native'])
+def test_source_only_mixed_numeric_glyphs_need_pixel_proof_before_becoming_live(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    # The numeral is independently authored. Ambiguous OCR is not a printed
+    # identifier merely because its own confidence is high. The matching-pixel
+    # control deliberately prints the literal mixed identifier instead.
+    source = words('Read entry 7l now.')
+    witness = pa.CropWitness([])
+    if evidence == 'weak_other_glyph':
+        witness.extend(words('Read entry 71 now.', 40))
+    elif evidence == 'matching_pixels':
+        witness.extend(words('Read entry 7l now.'))
+    witness.model_reading = True
+    result = pa.adjudicate('Read entry now.'.split(), source, witness,
+                          source_print=evidence == 'visible_native')
+    index = result['tokens'].index('7l')
+    if evidence in ('missing', 'weak_other_glyph'):
+        assert result['word_notes'][index]['source_image_only']
+        assert result['word_notes'][index]['source_bbox'] == source[2]['bbox']
+        assert result['word_notes'][index]['status'] == 'UNRESOLVED'
+    else:
+        assert not result['word_notes'].get(index, {}).get('source_image_only')
+        assert result['word_notes'][index]['status'] == 'RESOLVED'
+
+
+def test_source_only_ordinary_number_keeps_existing_conservation_contract():
+    from cps.services.reflow import pixel_adjudication as pa
+    source = words('Read entry 71 now.')
+    witness = pa.CropWitness([]); witness.model_reading = True
+    result = pa.adjudicate('Read entry now.'.split(), source, witness)
+    index = result['tokens'].index('71')
+    assert not result['word_notes'][index].get('source_image_only')
