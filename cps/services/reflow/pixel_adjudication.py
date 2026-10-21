@@ -507,17 +507,25 @@ def _dictionary_regression(original,chosen):
 
 
 def _unsettled_optical_nonword(word,witness):
-    """Find a pixel-read competing stroke only for an already doubtful nonword.
+    """Find an observed stroke alternative only for an already doubtful word.
 
-    A modest-confidence complete optical alternative can demonstrate doubt; it
-    cannot choose the output. No spelling is generated from the dictionary,
-    and callers never apply this veto to certain complete reader words.
+    Dictionary neighbors filter eligibility, never supply a transcription.
+    Only an actual complete pixel read of one such neighbor demonstrates doubt;
+    an unrelated lexical guess or missing second read supplies no counter.
     """
     from .text_quality import english_lexicon
     token=_key(word['text']).strip('.,;:!?')
+    vocabulary=english_lexicon()
     if (not 4<=len(token)<=30 or not token.isascii()or not token.isalpha()
-            or not token.islower()or token in english_lexicon()
+            or not token.islower()or token in vocabulary
             or getattr(witness,'failure',None)):return None
+    candidates=set()
+    for original,alternative in (('c','e'),('l','f'),('v','y'),('v','w'),('m','rn'),('rn','m')):
+        for index in range(len(token)):
+            if token.startswith(original,index):
+                candidate=token[:index]+alternative+token[index+len(original):]
+                if candidate in vocabulary:candidates.add(candidate)
+    if not candidates:return None
     for name in ('word_readings','word_context_readings'):
         reader=getattr(witness,name,None)
         if reader is None:continue
@@ -525,9 +533,8 @@ def _unsettled_optical_nonword(word,witness):
             own=_whole_view_word(word,view)
             if len(own)!=1:continue
             candidate=own[0]
-            if (candidate.get('confidence',0)>=30
-                    and _dictionary_regression(candidate['text'],token)
-                    and _joined_stroke_conflict(candidate['text'],token)):
+            if (candidate.get('confidence',0)>=30 and
+                    _key(candidate['text']).strip('.,;:!?').casefold()in candidates):
                 return candidate
     return None
 

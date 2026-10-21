@@ -5718,3 +5718,16 @@ def test_an_explicitly_doubtful_nonword_cannot_ignore_its_own_optical_stroke_alt
     else:
         assert not result.get('word_notes',{}).get(at,{}).get('source_image_only')
         if case=='certain_model':assert not result['marked'],'A missing proof cannot invent doubt in a certain complete reader word'
+
+
+@pytest.mark.parametrize('case',['unrelated_lexical_guess','no_possible_stroke_word'])
+def test_nonword_doubt_requires_an_actual_pixel_stroke_relation_and_avoids_irrelevant_reads(monkeypatch,case):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset({'clear','modernly','sample'}))
+    token='modemly'if case=='unrelated_lexical_guess'else'examplezz'
+    word=dict(text=token,bbox=[30,20,70,32],confidence=99)
+    witness=pa.CropWitness([word]);calls=[]
+    def read(item):calls.append(item);return[[dict(item,text='clear',confidence=99)]]
+    witness.word_readings=read;witness.word_context_readings=read
+    assert pa._unsettled_optical_nonword(word,witness)is None
+    if case=='no_possible_stroke_word':assert not calls,'Vocabulary only filters eligibility; no possible stroke counter needs no OCR'
