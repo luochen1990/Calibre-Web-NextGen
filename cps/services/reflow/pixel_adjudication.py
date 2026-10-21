@@ -1821,13 +1821,14 @@ def _separated_word_ink(display,word,parts):
 def _neighbor_line_limits(bounds,words):
     """Separate nearby rows using two independently located words per row.
 
-    These positions only bound the ink search. They neither choose a spelling
+    These positions only bound the ink search. Weak letter recognition still
+    locates printed ink; its score cannot erase that row. They neither choose a spelling
     nor let the recognizer's own shortened word box certify a cropped prefix.
     No reliable neighboring row means the original larger search stays in use.
     """
     a=bounds;height=a[3]-a[1]
     if height<=0:return None,None
-    neighbors=[w['bbox']for w in words if w.get('confidence',0)>=85
+    neighbors=[w['bbox']for w in words if w.get('confidence',0)>=0
         and w['bbox'][3]-w['bbox'][1]>=.4*height
         and w['bbox'][0]<a[2]+2*height and w['bbox'][2]>a[0]-2*height]
     above=[b for b in neighbors if b[3]<a[1]]

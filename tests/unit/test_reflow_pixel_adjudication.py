@@ -5601,3 +5601,20 @@ def test_incomplete_ocr_prefix_is_not_a_complete_competing_model_word(monkeypatc
         assert note['method']=='complete_vision_reading_without_optical_counterevidence'
     else:
         assert note['method']!='complete_vision_reading_without_optical_counterevidence'
+
+
+@pytest.mark.parametrize('case',['two_weak_words','one_word','same_box','overlapping_row'])
+def test_neighboring_row_positions_do_not_need_a_correct_lexical_reading(case):
+    from cps.services.reflow import pixel_adjudication as pa
+    # Independently located ink can bound a row even when its letters are weak.
+    # This geometry supplies no spelling and cannot certify either word.
+    neighbors=[dict(text='unreadable-a',bbox=[40,38,55,46],confidence=30),
+        dict(text='unreadable-b',bbox=[59,38,75,46],confidence=20)]
+    if case=='one_word':neighbors.pop()
+    if case=='same_box':neighbors[1]['bbox']=neighbors[0]['bbox']
+    if case=='overlapping_row':
+        for word in neighbors:word['bbox'][3]=53
+    top,bottom=pa._neighbor_line_limits([45,50,65,60],neighbors)
+    assert bottom is None
+    if case=='two_weak_words':assert top==48
+    else:assert top is None,'An unproved or overlapping row cannot bound the original ink'
