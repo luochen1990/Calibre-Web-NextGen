@@ -641,6 +641,8 @@ def _proved_wrap(source,model,witness,same_reading=False):
                 # Exact letters are still required; this never supplies a
                 # guessed continuation or licenses a different printed word.
                 complete=_own_word_choice(word,witness)
+                if complete is None or _key(complete['text'])!=_key(word['text']):
+                    complete=_context_model_choice(word,witness,word['text'])
                 if complete is None or _key(complete['text'])!=_key(word['text']):return None
                 own=[complete]
             evidence.append(own[0])

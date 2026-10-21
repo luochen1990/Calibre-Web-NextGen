@@ -5851,3 +5851,26 @@ def test_exact_printed_division_uses_row_centers_not_disjoint_letter_boxes(case)
         assert result['conserved_boundaries']=={}
     else:
         assert pa._proved_wrap(source,model,witness,same_reading=True)is None,'Same-row, overlapping-line, distant, unreset or changed-letter input cannot prove a printed division'
+
+
+@pytest.mark.parametrize('evidence',['complete_context','different_letters','clipped_prefix','unavailable_context','conflicting_context'])
+def test_exact_divided_letters_can_be_corroborated_in_complete_context(evidence):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=[dict(text='rain-',bbox=[140,20,170,30],confidence=60),
+            dict(text='fall',bbox=[20,35,42,45],confidence=99)]
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda word:[]
+    def context(word):
+        first=dict(word,confidence=99)
+        if evidence=='different_letters':first['text']='hail-'
+        if evidence=='clipped_prefix':first['bbox']=[150,20,170,30]
+        if evidence=='unavailable_context':return []
+        views=[[first],[dict(first)]]
+        if evidence=='conflicting_context':views.extend([[dict(word,text='hail-',confidence=99)]]*2)
+        return views
+    witness.word_context_readings=context
+    result=pa.adjudicate(['rainfall'],source,witness)
+    if evidence=='complete_context':
+        assert result['tokens']==['rainfall']and not result['marked'],'A complete independent contextual pair can prove the already conserved prefix; isolated-word failure is not doubt in the joined word'
+    else:
+        assert pa._proved_wrap(source,'rainfall',witness,same_reading=True)is None,'A clipped, absent or competing contextual reading cannot certify a source division'
