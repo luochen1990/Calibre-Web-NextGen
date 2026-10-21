@@ -5916,3 +5916,32 @@ def test_reference_lexical_view_preserves_original_pixel_proofs(capability):
     assert not calls
     assert getattr(projected,capability,None)is proof,'Reserving a reference changes lexical inventory, not the available original-ink measurements'
     assert getattr(projected,capability)(witness[0])and len(calls)==1
+
+
+@pytest.mark.parametrize('case',['eroded_numeral','same_small_type','raised_small_type','other_row','letters','complete_ink','unmeasured_ink','native_paint','equal_length','complete_small_numeral'])
+def test_an_eroded_numeric_fragment_cannot_certify_unseen_digits(case):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=[dict(text='oo',bbox=[20,26,32,29],confidence=35),
+            dict(text='out',bbox=[38,22,53,29],confidence=95),
+            dict(text='of',bbox=[59,22,68,29],confidence=95),
+            dict(text='300',bbox=[74,20,92,29],confidence=95)]
+    model=['700','out','of','300']
+    if case=='same_small_type':source[-1]['bbox']=[74,26,80,29]
+    if case=='raised_small_type':source[0]['bbox']=[20,20,32,23]
+    if case=='other_row':source[-1]['bbox']=[74,40,92,49]
+    if case=='letters':model[0]='zoo'
+    if case=='complete_ink':source[0]['bbox']=[20,20,38,29]
+    if case=='equal_length':model[0]='70'
+    if case=='complete_small_numeral':source[0]['bbox']=[20,26,26,29]
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    witness.word_readings=lambda word:[]
+    witness.word_context_readings=lambda word:[]
+    witness.word_scope=lambda word:None if case=='unmeasured_ink'else list(word['bbox'])
+    result=pa.adjudicate(model,source,witness,source_print=case=='native_paint')
+    note=result['word_notes'].get(0,{})
+    if case=='eroded_numeral':
+        assert note.get('source_image_only')and note['status']=='UNRESOLVED','A digit-sized original fragment at only a third of its same-row digit height cannot certify the missing numeric ink'
+        assert note['method']=='incomplete_numeric_word_ink'
+        assert note['source_bbox']==[20,20,32,29]
+    else:
+        assert not note.get('source_image_only'),'Small or raised type, another row, complete original ink, letters and missing measurements do not prove eroded numeric print'

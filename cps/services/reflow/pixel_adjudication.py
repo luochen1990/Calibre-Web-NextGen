@@ -596,6 +596,42 @@ def _anomalous_leading_word_gap(source,index):
         and gap>2*statistics.median(ordinary))
 
 
+def _eroded_numeric_word_ink(model,source,index,witness):
+    """A wide low fragment cannot prove additional full-height numeric ink.
+
+    The original measured ink must be vertically compressed against a nearby
+    numeral on the same printed baseline. Small type, raised numerals, absent
+    measurements and ordinary complete words supply no such damage evidence.
+    This only withholds the uncertain occurrence; it supplies no digit.
+    """
+    import re
+    digits=_key(model).rstrip('.,;:!?')
+    if not re.fullmatch(r'[0-9]{2,}',digits):return None
+    word=source[index];letters=_letter_number_identity(word['text'])
+    if not letters or len(letters)>=len(digits):return None
+    measure=getattr(witness,'word_scope',None)
+    scope=measure(word)if measure is not None else None
+    if scope is None:return None
+    a=word['bbox'];height=scope[3]-scope[1]
+    if height<=0 or scope[2]-scope[0]<.8*len(digits)*height:return None
+    if not(scope[0]-.5<=(a[0]+a[2])/2<=scope[2]+.5
+            and scope[1]-.5<=(a[1]+a[3])/2<=scope[3]+.5):return None
+    peers=[]
+    for j,other in enumerate(source):
+        if j==index or other.get('confidence',0)<85:continue
+        if not re.fullmatch(r'[0-9]{2,}[.,;:!?]?',_key(other['text'])):continue
+        b=other['bbox'];full=b[3]-b[1]
+        if (full<=0 or max(height,a[3]-a[1])>=.55*full
+                or abs(scope[3]-b[3])>.3*full
+                or min(scope[3],b[3])<=max(scope[1],b[1])):continue
+        gap=max(0,a[0]-b[2],b[0]-a[2])
+        if gap<=24*full:peers.append((gap,b))
+    if not peers:return None
+    _,b=min(peers,key=lambda row:row[0])
+    return [min(a[0],scope[0]),min(scope[1],b[1]),
+            max(a[2],scope[2]),max(scope[3],b[3])]
+
+
 def _letter_number_identity(value):
     return ''.join(c for c in _key(value)if c.isalnum())
 
@@ -1402,6 +1438,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             # A known uncertain tail cannot become a complete printed word
             # merely because several tight crops repeat its surviving ink.
             supported=[];boundary=None;word_choice=None;resampled=None;alternate=None
+        eroded_numeric=(_eroded_numeric_word_ink(proposed[b],source,a,witness)
+            if z-a==y-b==1 else None)
+        if eroded_numeric is not None:
+            supported=[];boundary=None;word_choice=None;resampled=None;alternate=None
         symbol_conflict=(z-a==y-b==1 and _symbol_identity_conflict(
             proposed[b],source_tokens[a]))
         if symbol_conflict:
@@ -1414,7 +1454,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
             and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter)
-            and not(ordinal_conflict or quote_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or doubtful_fragment or word_scope_conflict and not partial_counter
+            and not(ordinal_conflict or quote_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or doubtful_fragment or eroded_numeric is not None or word_scope_conflict and not partial_counter
                     or not prefix_fragment and _small_mark_conflict(source_tokens[a],proposed[b]))
             and not _optical_counterread(source[a],witness,proposed[b],word_scope if partial_counter else None))
         if retained_vision:
@@ -1465,6 +1505,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         if doubtful_fragment and not resolved:
             record.update(source_image_only=True,source_bbox=list(source[a]['bbox']),
                 method='unproved_doubtful_leading_word_ink')
+        if eroded_numeric is not None and not resolved:
+            record.update(source_image_only=True,source_bbox=eroded_numeric,
+                method='incomplete_numeric_word_ink')
         unproved_source_choice=(not resolved and bool(literal)
             and list(literal)==source_tokens[a:z]and list(literal)!=proposed[b:y])
         withheld=set()
