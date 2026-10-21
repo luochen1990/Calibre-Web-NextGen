@@ -3705,7 +3705,14 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             else:territories.append(rect)
         if interior_rows:
             territories=sorted(territories+interior_rows,key=lambda rect:(rect[1],rect[0]))
-        if block['role']=='body' and any(b[1]<a[1]-height for a,b in zip(territories,territories[1:])):
+        # Absence of persistent column evidence is not single-column proof.
+        # Reorder only the observed interleaving of redundant physical crops;
+        # short, separately admitted columns retain their supplied flow.
+        contained_regions=any(i!=j and q[0]<=r[0] and q[1]<=r[1]
+            and q[2]>=r[2] and q[3]>=r[3]
+            for i,r in enumerate(territories)for j,q in enumerate(territories))
+        if (block['role']=='body' and contained_regions
+                and any(b[1]<a[1]-height for a,b in zip(territories,territories[1:]))):
             owned=[optical[i]for i in available if any(owned_words([optical[i]],r)for r in territories)]
             _,columns_proved=_proved_recovery_columns(owned)
             if not columns_proved:

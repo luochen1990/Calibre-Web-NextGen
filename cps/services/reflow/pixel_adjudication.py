@@ -550,6 +550,8 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     for kind,a,z,b,y in operations:
         if (z-a==2 and y-b==1 and proposed[b].endswith(('*','†','‡'))
                 and visible[b][0]+1<len(model)and model[visible[b][0]+1].startswith('<n:')
+                and not source_print and not all(proved_native_occurrence(
+                    w['text'],w['bbox'],native_print_words)for w in source[a:z])
                 and getattr(witness,'model_reading',False)and not unresolved_source
                 and visible[b][0]not in pending):
             lexical=proposed[b][:-1];word,glyph=source[a:z]

@@ -4448,3 +4448,27 @@ def test_unplaced_reference_ink_cannot_hide_its_independently_read_lexical_neigh
         assert 't'not in result['tokens']
     else:
         assert result['word_notes'][2].get('source_image_only')
+
+
+def test_a_native_lexical_letter_cannot_be_consumed_as_a_guessed_reference():
+    from cps.services.reflow import pixel_adjudication as pa
+    source=words('Observe pale stones, t beside this box.')
+    source[3]['bbox']=[58,20,63,32];source[2]['bbox']=[40,20,57,32]
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    result=pa.adjudicate('Observe pale stones,‡ <n:note> beside this box.'.split(),source,witness,source_print=True)
+    assert 't'in result['tokens'],'Reliably drawn native letters remain live at their own occurrence'
+    assert 'stones,‡'not in result['tokens'],'An unproved reference must not replace the native letter'
+
+
+def test_short_cross_column_regions_keep_their_admitted_reading_flow():
+    from types import SimpleNamespace
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    from tests.unit.test_reflow_vision_pilot import _cross_column_optical_fixture,answer,block
+    text,_,source=_cross_column_optical_fixture()
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,300,400));regions={}
+    reading,_=vp.bind_geometry(answer(block(text,bbox=(40,846,949,302))),source,display,regions)
+    assert len(regions['b1'])==2
+    assert regions['b1'][0][1]>regions['b1'][1][1], 'Short consecutive columns have a source-proven return to the upper row'
+    own=vp._owned_block_words(reading['blocks'][0],reading,source,display,regions,ordered=True)
+    assert [w['text']for w in own]==text.split()
