@@ -506,6 +506,32 @@ def _dictionary_regression(original,chosen):
     return a!=b and a in vocabulary and b not in vocabulary
 
 
+def _unsettled_optical_nonword(word,witness):
+    """Find a pixel-read competing stroke only for an already doubtful nonword.
+
+    A modest-confidence complete optical alternative can demonstrate doubt; it
+    cannot choose the output. No spelling is generated from the dictionary,
+    and callers never apply this veto to certain complete reader words.
+    """
+    from .text_quality import english_lexicon
+    token=_key(word['text']).strip('.,;:!?')
+    if (not 4<=len(token)<=30 or not token.isascii()or not token.isalpha()
+            or not token.islower()or token in english_lexicon()
+            or getattr(witness,'failure',None)):return None
+    for name in ('word_readings','word_context_readings'):
+        reader=getattr(witness,name,None)
+        if reader is None:continue
+        for view in reader(word):
+            own=_whole_view_word(word,view)
+            if len(own)!=1:continue
+            candidate=own[0]
+            if (candidate.get('confidence',0)>=30
+                    and _dictionary_regression(candidate['text'],token)
+                    and _joined_stroke_conflict(candidate['text'],token)):
+                return candidate
+    return None
+
+
 def _joined_stroke_conflict(original,chosen):
     """Agreement on joined Latin strokes cannot certify a different whole word.
 
@@ -1375,6 +1401,13 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             if partial_counter:
                 own=source[a]['bbox'];evidence['bbox']=[min(own[0],word_scope[0]),min(own[1],word_scope[1]),max(own[2],word_scope[2]),max(own[3],word_scope[3])]
             supported=[('model',proposed[b:y],[evidence])]
+        if (unresolved_source and len(supported)==1
+                and supported[0][1]==source_tokens[a:z]
+                and any(_unsettled_optical_nonword(word,witness)is not None
+                        for word in source[a:z])):
+            # Repeating a source-only nonword in the block recognizer does not
+            # settle a competing stroke seen at its own complete occurrence.
+            supported=[];boundary=None;word_choice=None;resampled=None;alternate=None
         resolved=len(supported)==1
         unproved_multiword=(not resolved and bool(source_tokens[a:z]) and bool(proposed[b:y])
             and getattr(witness,'model_reading',False) and not unresolved_source
@@ -1445,8 +1478,11 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 ambiguous_numeric = (any(c.isdigit() for c in numeric)
                     and any(c.isalpha() for c in numeric)
                     and all(c in '0123456789OIlioSBZ' for c in numeric))
+                uncertain_optical=_unsettled_optical_nonword(word,witness)
+                if uncertain_optical is not None:
+                    record.setdefault('word_alternatives',{})[j]=uncertain_optical['text']
                 if word['text'] and (weak or counter or collision or unproved_multiword
-                                     or ambiguous_numeric):withheld.add(j)
+                                     or ambiguous_numeric or uncertain_optical is not None):withheld.add(j)
             if withheld:record['method']='unproved_source_transcription_change'
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
@@ -1476,6 +1512,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                     source=[source[a+j]['text']],source_bbox=own,
                     source_range=[a+j,a+j+1])
                 word_record.pop('mapping',None)
+                if j in record.get('word_alternatives',{}):
+                    word_record.update(alternative=[record['word_alternatives'][j]],
+                        method='unsettled_optical_stroke_alternative')
                 chosen.append((token,own,word_record))
             else:chosen.append((token,evidence[j]['bbox'] if evidence else
                 source[a+j]['bbox']if retained_source else box,word_record))
@@ -1515,6 +1554,15 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             source_exact=(not getattr(witness,'failure',None) and len(source_own)==1 and source_own[0].get('confidence',0)>=90
                           and _key(source_own[0]['text'])==_key(tokens[i])
                           and not any(w.get('confidence',0)>=85 and _key(w['text'])!=_key(tokens[i])for w in own))
+            if i in bounds and (unresolved_source or i not in notes):
+                counter=_unsettled_optical_nonword(dict(text=tokens[i],bbox=bounds[i]),witness)
+                if counter is not None:
+                    marks.add(i)
+                    notes[i]=dict(source=[tokens[i]],model=[tokens[i]],chosen=[tokens[i]],
+                        alternative=[counter['text']],status='UNRESOLVED',
+                        method='unsettled_optical_stroke_alternative',
+                        source_image_only=True,source_bbox=list(bounds[i]))
+                    continue
             if i not in notes and (own_exact or source_exact):
                 verified.append(i);continue
             if (i not in notes and unresolved_source and len(source_own)==1

@@ -5688,3 +5688,32 @@ def test_restored_source_words_keep_their_own_occurrence_not_the_edit_envelope(m
         assert not note.get('mapping'),'The source owner is known even when the model correspondence is not'
         assert not note.get('model'),'An unrelated model span cannot supply a positional word pairing'
         assert note['source_range']==[i,i+1]
+
+
+@pytest.mark.parametrize('case',['doubtful','restored','certain_model','known_literal','remote','fragment','too_weak','native_print','missing_views'])
+def test_an_explicitly_doubtful_nonword_cannot_ignore_its_own_optical_stroke_alternative(monkeypatch,case):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    vocab={'read','the','clear','sample','now'}
+    if case=='known_literal':vocab.add('clcar')
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:frozenset(vocab))
+    source=words('Read the clcar sample now')
+    witness=pa.CropWitness([dict(w)for w in source]);witness.model_reading=True
+    alternative=dict(source[2],text='clear',confidence=29 if case=='too_weak'else 35)
+    if case=='remote':alternative['bbox']=[200,80,218,92]
+    if case=='fragment':alternative['bbox']=[40,20,45,32]
+    witness.word_readings=lambda word:[]if case=='missing_views'else[[alternative]]
+    witness.word_context_readings=lambda word:[]
+    model=['Read','a','different','line','now']if case=='restored'else[w['text']for w in source]
+    result=pa.adjudicate(model,source,witness,uncertain=()if case in('certain_model','restored')else{2},
+        unresolved_source=case=='restored',source_print=case=='native_print')
+    at=result['tokens'].index('clcar')
+    if case in('doubtful','restored'):
+        note=result['word_notes'][at]
+        assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+        assert note['source_bbox']==source[2]['bbox']
+        assert note['alternative']==['clear']
+        assert note['method']=='unsettled_optical_stroke_alternative'
+        assert 'clear'not in result['tokens'],'A dictionary or weak alternate is never a transcription'
+    else:
+        assert not result.get('word_notes',{}).get(at,{}).get('source_image_only')
+        if case=='certain_model':assert not result['marked'],'A missing proof cannot invent doubt in a certain complete reader word'
