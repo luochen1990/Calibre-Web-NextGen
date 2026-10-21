@@ -170,10 +170,6 @@ def _optical_counterread(source,witness,model,scope=None):
     for name in ('word_readings','resampled','alternates'):
         reader=getattr(witness,name,None)
         if reader is not None:views.extend(reader(source)if name=='word_readings'else reader())
-    word_reader=getattr(witness,'word_readings',None)
-    word_views=word_reader(source)if word_reader is not None else []
-    paired_noise={_key(choice['text'])for i in range(0,len(word_views)-1,2)
-        if(choice:=_paired_word_choice(source,word_views[i:i+2]))is not None}
     for view in views:
         row=_whole_view_word(source,view)
         if not row:
@@ -190,9 +186,7 @@ def _optical_counterread(source,witness,model,scope=None):
                     and min(a[3],w['bbox'][3])-max(a[1],w['bbox'][1])>=.55*(a[3]-a[1])):
                     row=owned
         if (row and row[0].get('confidence',0)>=85 and _key(row[0]['text'])!=_key(model)
-                and (scope is None or _covers_ink_scope(row,scope))
-                and (not _dictionary_regression(model,row[0]['text'])
-                     or _key(row[0]['text'])in paired_noise)):return True
+                and (scope is None or _covers_ink_scope(row,scope))):return True
     return False
 
 
@@ -1061,8 +1055,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         partial_counter=word_scope_conflict and word_scope is not None
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
-            and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter
-                or _dictionary_regression(proposed[b],source_tokens[a]))
+            and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter)
             and not(ordinal_conflict or quote_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or word_scope_conflict and not partial_counter
                     or _small_mark_conflict(source_tokens[a],proposed[b]))
             and not _optical_counterread(source[a],witness,proposed[b],word_scope if partial_counter else None))

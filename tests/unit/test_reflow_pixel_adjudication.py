@@ -3231,7 +3231,7 @@ def test_complete_vision_word_is_not_disputed_by_missing_or_incomplete_optical_e
     result=pa.adjudicate(printed.split(),source,witness,
         uncertain={2}if optical=='reader_uncertain'else(),unresolved_source=optical=='rejected')
     note=result['word_notes'][2]
-    if optical in('missing','weak','fragment','competing'):
+    if optical in('missing','weak','fragment'):
         assert result['tokens'][2]=='clear'
         assert note['status']=='RESOLVED'
         assert note['method']=='complete_vision_reading_without_optical_counterevidence'
@@ -3435,12 +3435,10 @@ def test_one_network_nonword_noise_cannot_veto_complete_pixel_support_for_model(
     primary.word_readings=lambda word:[[model],[weak],[contrary],[latin]]
     result=pa.adjudicate(printed.split(),source,primary)
     note=result['word_notes'][2]
-    if counter=='clcar'and latin_confidence==40:
+    if counter=='clcar'and latin_confidence==40 and model_confidence>=90 and complete:
         assert result['tokens'][2]=='clear'
         assert note['status']=='RESOLVED'
-        expected=('intact_pixel_corroboration_of_model'if model_confidence>=90 and complete
-                  else'complete_vision_reading_without_optical_counterevidence')
-        assert note['method']==expected
+        assert note['method']=='intact_pixel_corroboration_of_model'
         assert not note.get('source_image_only')
     else:
         assert note['status']=='UNRESOLVED'
@@ -4866,7 +4864,7 @@ def test_unsettled_recovered_nonword_cannot_remain_a_live_transcription():
 
 
 @pytest.mark.parametrize('credible',['single_network_noise','paired_nonword','real_word','explicit_doubt'])
-def test_only_credible_complete_counterreadings_dispute_a_confident_model_word(credible):
+def test_complete_optical_counterreadings_remain_evidence_even_for_uncommon_words(credible):
     from cps.services.reflow import pixel_adjudication as pa
     source=words('The clcar sample stays readable.',confidence=96)
     witness=pa.CropWitness(words('The clcar sample stays readable.',confidence=96))
@@ -4879,11 +4877,8 @@ def test_only_credible_complete_counterreadings_dispute_a_confident_model_word(c
     result=pa.adjudicate('The clear sample stays readable.'.split(),source,witness,
         uncertain={1}if credible=='explicit_doubt'else())
     note=result['word_notes'][1]
-    if credible=='single_network_noise':
-        assert result['tokens'][1]=='clear'
-        assert note['status']=='RESOLVED'and not note.get('source_image_only')
-        assert note['method']=='complete_vision_reading_without_optical_counterevidence'
-    else:assert note['status']=='UNRESOLVED'or result['tokens'][1]!='clear'
+    assert note['status']=='UNRESOLVED'and note.get('source_image_only')
+    assert result['marked']=={1},'An uncommon complete counterreading is not disposable noise'
 
 
 @pytest.mark.parametrize('context',['complete','clipped','different_word','conflicting_pairs','explicit_doubt'])
@@ -4960,3 +4955,20 @@ def test_recovered_common_word_is_not_verified_by_dictionary_membership(proof):
     if proof=='missing':assert result['word_notes'][2].get('source_image_only')
     elif proof=='independent':assert 2 not in result['marked']
     else:assert not result['word_notes'][2].get('source_image_only')
+
+
+def test_a_complete_uncommon_printed_word_cannot_be_rejected_by_the_dictionary():
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa
+    with pymupdf.open()as doc:
+        page=doc.new_page();page.insert_text((30,70),'The prlnted sample stays readable.',fontsize=12)
+        assert 'prlnted'in page.get_text().split()
+    source=words('The prlnted sample stays readable.',confidence=80)
+    witness=pa.CropWitness(words('The prlnted sample stays readable.',confidence=99))
+    witness.model_reading=True
+    witness.word_readings=lambda word:[]
+    result=pa.adjudicate('The printed sample stays readable.'.split(),source,witness)
+    note=result['word_notes'][1]
+    assert note['status']=='UNRESOLVED','A complete printed alternative is evidence even if it is uncommon'
+    assert note.get('source_image_only'),'A dictionary preference cannot publish the differing model word'
+    assert result['marked']=={1}
