@@ -6095,3 +6095,35 @@ def test_divided_word_counterevidence_is_judged_as_a_whole_lexical_word(monkeypa
         assert retained and result['word_notes'][1]['status']=='RESOLVED'
         assert result['marked']=={1},'The actual model correction remains linked to its own original ink'
     else:assert not retained,'A genuine counterword, strong original, deliberate doubt or unproved division stays independently adjudicated'
+
+
+@pytest.mark.parametrize('case',['body','footnote','foreign_owner','foreign_region','ambiguous_anchor','different_letters','distant_prefix','different_row','missing_prefix'])
+def test_a_first_line_indent_cannot_cut_an_internal_printed_row_opening(case):
+    from types import SimpleNamespace
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    first='Clear source anchors keep this line.'
+    second='Quiet visitors bring small bags home now.'
+    tokens=first.split()+second.split()
+    pixels=[dict(text=t,bbox=[100+30*i,20,125+30*i,32],confidence=99)for i,t in enumerate(first.split())]
+    pixels +=[dict(text=t,bbox=[30,50,55,62]if i==0 else[60,50,90,62]if i==1 else[100+30*(i-2),50,125+30*(i-2),62],confidence=99)for i,t in enumerate(second.split())]
+    block=dict(id='p1',role='footnote'if case=='footnote'else'body',text=' '.join(tokens),bbox=[237,100,850,450],marker='1')
+    answer={'blocks':[block]};regions={'p1':[[95,18,310,65]]}
+    if case=='foreign_owner':regions['_instances']={vp._source_instance(pixels[6]):'p2'}
+    if case=='foreign_region':
+        other=dict(id='p2',role='body',text='Quiet',bbox=[60,300,150,400]);answer['blocks'].append(other);regions['p2']=[[25,48,58,65]]
+    if case=='ambiguous_anchor':block['text']+=' bring small bags'
+    if case=='different_letters':pixels[6]['text']='Qulet'
+    if case=='distant_prefix':pixels[6]['bbox']=[0,50,10,62]
+    if case=='different_row':pixels[6]['bbox'][1:4:2]=[80,92]
+    if case=='missing_prefix':pixels.remove(pixels[6])
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,400,160))
+    added=vp._complete_optical_row_territory(block,answer,pixels,display,regions,{})
+    if case in('body','footnote'):
+        assert [v['text']for v in added]==['Quiet','visitors']
+        widened=dict(regions);widened['p1']=regions['p1']+[list(v['bbox'])for v in added]
+        widened['_row_additions']={'p1':tuple(vp._source_instance(v)for v in added)}
+        widened['_instances']={vp._source_instance(v):'p1'for v in added}
+        local=vp._owned_block_words(block,answer,pixels,display,widened,{},ordered=True)
+        assert [v['text']for v in local]==tokens,'Added opening words stay on their own row, before its existing words'
+    else:assert not added,'A clipped rectangle cannot take another owner, guess letters or jump a gap'

@@ -544,6 +544,53 @@ def _complete_note_tail_territory(block,answer,words,display,regions,local):
     return list(local)+selected
 
 
+def _complete_optical_row_openings(block,answer,pixels,display,regions,local):
+    """Locate unclaimed row openings from unique following source anchors.
+
+    A first-line indent cannot cut later lines at the same horizontal edge.
+    Only already recognized, exact, adjacent source instances may enlarge the
+    region. Their geometry supplies no new spelling authority.
+    """
+    from difflib import SequenceMatcher
+    key=lambda text:''.join(c for c in vision_reading.normalized(text).casefold()if c.isalnum())
+    model=[key(t)for t in re.sub(r'<n:[^>]+>',' ',block['text']).split()]
+    source=[key(w['text'])for w in local]
+    known={_source_instance(w)for w in local};added=[]
+    for kind,a,z,b,y in SequenceMatcher(None,source,model,autojunk=False).get_opcodes():
+        if kind!='insert' or a>=len(local) or not 1<=y-b<=20:continue
+        anchor=model[y:y+3]
+        if (len(anchor)!=3 or source[z:z+3]!=anchor
+                or sum(model[i:i+3]==anchor for i in range(len(model)-2))!=1
+                or sum(source[i:i+3]==anchor for i in range(len(source)-2))!=1):continue
+        right=local[a]['bbox'];height=right[3]-right[1]
+        if height<=0:continue
+        center=(right[1]+right[3])/2
+        if (a and abs(sum(local[a-1]['bbox'][1::2])/2-center)<=.5*height
+                or any(abs(sum(w['bbox'][1::2])/2-center)>.5*height for w in local[a:a+3])):continue
+        candidates=[]
+        for word in pixels:
+            box=word['bbox'];x=(box[0]+box[2])/2;cy=(box[1]+box[3])/2
+            if (_source_instance(word)in known or box[2]>right[0]+.1*height
+                    or abs(cy-center)>.5*height or not .5*height<=box[3]-box[1]<=1.8*height):continue
+            claim=(regions or {}).get('_instances',{}).get(_source_instance(word))
+            if claim is not None and claim!=block['id']:continue
+            if any(other['id']!=block['id']and any(r[0]<=x<=r[2]and r[1]<=cy<=r[3]
+                   for r in (regions or {}).get(other['id'],[block_rect(other,display)]))
+                   for other in answer['blocks']):continue
+            candidates.append(word)
+        candidates.sort(key=lambda word:word['bbox'][0]);selected=candidates[-(y-b):]
+        if (len(selected)!=y-b
+                or [key(word['text'])for word in selected]!=model[b:y]):continue
+        following=right
+        for word in reversed(selected):
+            box=word['bbox'];gap=following[0]-box[2]
+            if not -.1*height<=gap<=2*height:break
+            following=box
+        else:
+            added.extend(selected);known.update(_source_instance(word)for word in selected)
+    return added
+
+
 def _complete_optical_row_territory(block,answer,pixels,display,regions,body_owners,source_words=()):
     """Recover exact unclaimed words at any clipped physical row edge.
 
@@ -658,6 +705,9 @@ def _complete_optical_row_territory(block,answer,pixels,display,regions,body_own
             previous=word['bbox']
         else:
             result.extend(selected);known.update(_source_instance(w)for w in selected)
+    for word in _complete_optical_row_openings(block,answer,pixels,display,regions,local):
+        if _source_instance(word)not in known:
+            result.append(word);known.add(_source_instance(word))
     return result
 
 
@@ -753,7 +803,13 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
         x=(word['bbox'][0]+word['bbox'][2])/2
         y=(word['bbox'][1]+word['bbox'][3])/2
         return box[0]<=x<=box[2] and box[1]<=y<=box[3]
-    seen=set();result=[];ordered_groups=[]
+    seen=set();result=[];ordered_groups=[];pending_additions=[]
+    def adjacent_groups(local,height):
+        return [group for _,group in ordered_groups if any(
+            abs((w['bbox'][1]+w['bbox'][3]-v['bbox'][1]-v['bbox'][3])/2)<=.5*height
+            and (-.1*height<=w['bbox'][0]-v['bbox'][2]<=2*height
+                 or -.1*height<=v['bbox'][0]-w['bbox'][2]<=2*height)
+            for w in local for v in group)]
     for territory in territories:
         local=[]
         for word in owned_words(items,territory):
@@ -789,12 +845,12 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
                 # Exact added row words keep the position of their neighbouring
                 # original ink. Appending their crop after later rows must not
                 # duplicate them as a second reading at the end of the unit.
-                targets=[group for _,group in ordered_groups if any(
-                    abs((w['bbox'][1]+w['bbox'][3]-v['bbox'][1]-v['bbox'][3])/2)<=.5*height
-                    and -.1*height<=w['bbox'][0]-v['bbox'][2]<=2*height
-                    for w in local for v in group)]
+                targets=adjacent_groups(local,height)
                 if len(targets)==1:
                     targets[0].extend(local);continue
+                # The outermost opening word may be too far away until its
+                # intervening original words have joined the same row.
+                pending_additions.append((territory,local,height));continue
             overlap=(min(prior[2],territory[2])-max(prior[0],territory[0]) if prior else 0)
             same_column=(prior is not None and overlap>=.5*min(prior[2]-prior[0],territory[2]-territory[0])
                          and prior[1]<=territory[1]<=prior[3]+2*height)
@@ -804,6 +860,17 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
             if same_column:
                 ordered_groups[-1][0]=territory;ordered_groups[-1][1].extend(local)
             else:ordered_groups.append([territory,list(local)])
+    while pending_additions:
+        remaining=[];progress=False
+        for territory,local,height in pending_additions:
+            targets=adjacent_groups(local,height)
+            if len(targets)==1:
+                targets[0].extend(local);progress=True
+            else:remaining.append((territory,local,height))
+        if not progress:
+            ordered_groups.extend([territory,list(local)]for territory,local,_ in remaining)
+            break
+        pending_additions=remaining
     if ordered:
         result=[]
         for _,group in ordered_groups:
