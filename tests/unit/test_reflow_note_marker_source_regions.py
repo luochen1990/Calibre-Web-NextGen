@@ -228,16 +228,17 @@ def test_valid_note_hint_cannot_authorize_an_unplaced_repeated_reading():
         vp.bind_geometry({'blocks':[block]},optical,display,{}, {})
 
 
-@pytest.mark.parametrize('shape',['raised','baseline','ambiguous'])
+@pytest.mark.parametrize('shape',['raised','over_middle','baseline','ambiguous'])
 def test_unrecognized_raised_note_opening_is_owned_without_inventing_its_identity(shape):
     block=dict(note('opening','3'),bbox=[60,850,900,900])
     optical=words('°',620)
     optical[0]['bbox']=[40,620,45,623.5]if shape!='baseline'else[40,620,45,628]
+    if shape=='over_middle':optical[0]['bbox']=[40,620,45,625]
     if shape=='ambiguous':optical.insert(1,dict(text='+',bbox=[47,620,50,623.5]))
     regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
     answer,_=vp.bind_geometry({'blocks':[block]},optical,display,regions,{})
     proof=regions.get('_note_openings',{}).get('opening')
-    if shape=='raised':
+    if shape in ('raised','over_middle'):
         assert proof['source_bbox']==optical[0]['bbox']
         assert proof['observed_text']=='°'and proof['expected_label']=='3'
         assert proof['identity_status']=='UNPROVED'

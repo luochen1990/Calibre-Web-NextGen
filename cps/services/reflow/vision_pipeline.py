@@ -3302,7 +3302,7 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
                  marker.isdigit() and len(optical[i]['text'])==1
                  and not optical[i]['text'].isalnum()
                  and optical[i]['bbox'][3]-optical[i]['bbox'][1]<height*.85
-                 and optical[i]['bbox'][3]<(first[1]+first[3])/2)]
+                 and optical[i]['bbox'][3]<first[3]-height*.25)]
             if len(labels)==1:
                 indices.add(labels[0]);note_openings[note['id']]=optical[labels[0]]['bbox']
         for i in indices:
