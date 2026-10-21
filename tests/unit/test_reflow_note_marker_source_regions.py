@@ -248,3 +248,42 @@ def test_unrecognized_raised_note_opening_is_owned_without_inventing_its_identit
         assert [b['id']for b in recovered['blocks']]==['opening']
     else:
         assert proof is None,'Neither a full-height token nor competing glyphs prove one opening'
+
+
+@pytest.mark.parametrize('failure',['offline','cap','cancel','unexpected'])
+def test_unavailable_optional_opening_read_discloses_only_the_label(tmp_path,failure):
+    from cps.services.reflow.source_display import SourceDisplay
+    model=vp.vision_reading.model
+    error={'offline':model.ModelError('Printed marker absent from offline cache'),
+        'cap':model.CapExceeded(0.,0.,.01),
+        'cancel':model.AttemptCancelled('Synthetic cancellation'),
+        'unexpected':RuntimeError('Synthetic renderer failure')}[failure]
+    def unavailable(image):raise error
+    class Package:
+        def image(self,*args):pass
+    printed='Fresh hinges stay beside this bench.'
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=400,height=100)
+        page.insert_text((20,50),'3',fontsize=10)
+        page.insert_text((35,50),printed,fontsize=10)
+        optical=[dict(text=w[4],bbox=list(w[:4]))for w in page.get_text('words')]
+        label=optical[0]['bbox']
+        block=dict(note('opening','3'),text=printed,bbox=[0,0,1000,1000])
+        regions={'opening':[list(page.rect)],'_note_openings':{'opening':dict(
+            source_bbox=label,observed_text='°',expected_label='3',identity_status='UNPROVED')}}
+        context=dict(cache=tmp_path/'cache',marker_reader=unavailable,marker_receipts={})
+        def compile():return vp.compile_page({'blocks':[block]},optical,SourceDisplay(doc,0),0,
+            Package(),{},pixel_words=optical,regions=regions,note_context=context)
+        if failure in ('cancel','unexpected'):
+            with pytest.raises(type(error)):compile()
+        else:
+            published,report=compile()
+            assert report['blocks'][0]['published_tokens']==printed.split()
+            assert report['blocks'][0]['source_image_words']==[]
+            assert any(printed in aside for aside in published['asides'])
+            disclosures=report['note_marker_disclosures']
+            assert len(disclosures)==1
+            assert disclosures[0]['unit_bbox']==label
+            receipt=context['marker_receipts'][0][0]
+            assert receipt['request_dispatched'] is False and receipt['uncertain'] is True
+            assert receipt['new_cost_usd']==0

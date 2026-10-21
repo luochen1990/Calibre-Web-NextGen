@@ -3052,7 +3052,21 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         for r in receipts.get(pno,[]))
                     reader=(note_context or {}).get('marker_reader')
                     if not verified and reader:
-                        verified=_verify_note_glyph(display,bounds,reader,receipts,pno,'footnote_opening')==block['marker']
+                        try:
+                            verified=_verify_note_glyph(display,bounds,reader,receipts,pno,'footnote_opening')==block['marker']
+                        except (vision_reading.model.ModelError,vision_reading.model.CapExceeded) as error:
+                            # This optional label read may be unavailable before
+                            # dispatch. Its existing local source control owns
+                            # that uncertainty; do not discard readable note text.
+                            # Cancellation, ambiguous billing and unexpected
+                            # failures retain their ordinary recovery behavior.
+                            if not (isinstance(error,vision_reading.model.CapExceeded) or
+                                    type(error) is vision_reading.model.ModelError and
+                                    str(error)=='Printed marker absent from offline cache'):raise
+                            receipts.setdefault(pno,[]).append(dict(label='',uncertain=True,
+                                deferred=True,request_dispatched=False,new_cost_usd=0.,cached=False,
+                                source_bbox=list(bounds),kind='footnote_opening',
+                                reason='opening_glyph_not_verified_without_dispatch'))
                     if not verified:
                         from .unit_source import source_unit
                         _,contexts,unit=source_unit(display,pno,'opening-'+bid,'other',package,image_records,
