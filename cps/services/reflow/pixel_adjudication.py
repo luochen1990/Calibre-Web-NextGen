@@ -250,6 +250,31 @@ def blank_between(display,left,right,regions):
     return gray.getextrema()[0]>=180
 
 
+def blank_wrap_margins(display,left,right):
+    """Prove an empty adjacent line wrap from both complete page margins.
+
+    A crop ending at an OCR word cannot prove absence: it could have cut off
+    the missing word. Inspect to the page edge instead. Ink in another column
+    conservatively prevents this proof, as does a skipped intervening row.
+    """
+    from . import extract
+    from PIL import Image
+    import io
+    a,b=left['bbox'],right['bbox']
+    height=max(a[3]-a[1],b[3]-b[1])
+    advance=(b[1]+b[3]-a[1]-a[3])/2
+    if height<=0 or not height*.8<=advance<=height*1.8 or b[0]>=a[0]:return False
+    if b[1]<a[3]:return False
+    margins=[extract.pymupdf.Rect(a[2]+.1,a[1],display.rect.x1,a[3]),
+             extract.pymupdf.Rect(display.rect.x0,b[1],b[0]-.1,b[3])]
+    if any(box.is_empty or box.width<1 for box in margins):return False
+    for box in margins:
+        pix=display.pixmap(box,scale=4,max_pixels=200_000)
+        gray=Image.open(io.BytesIO(pix.tobytes('png'))).convert('L')
+        if gray.getextrema()[0]<180:return False
+    return True
+
+
 def _word_note(record, index, span_id):
     """Keep full edit evidence once; never invent a positional word pairing."""
     if max(len(record[key]) for key in ('source','model','chosen'))<=1:return record

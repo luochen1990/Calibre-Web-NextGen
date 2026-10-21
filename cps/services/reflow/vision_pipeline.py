@@ -2775,7 +2775,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             # Inconclusive OCR cannot revive a model passage already
                             # rejected by the source-conservation alignment guard.
                             unresolved_source=bool(result['fallback']),source_print=source_print,native_print_words=native_print_words,
-                            absence_proof=lambda left,right:pixel_adjudication.blank_between(display,left,right,territories))
+                            absence_proof=lambda left,right:(pixel_adjudication.blank_between(display,left,right,territories)
+                                or pixel_adjudication.blank_wrap_margins(display,left,right)))
                         def printed_space(left,right):
                             a,b=left['bbox'],right['bbox'];h=min(a[3]-a[1],b[3]-b[1])
                             return (b[0]-a[2]>=h*.15 and

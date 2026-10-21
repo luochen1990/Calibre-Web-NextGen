@@ -5018,3 +5018,36 @@ def test_clipped_middle_row_recovers_its_printed_tail_beyond_a_bad_model_hint(tm
             assert not record['marked'],'The row after a clipped row must not hide its missing printed words'
             assert extended
         else:assert not extended,'A differing or separately owned tail cannot be borrowed'
+
+
+@pytest.mark.parametrize('ink',['absent','end_of_row','intervening_row'])
+def test_model_insertion_across_a_wrap_requires_both_original_empty_margins(tmp_path,monkeypatch,ink):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    class Package:
+        def image(self,*args):pass
+        def disclosure_image(self,*args):pass
+    first='The sample keeps every word in the'
+    second='example readable beside the window.'
+    with pymupdf.open()as drawing,pymupdf.open()as doc:
+        page=drawing.new_page(width=400,height=180)
+        page.insert_text((30,70),first,fontsize=10)
+        if ink=='end_of_row':page.insert_text((190,70),'sixth',fontsize=10)
+        if ink=='intervening_row':page.insert_text((30,88),'sixth',fontsize=10)
+        page.insert_text((30,106 if ink=='intervening_row'else 88),second,fontsize=10)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')if w[4]!='sixth']
+        doc.new_page(width=400,height=180).insert_image(page.rect,stream=page.get_pixmap().tobytes('png'))
+        display=SourceDisplay(doc,0)
+        monkeypatch.setattr(pa,'read_crop',lambda display,boxes,cache:pa.CropWitness(source))
+        own=block(first+' sixth '+second,ident='p1',bbox=(0,0,1000,1000))
+        _,report=vp.compile_page({'blocks':[own]},[],display,0,Package(),{},pixel_words=source,
+            regions={'p1':[[0,0,400,180]]},
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+        record=report['blocks'][0]
+        if ink=='absent':
+            assert record['published_tokens']==(first+' '+second).split(), 'Empty wrap margins cannot publish an invented word'
+            assert any(d['model']==['sixth']and not d['chosen']and d['status']=='RESOLVED'
+                for d in record['adjudication'])
+        else:assert 'sixth'in record['published_tokens'], 'Original ink or an intervening row cannot prove deletion'
