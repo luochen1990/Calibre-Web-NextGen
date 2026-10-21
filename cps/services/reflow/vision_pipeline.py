@@ -504,8 +504,8 @@ def _complete_note_tail_territory(block,answer,words,display,regions,local):
     from difflib import SequenceMatcher
     key=lambda text:''.join(c for c in vision_reading.normalized(text).casefold()if c.isalnum())
     model=block['text'].split();prefix=key(''.join(w['text']for w in local))
-    if len(model)<=len(local) or not prefix:return None
-    splits=[i for i in range(6,len(model)-1)
+    if not prefix or len(key(''.join(model)))<=len(prefix):return None
+    splits=[i for i in range(1,len(model))
             if abs(len(key(''.join(model[:i])))-len(prefix))<=2
             and SequenceMatcher(None,prefix,key(''.join(model[:i]))).ratio()>=.95]
     if not splits:return None
@@ -520,9 +520,13 @@ def _complete_note_tail_territory(block,answer,words,display,regions,local):
     left=min(w['bbox'][0]for w in local)-3*height
     right=max(w['bbox'][2]for w in local)+3*height
     existing={_source_instance(w)for w in local}
+    terminal=_pixel_line_order(local)[-1]
+    terminal_right=terminal['bbox'][2]
     following=_pixel_line_order([w for w in words if _source_instance(w)not in existing
         and left<=(w['bbox'][0]+w['bbox'][2])/2<=right
-        and last+.5*height<(w['bbox'][1]+w['bbox'][3])/2<=last+2.5*height])
+        and ((last+.5*height<(w['bbox'][1]+w['bbox'][3])/2<=last+2.5*height)
+             or (abs((w['bbox'][1]+w['bbox'][3])/2-last)<=.5*height
+                 and w['bbox'][0]>=terminal_right-.1*height))])
     selected=[];literal=''
     for word in following:
         selected.append(word);literal+=key(word['text'])

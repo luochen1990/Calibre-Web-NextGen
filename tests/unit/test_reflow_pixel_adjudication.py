@@ -4312,3 +4312,34 @@ def test_two_complete_word_networks_can_verify_an_unchanged_invented_name(eviden
     else:
         assert result['marked']=={0}
         assert result['word_notes'][0]['status']=='UNRESOLVED'
+
+
+@pytest.mark.parametrize('boundary',['own','other_owner','different_tail','remote'])
+def test_letter_split_note_tail_can_continue_on_same_row_and_wrap(boundary):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    opening='Fresh timber keeps this printed entry beside'
+    with pymupdf.open()as drawing:
+        page=drawing.new_page(width=500,height=250)
+        page.insert_text((30,160),opening,fontsize=10)
+        for i,char in enumerate('FENNWICK,'):
+            page.insert_text((235+i*6,160),char,fontsize=8)
+        page.insert_text((295,160),'Repair-',fontsize=8)
+        page.insert_text((35,171 if boundary!='remote'else 220),'manual 2.',fontsize=8)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        # Recognition can emit one atom per small-cap letter; print and widths
+        # are independently drawn above. A soft hyphen retains the line break.
+        source=source[:len(opening.split())]+[
+            dict(text=char,bbox=[235+i*6,151.4,240+i*6,162.4],confidence=99)
+            for i,char in enumerate('FENNWICK,')]+source[-3:]
+        source[-3]['text']='Repair\u00ad'
+        local=source[:-3]
+        own=block(opening+' FENNWICK, Repairmanual '+('2.'if boundary!='different_tail'else'7.'),
+            ident='n1',role='footnote',marker='1',bbox=(50,590,590,650))
+        regions={'n1':[[25,148,292,163]],'_instances':{}}
+        if boundary=='other_owner':regions['_instances'][vp._source_instance(source[-1])]='n2'
+        result=vp._complete_note_tail_territory(own,{'blocks':[own]},source,SourceDisplay(drawing,0),regions,local)
+        if boundary=='own':assert result==source,'Every exact adjacent tail atom must enter the adjudicated crop'
+        else:assert result is None,'Foreign ownership, different letters and remote lines cannot extend a note'
