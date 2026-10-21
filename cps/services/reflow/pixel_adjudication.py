@@ -73,10 +73,27 @@ def _ordinal_noise(value):
     return bool(match and (len(match[1])==1 or any(c.isdigit()for c in match[1])))
 
 
+
+def _contained_ink_source(source,witness):
+    """Use positively measured inner ink, never move a word to another crop."""
+    reader=getattr(witness,'word_scope',None)
+    if reader is None:return source
+    scope=reader(source)
+    if scope is None:return source
+    a=source['bbox']
+    if (not(scope[0]<scope[2]and scope[1]<scope[3])
+            or any(scope[i]<a[i]-.5 for i in (0,1))
+            or any(scope[i]>a[i]+.5 for i in (2,3))):return source
+    return dict(source,bbox=list(scope))
+
 def _own_word_choice(source,witness):
     reader=getattr(witness,'word_readings',None)
     if reader is None:return None
-    return _paired_word_choice(source,reader(source))
+    views=reader(source)
+    complete=_paired_word_choice(source,views)
+    if complete is not None:return complete
+    inner=_contained_ink_source(source,witness)
+    return _paired_word_choice(inner,views)if inner is not source else None
 
 
 def _paired_word_choice(source,views):
@@ -111,12 +128,20 @@ def _model_word_choice(source,witness,model):
     reader=getattr(witness,'word_readings',None)
     if reader is None:return None
     views=reader(source)
-    own=[row[0] for view in views if (row:=_whole_view_word(source,view))
+    own=[row[0]for view in views if(row:=_whole_view_word(source,view))
          and row[0].get('confidence',0)>=85]
+    inner=source
+    if not any(_key(w['text'])==_key(model)and w.get('confidence',0)>=90 for w in own):
+        inner=_contained_ink_source(source,witness)
+        if inner is not source:
+            own=[row[0]for view in views
+                 if(row:=(_whole_view_word(source,view)or _whole_view_word(inner,view)))
+                 and row[0].get('confidence',0)>=85]
     if any(_key(w['text'])!=_key(model)and not _dictionary_regression(model,w['text'])
            for w in own):return None
     for start in range(0,len(views),2):
-        competing=_paired_word_choice(source,views[start:start+2])
+        competing=(_paired_word_choice(source,views[start:start+2])
+            or _paired_word_choice(inner,views[start:start+2]))
         if competing and _key(competing['text'])!=_key(model):return None
     return next((w for w in own if _key(w['text'])==_key(model)
                  and w.get('confidence',0)>=90),None)
@@ -1014,6 +1039,7 @@ def read_crop(display, regions, cache):
             except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError):return []
         @lru_cache(maxsize=128)
         def word_scope(bounds):
+            if display is None:return None
             try:
                 limits=_neighbor_line_limits(bounds,result)
                 return _word_ink_scope(display,dict(bbox=bounds),line_limits=limits)

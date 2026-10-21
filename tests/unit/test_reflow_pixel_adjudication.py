@@ -4390,3 +4390,20 @@ def test_weak_neighbor_cannot_make_a_complete_independently_read_edit_unplaced(e
         assert all(note['status']=='RESOLVED'for note in result['word_notes'].values())
         assert result['boxes'][1]==witness[1]['bbox']and result['boxes'][2]==witness[2]['bbox']
     else:assert any(note['status']=='UNRESOLVED'for note in result['word_notes'].values())
+
+
+@pytest.mark.parametrize('scope',['contained','cropped_recognition','outside','absent','credible_competitor'])
+def test_measured_ink_inside_padding_can_prove_a_complete_word(scope):
+    from cps.services.reflow import pixel_adjudication as pa
+    original=dict(text='clear',bbox=[0,0,60,20],confidence=99)
+    witness=pa.CropWitness()
+    ink=[10,5,45,15]
+    text='clean'if scope=='credible_competitor'else'clear'
+    recognized=dict(text=text,bbox=[25,5,45,15]if scope=='cropped_recognition'else ink,confidence=99)
+    witness.word_readings=lambda word:[[dict(recognized)],[dict(recognized)]]
+    witness.word_scope=lambda word:(None if scope=='absent'else[-10,5,45,15]if scope=='outside'else ink)
+    chosen=pa._model_word_choice(original,witness,'clear')
+    if scope=='contained':
+        assert chosen is not None and chosen['text']=='clear'
+        assert pa._own_word_choice(original,witness)['text']=='clear'
+    else:assert chosen is None,'Padding cannot waive cropped letters, remote ink or a credible alternative'
