@@ -17,7 +17,7 @@ import tempfile
 
 from . import ocr, vision_reading
 
-VERSION = 'local-reading-2'
+VERSION = 'local-reading-3'
 MAX_PIXELS = 8_000_000
 TIMEOUT = 120
 
@@ -84,9 +84,9 @@ def partition_units(units, repairs):
 
 
 def recognize(display, cache):
-    """Recognize at 2x, capped at eight million pixels and 120 seconds per tile."""
+    """Recognize at 3x, capped at eight million pixels and 120 seconds per tile."""
     executable, version, data = ocr._engine('eng')
-    pix = display.pixmap(scale=2, max_pixels=MAX_PIXELS)
+    pix = display.pixmap(scale=3, max_pixels=MAX_PIXELS)
     image = pix.tobytes('png')
     identity = dict(adapter=VERSION, image=hashlib.sha256(image).hexdigest(),
                     engine=version, data=data, rect=list(display.rect))

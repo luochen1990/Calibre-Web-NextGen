@@ -3294,7 +3294,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     # Tight evidence remains in final notes, never an inline word crop.
                     clip=extract.pymupdf.Rect(crop);clip.x0-=2;clip.y0-=2;clip.x1+=2;clip.y1+=2;clip &= display.rect
                     _word_disclosure_image(package,src,display,clip,word_decision.get('source_parts'))
-                    image_records[src]=dict(page=pno,bbox=list(clip),kind='vision_disclosure')
+                    image_records[src]=dict(page=pno,bbox=list(clip),kind='vision_disclosure',
+                        **({'source_parts':copy.deepcopy(word_decision['source_parts'])}
+                           if word_decision.get('source_parts')else {}))
                     label=('Unverified local OCR reading' if local_ocr else
                         'Uncertain source reading fallback' if result['fallback'] else
                         'Model reading differs from source layer' if words else 'Low-confidence model reading')
@@ -3336,6 +3338,25 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 if local_ocr and index in result['marked']:
                     piece='<span class="uncertain" title="Unverified local OCR reading">'+piece+'</span>'
                 pieces.append(piece)
+            from . import occurrence_coverage
+            inventory=(raw['words']if local_ocr and local_ocr_units is not None and raw else local or optical_local)
+            coverage=occurrence_coverage.classify(inventory,result['tokens'],evidence_boxes,
+                result.get('word_notes',{}),image_records,pno)
+            missing=[row for row in coverage if row['disposition']=='missing']
+            if missing:
+                # A replacement optical inventory cannot silently erase source
+                # occurrences. Keep healthy live words; retain only this gap's
+                # unresolved ownership in an explicit original-print context.
+                from .unit_source import source_unit
+                _,contexts,unit=source_unit(display,pno,'coverage-'+bid,'other',package,image_records,
+                    'Source occurrences without a unique live-word binding are retained as original print',
+                    bbox=vision_reading.union([row['source_bbox']for row in missing]))
+                extras.extend(contexts)
+                origin=unit['source_reference_origin'];target=unit['source_reference']
+                pieces.append(f'<a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{target}"><sup>†</sup></a>')
+                marked+=1
+                for row in missing:row.update(disposition='print',image=unit['image'],
+                    source_reference=target,method='unplaced_occurrence_original_print')
             text=''.join(('' if i==0 or i in wraps else ' ')+piece for i,piece in enumerate(pieces) if piece)
             # The marker is typographic punctuation, not a standalone sentence block.
             text=re.sub(r'\s+(<a[^>]*class="noteref".*?</a>)',r'\1',text)
@@ -3447,6 +3468,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 punctuation_source_anchors=[dict(source_word_index=i,
                     lexical_whitespace_token_index=j,source_bbox=optical_evidence[i]['bbox'])
                     for i,j in punctuation_proof],
+                occurrence_coverage=coverage,
+                published_word_boxes={str(i):list(box)for i,box in evidence_boxes.items()},
                 published_tokens=result['tokens'],
                 marked=sorted(result['marked']),fallback=result['fallback'],guard=result['guard'],
                 adjudication=result.get('adjudication',[]),source_image_words=sorted(i for i,d in (result.get('word_notes')or{}).items()if d.get('source_image_only')),verified_unchanged=sorted(set(result.get('verified_unchanged',[]))|set(adjudication.get('verified_unchanged',[]) if adjudication else [])),original_model_tokens=original_model_tokens,
@@ -3501,8 +3524,10 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
     for nid,html in asides:
         backlinks='' if note_context else ' '.join(f'<a href="#{ref}">Return</a>' for ref in refs.get(nid,[]))
         note_html.append(html+backlinks+'</aside>')
+    from .occurrence_coverage import summary as coverage_summary
     return {'pno':pno,'anchor':f'<span id="pg_{pno:04d}"></span>',
             'body':body,'asides':note_html+extras},dict(blocks=alignment,marks=marked,words=tokens_count,
+            occurrence_coverage=coverage_summary([row for block in alignment for row in block.get('occurrence_coverage',[])]),
             unlinked_notes=sorted(set(footnotes)-set(refs)),source_figure_contexts=list((figure_cases or {}).values()),
             live_table_cells=live_table_cells,note_marker_disclosures=marker_disclosures,note_marker_repairs=marker_repairs,
             source_quote_suppressions=list(source_quote_suppressions.values()),
@@ -5310,6 +5335,7 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 box[1]-tolerance <= (w['bbox'][1]+w['bbox'][3])/2 <= box[3]+tolerance
                 for box in territories)])
             source=_native_lexical_view(display,source)
+            record['native_source_occurrences']=copy.deepcopy(source)
             tokens=_seam_text(page['body'][position]).split()
             record['published_tokens']=tokens
             from .native_text import drawn_word_authority,drawn_word_authorities
@@ -7366,12 +7392,19 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
                 ident='native-support-'+str(index);documents[href]=html
                 manifest.append({'id':ident,'href':href,'type':'application/xhtml+xml'});spine.append(ident)
             entries.extend([(build_epub.SOURCE_CHECKS_HREF,'Source checks'),(build_epub.SOURCE_INDEX_HREF,'Source PDF pages')])
+        from .occurrence_coverage import final_publication
+        source_displays={n:scans[n]['display']if n in scans else SourceDisplay(doc,n)for n in numbers}
+        source_frames={n:scans[n]['optical']if n in scans else
+            [dict(text=w[4],bbox=list(source_displays[n].reading_rect(w[:4])))
+             for w in doc[n].get_text('words')]for n in numbers}
+        publication_coverage=final_publication(documents,records,source_frames,images,package,source_displays,homes)
         for index,src in enumerate(package.images):
             manifest.append({'id':f'im{index}','href':src,'type':package.media_types[src]})
         result={'converter':'vision-page-pilot','version':vision_reading.VERSION,'model':vision_reading.MODEL,
                 'pages':records,'text_quality':quality_sweep,'page_homes':homes,'page_joins':joins,'native_pages':native,'vision_pages':scanned,
                 'page_seam_decisions':seam_decisions,'page_seam_role_repairs':seam_role_repairs,
                 'source_document_sha256':extract.document_fingerprint(doc),'images':images,
+                'publication_coverage':publication_coverage,
                 'native_margin_repairs':native_margin_repairs,
                 'native_caption_repairs':native_caption_repairs,
                 'native_publication_repairs':native_publication_repairs,
