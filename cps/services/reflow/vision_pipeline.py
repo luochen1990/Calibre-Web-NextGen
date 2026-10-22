@@ -853,7 +853,15 @@ def _coalesce_inline_source_images(pieces,display,pno,bid,package,images):
             same_row=min(other[3],box[3])-max(other[1],box[1])>=.5*min(other[3]-other[1],box[3]-box[1])
             overlap=min(other[2],box[2])-max(other[0],box[0])
             if same_row and overlap>.1*min(other[2]-other[0],box[2]-box[0]):
-                groups[-1].append(entry);continue
+                # Intersecting inspection padding is not duplicated print.
+                # Require actual strokes in the shared strip; two separate
+                # letters with blank space between them keep separate images.
+                shared=extract.pymupdf.Rect(max(other[0],box[0]),max(other[1],box[1]),
+                    min(other[2],box[2]),min(other[3],box[3]))
+                pix=display.pixmap(shared,scale=3,gray=True,max_pixels=100_000)
+                samples=pix.samples
+                if samples and max(samples)-min(samples)>40:
+                    groups[-1].append(entry);continue
         groups.append([entry])
     for group in groups:
         if len(group)<2:continue
