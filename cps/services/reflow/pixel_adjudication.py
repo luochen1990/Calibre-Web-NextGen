@@ -2549,7 +2549,11 @@ def audit_local_numeric_suffixes(result,boxes,witness):
             proved=any(confirmed(views[j])and confirmed(views[j+1])
                 for j in range(0,len(views)-1,2))
             if not proved:
-                record=dict(source=[token],model=[token],chosen=[token],status='UNRESOLVED',
+                # A later retention decision must preserve the original
+                # source-to-choice receipt, including an earlier correction.
+                previous=result.get('word_notes',{}).get(i,{})
+                record=dict(previous,source=previous.get('source',[token]),
+                    model=previous.get('model',[token]),chosen=[token],status='UNRESOLVED',
                     method='unproved_local_reference_label',source_image_only=True,
                     source_bbox=list(boxes[i]))
                 result.setdefault('word_notes',{})[i]=record

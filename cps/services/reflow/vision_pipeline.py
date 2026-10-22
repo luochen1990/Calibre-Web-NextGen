@@ -3380,7 +3380,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         else:explanation=source_quote+(' An independent upright crop supports this correction.' if decision['status']=='RESOLVED' else ' An independent upright crop could not settle this difference.')+' Compare the original printed word in the image.'
                     else:explanation=escape(' '.join(result['tokens'][i] for i in endings[index]))+'. '+source_quote
                     if decision and decision.get('source_image_only'):
-                        explanation='The independent pixel readings do not settle this printed word. Read the original image.'
+                        explanation=((source_quote+' ')if decision['source']!=decision['chosen']else '')+'The independent pixel readings do not settle this printed word. Read the original image.'
                     extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
                     if decision and decision.get('source_image_only'):
                         piece=f'<a class="source-word-image" href="#{ident}"><img src="{src}" alt="Unresolved printed word; inspect original"/></a>'
