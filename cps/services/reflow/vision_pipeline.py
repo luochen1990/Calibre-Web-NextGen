@@ -409,14 +409,35 @@ def _reserve_layer_instances(answer,words,display,regions):
     key=lambda text:re.sub(r'[^\w]','',vision_reading.normalized(text).casefold())
     proposals={}
     for block in answer['blocks']:
-        if block['role'] not in ('body','other','caption','heading'):continue
+        if block['role'] not in ('body','other','caption','heading','footnote'):continue
         candidate=[key(token)for token in re.sub(r'<n:[^>]+>',' ',block['text']).split()]
         candidate=[token for token in candidate if token]
         if len(candidate)<3:continue
-        local=[word for word in words if key(word['text']) and any(
-            owned_words([word],box)for box in regions.get(block['id'],[block_rect(block,display)]))]
+        boxes=regions.get(block['id'],[block_rect(block,display)])
+        if block['role']=='footnote' and block.get('marker'):
+            # A hanging note row can start left of the first indented row.
+            # Its own vertical extent and a complete unique lexical placement
+            # locate that ink before omission recovery creates another unit.
+            heights=[w['bbox'][3]-w['bbox'][1]for w in words
+                     if any(owned_words([w],box)for box in boxes)]
+            if heights:
+                import statistics
+                hint=block_rect(block,display);pad=3*statistics.median(heights)
+                boxes=boxes+[[max(display.rect.x0,hint[0]-pad),hint[1],
+                              min(display.rect.x1,hint[2]+pad),hint[3]]]
+        local=_pixel_line_order([word for word in words if key(word['text']) and any(
+            owned_words([word],box)for box in boxes)])
         anchors=unique_anchors(local,range(len(local)),candidate,minimum=3)
         if {j for i,j in anchors}!=set(range(len(candidate))):continue
+        if block['role']=='footnote':
+            bound=regions.setdefault(block['id'],[block_rect(block,display)])
+            for i,j in anchors:
+                if not any(owned_words([local[i]],box)for box in bound):
+                    bound.append(list(local[i]['bbox']))
+                    additions=regions.setdefault('_row_additions',{}).setdefault(block['id'],[])
+                    if not isinstance(additions,list):
+                        additions=list(additions);regions['_row_additions'][block['id']]=additions
+                    additions.append(_source_instance(local[i]))
         for i,j in anchors:
             proposals.setdefault(_source_instance(local[i]),set()).add(block['id'])
     instances=regions.setdefault('_instances',{})
@@ -6059,6 +6080,7 @@ def cover_missing_lines(answer,optical,source_words,display,regions=None,body_ow
     certain. Figure/table territories are already represented as source images.
     Short unmatched marks remain diagnostics instead of invented paragraph roles.
     """
+    if regions is not None:_reserve_layer_instances(answer,optical,display,regions)
     answer=copy.deepcopy(answer);blocks=answer['blocks'];boxes=[box for b in blocks for box in (regions or {}).get(b['id'],[block_rect(b,display)])]
     # Reserved SOURCE territories survive removal of rejected authored blocks.
     # They are rendered by unit_source, so recovering their ink again would
