@@ -3394,10 +3394,16 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 result['marked'].add(index)
                 result.setdefault('word_notes',{})[index]=decision
                 result.setdefault('adjudication',[]).append(decision)
+            if adjudication:
+                result['verified_unchanged']=sorted(set(result.get('verified_unchanged',[]))|
+                    set(adjudication.get('verified_unchanged',[])))
             from . import reading_tiers
             reading_tiers.conserve_punctuation_boundaries(result,baseline if adjudication else local,first_tokens if adjudication else proposed)
             _remove_foreign_word_runs(result,bid,answer,pixel_words or [],regions)
             reading_tiers.join_letter_spaced_readings(result,witness or [])
+            if any(g.get('kind')in('foreign_owned_run_published_once','letter_spaced_printed_words')
+                   for g in result['guard']):
+                wraps=_printed_wraps(result['tokens'],optical_local)
             evidence_boxes=result['boxes']
             compiled_reading=' '.join(result['tokens'])
             lost_scripts=(text_quality.reading_script_mismatches(block['text'],compiled_reading)
@@ -3431,6 +3437,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             if ((result['fallback'] or result['marked'])
                     and complete_check(compiled_reading)['needs_read']):
                 raise _DisclosureQualityRejection('Unreliable chosen reading requires original source disclosure')
+            reading_tiers.settle_repeated_word_shapes(result,display)
             flagged_readings=reading_tiers.prepare(result)
             groups=[]
             for index in sorted(i for i in result['marked'] if not result['tokens'][i].startswith('<n:')):
@@ -3794,7 +3801,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 published_tokens=result['tokens'],
                 marked=sorted(result['marked']),fallback=result['fallback'],guard=result['guard'],
                 flagged_readings={str(i):choice for i,choice in flagged_readings.items()},
-                adjudication=result.get('adjudication',[]),source_image_words=sorted(i for i,d in (result.get('word_notes')or{}).items()if d.get('source_image_only')),verified_unchanged=sorted(set(result.get('verified_unchanged',[]))|set(adjudication.get('verified_unchanged',[]) if adjudication else [])),original_model_tokens=original_model_tokens,
+                adjudication=result.get('adjudication',[]),source_image_words=sorted(i for i,d in (result.get('word_notes')or{}).items()if d.get('source_image_only')),verified_unchanged=sorted(set(result.get('verified_unchanged',[]))),original_model_tokens=original_model_tokens,
                 layer_words=[w['text'] for w in local],dropped_layer_words=result['dropped_layer_words'],
                 continues_previous=block['continues_previous'],continues_next=block['continues_next']))
             if role=='caption' and punctuation_proof and printed_head is not None and printed_tail is not None:

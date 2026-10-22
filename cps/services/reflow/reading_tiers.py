@@ -180,3 +180,77 @@ def conserve_punctuation_boundaries(result, source, model):
         result['marked'].discard(index);result['word_notes'].pop(index,None)
         result.setdefault('guard',[]).append(dict(kind='source_punctuation_boundary_conserved',
             index=index,original_chosen=chosen,reading=chosen[1:],source_range=[a-1,z],model_range=[b-1,y]))
+
+
+_SHAPE_PROOFS = frozenset({'independent_upright_crop', 'two_own_word_language_readings',
+    'two_own_pixel_readings', 'intact_pixel_corroboration_of_model',
+    'corroborated_resampled_pixel_readings', 'two_alternate_alphabet_pixel_readings'})
+_SHAPE_DOUBTS = frozenset({'unproved_shared_stroke_identity', 'unsettled_alternate_pixel_readings',
+                         'pixel_read_inconclusive'})
+
+
+def word_shape(display, box):
+    """A bounded gray ink signature, refusing touching or incomplete crops."""
+    from PIL import Image, ImageOps
+    from .extract import pymupdf
+    rect=(pymupdf.Rect(box)+(-2,-2,2,2)) & display.rect
+    if rect.get_area()<=0 or rect.get_area()>6000:return None
+    pix=display.pixmap(rect,scale=6,gray=True,max_pixels=220_000)
+    image=Image.frombytes('L',(pix.width,pix.height),pix.samples)
+    ink=ImageOps.invert(image)
+    bound=ink.point(lambda v:255 if v>95 else 0).getbbox()
+    if not bound or min(bound[:2])<=1 or bound[2]>=image.width-1 or bound[3]>=image.height-1:return None
+    w,h=bound[2]-bound[0],bound[3]-bound[1]
+    if w/h>20 or w<3 or h<3:return None
+    ink=ink.crop(bound).resize((max(1,round(w/h*32)),32),Image.Resampling.LANCZOS)
+    return dict(width=w,height=h,signature=ink,source_bbox=list(box))
+
+
+def same_word_shape(left,right):
+    """Whole ink agreement, with mismatch normalized to ink rather than paper."""
+    from PIL import Image
+    a,b=left['signature'],right['signature']
+    if abs(a.width-b.width)>max(1,.02*a.width):return False
+    if abs(left['height']-right['height'])>max(1,.04*left['height']):return False
+    b=b.resize(a.size,Image.Resampling.LANCZOS)
+    x,y=a.tobytes(),b.tobytes()
+    return sum(abs(i-j)for i,j in zip(x,y))/max(1,sum(x)+sum(y))<=.02
+
+
+def settle_repeated_word_shapes(result,display):
+    """Reuse only a completed independent proof of this same whole ink shape.
+
+    A different occurrence cannot supply a spelling by vocabulary frequency.
+    Letters, dimensions and gray ink must all agree with an earlier proved
+    occurrence. Opaque codes, diacritics and symbolic identities stay outside
+    this optional lexical-stroke proof.
+    """
+    evidence=getattr(display,'_reflow_proved_word_shapes',None)
+    if evidence is None:
+        evidence=[];display._reflow_proved_word_shapes=evidence
+    notes=result.get('word_notes',{})
+    # Within a block, a later clear occurrence may settle an earlier one too.
+    for i,note in notes.items():
+        if (note.get('status')!='RESOLVED' or note.get('method')not in _SHAPE_PROOFS
+                or i not in result['boxes']):continue
+        token=result['tokens'][i]
+        if not token.strip('.,;:!?').isalpha():continue
+        shape=word_shape(display,result['boxes'][i])
+        if shape is not None and len(evidence)<256:
+            evidence.append(dict(reading=token,shape=shape,method=note['method']))
+    for i,note in list(notes.items()):
+        if (note.get('status')!='UNRESOLVED' or note.get('method')not in _SHAPE_DOUBTS
+                or i not in result['boxes']):continue
+        token=result['tokens'][i]
+        proofs=[p for p in evidence if equivalent(p['reading'],token)]
+        if not proofs:continue
+        shape=word_shape(display,note.get('source_bbox',result['boxes'][i]))
+        if shape is None:continue
+        matches=[p for p in proofs if same_word_shape(shape,p['shape'])]
+        if not matches:continue
+        proof=matches[0]
+        resolved=dict(note,status='RESOLVED',method='same_page_complete_word_shape',
+            source_image_only=False,shape_proof=dict(source_bbox=proof['shape']['source_bbox'],
+                reading=proof['reading'],method=proof['method']))
+        notes[i]=resolved
+        result.setdefault('adjudication',[]).append(resolved)
