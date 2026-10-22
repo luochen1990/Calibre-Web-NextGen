@@ -3395,6 +3395,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 result.setdefault('word_notes',{})[index]=decision
                 result.setdefault('adjudication',[]).append(decision)
             _remove_foreign_word_runs(result,bid,answer,pixel_words or [],regions)
+            from . import reading_tiers
+            reading_tiers.join_letter_spaced_readings(result,witness or [])
             evidence_boxes=result['boxes']
             compiled_reading=' '.join(result['tokens'])
             lost_scripts=(text_quality.reading_script_mismatches(block['text'],compiled_reading)
@@ -3412,7 +3414,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             model_count=len(re.sub(r'<n:[^>]+>', ' ', block['text']).split())
             chosen_count=sum(not token.startswith('<n:') for token in result['tokens'])
             contracted=(model_count>=vision_reading.UNALIGNED_RUN
-                        and chosen_count<.25*model_count)
+                        and chosen_count<.25*model_count
+                        and ''.join(block['text'].split())!=''.join(result['tokens']))
             if result['fallback'] and contracted:
                 raise _DisclosureQualityRejection('Unreliable contracted fallback requires original source disclosure')
             # A punctuation-only model variant does not turn an unchanged

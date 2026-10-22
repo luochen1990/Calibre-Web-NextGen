@@ -100,3 +100,56 @@ a.source-word-image, a.source-disclosure-ref { text-decoration:none; color:inher
 a.source-word-image img { max-width:none; width:auto; }
 a.source-disclosure-ref sup { font-size:.55em; line-height:0; }
 '''
+
+
+def join_letter_spaced_readings(result, witness):
+    """One whole pixel word may own a marked run of typographic letter atoms.
+
+    The letters themselves are conserved. A complete high-confidence reading at
+    this precise row supplies the word boundary; spelling elsewhere does not.
+    Existing opaque-code refusals survive as a single print-only word.
+    """
+    from .pixel_adjudication import _complete_word_occurrence
+    tokens=result['tokens']; groups=[];i=0
+    while i<len(tokens):
+        candidates=[]
+        for end in range(i+2,min(i+16,len(tokens))+1):
+            indices=list(range(i,end))
+            if not all(len(tokens[j])==1 and tokens[j].isalpha()
+                       and j in result['marked'] and j in result['boxes'] for j in indices):break
+            boxes=[result.get('word_notes',{}).get(j,{}).get('source_bbox',result['boxes'][j])for j in indices]
+            if any(not(-.5<=b[0]-a[2]<=.8*max(a[3]-a[1],b[3]-b[1])
+                       and min(a[3],b[3])-max(a[1],b[1])>=.5*min(a[3]-a[1],b[3]-b[1]))
+                   for a,b in zip(boxes,boxes[1:])):continue
+            literal=''.join(tokens[i:end]);bounds=[min(b[0]for b in boxes),min(b[1]for b in boxes),
+                max(b[2]for b in boxes),max(b[3]for b in boxes)]
+            proof=[w for w in witness if equivalent(w['text'].casefold(),literal.casefold())
+                   and w.get('confidence',0)>=85 and _complete_word_occurrence(dict(bbox=bounds),w)]
+            if len(proof)==1:candidates.append((end,literal,bounds))
+        if candidates:
+            end,literal,bounds=max(candidates)
+            old=[result.get('word_notes',{}).get(j,{})for j in range(i,end)]
+            opaque=any(d.get('method')=='unproved_native_character_map' for d in old)
+            note=dict(source=[s for d in old for s in d.get('source',[])],model=[literal],chosen=[literal],
+                status='UNRESOLVED',method='unproved_native_character_map' if opaque else 'letter_spaced_printed_word',
+                source_bbox=bounds,source_image_only=opaque,letter_spaced_atoms=list(range(i,end)))
+            groups.append((i,end,literal,bounds,note));i=end
+        else:i+=1
+    if not groups:return
+    starts={a:(z,text,box,note)for a,z,text,box,note in groups}
+    output=[];boxes={};notes={};marked=set();verified=[];mapping={};i=0
+    while i<len(tokens):
+        new=len(output)
+        if i in starts:
+            end,text,box,note=starts[i];output.append(text);boxes[new]=box;notes[new]=note;marked.add(new)
+            mapping.update({old:new for old in range(i,end)});i=end;continue
+        output.append(tokens[i]);mapping[i]=new
+        if i in result['boxes']:boxes[new]=result['boxes'][i]
+        if i in result.get('word_notes',{}):notes[new]=result['word_notes'][i]
+        if i in result['marked']:marked.add(new)
+        if i in result.get('verified_unchanged',[]):verified.append(new)
+        i+=1
+    result.update(tokens=output,boxes=boxes,word_notes=notes,marked=marked,verified_unchanged=verified)
+    result.setdefault('guard',[]).append(dict(kind='letter_spaced_printed_words',groups=[dict(
+        original_indices=list(range(a,z)),reading=text,source_bbox=box)for a,z,text,box,note in groups]))
+
