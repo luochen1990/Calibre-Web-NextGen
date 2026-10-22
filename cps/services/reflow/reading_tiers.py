@@ -12,6 +12,7 @@ PRINT_ONLY = frozenset({
     'unproved_native_character_map', 'unproved_doubtful_leading_word_ink',
     'incomplete_vertical_word_ink', 'incomplete_numeric_word_ink',
     'unproved_complete_divided_word', 'unproved_complete_word_scope',
+    'local_numeric_suffix_not_identified',
 })
 
 
@@ -33,6 +34,11 @@ def choose(token, decision):
     digit. Ordinary disagreements retain the chosen complete first reading;
     a dictionary cannot distinguish two valid words or authorize added letters.
     """
+    if (decision.get('status') == 'RESOLVED'
+            and decision.get('method') == 'complete_vision_reading_without_optical_counterevidence'):
+        # Lack of a complete competing read does not independently prove the
+        # retained first reading. It remains useful, explicitly flagged text.
+        return dict(tier='flagged', reading=token, method='complete_reader_without_independent_proof')
     if decision.get('status') == 'RESOLVED':
         return dict(tier='proved', reading=token, method='existing_resolution')
     method = decision.get('method', '')
@@ -187,6 +193,25 @@ _SHAPE_PROOFS = frozenset({'independent_upright_crop', 'two_own_word_language_re
     'corroborated_resampled_pixel_readings', 'two_alternate_alphabet_pixel_readings'})
 _SHAPE_DOUBTS = frozenset({'unproved_shared_stroke_identity', 'unsettled_alternate_pixel_readings',
                          'pixel_read_inconclusive'})
+
+
+def settle_typographic_equivalents(result):
+    """Representation alone cannot cast doubt on a conserved printed word.
+
+    Accents and symbol identities are not representation choices. Keep the
+    existing correction notice rather than inventing an invisible repair.
+    """
+    for index,old in list(result.get('word_notes',{}).items()):
+        if old.get('status')!='UNRESOLVED' or old.get('method') not in (
+                'unproved_quote_identity','pixel_read_inconclusive','unsettled_alternate_pixel_readings'):
+            continue
+        source=old.get('source',[]);model=old.get('model',[])
+        if len(source)!=1 or len(model)!=1 or source==model or not equivalent(source[0],model[0]):continue
+        chosen=result['tokens'][index]
+        if not equivalent(chosen,source[0]):continue
+        decision=dict(old,status='RESOLVED',method='typographic_equivalence',source_image_only=False)
+        result['word_notes'][index]=decision
+        result.setdefault('guard',[]).append(dict(kind='typographic_equivalence',index=index))
 
 
 def word_shape(display, box):

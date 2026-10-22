@@ -110,3 +110,23 @@ def test_numeric_identifier_cannot_be_a_silent_deleted_digit(tmp_path, monkeypat
     assert b['published_tokens'][index]=='71E42'
     assert b['flagged_readings'][str(index)]['method']=='source_complete_numeric_identifier'
     assert 'reflow-flagged-reading' in ''.join(page['body'])
+
+
+def test_a_retained_first_read_without_counterevidence_is_assistance_not_a_proof():
+    first=dict(status='RESOLVED',method='complete_vision_reading_without_optical_counterevidence',
+               source=['modem'],model=['modern'],chosen=['modern'])
+    second=dict(first,status='UNRESOLVED',method='unproved_shared_stroke_identity')
+    assert tiers.choose('modern',first)['tier']=='flagged'
+    assert tiers.choose('modern',second)['tier']=='flagged'
+
+
+@pytest.mark.parametrize('source,model,settled',[("reader’s","reader's",True),('ﬁeld','field',True),
+    ('cāre','care',False),('modem','modern',False),('O','0',False)])
+def test_representation_equivalence_removes_doubt_without_erasing_correction_notice(source,model,settled):
+    result=dict(tokens=[model],marked={0},word_notes={0:dict(source=[source],model=[model],chosen=[model],
+        status='UNRESOLVED',method='unproved_quote_identity',source_image_only=True)},guard=[])
+    tiers.settle_typographic_equivalents(result)
+    tiers.prepare(result)
+    assert (result['word_notes'][0]['status']=='RESOLVED') is settled
+    assert result['marked']=={0}
+    if settled:assert not result['flagged_readings'] and not result['word_notes'][0]['source_image_only']
