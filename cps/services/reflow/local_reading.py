@@ -17,7 +17,7 @@ import tempfile
 
 from . import ocr, vision_reading
 
-VERSION = 'local-reading-3'
+VERSION = 'local-reading-4'
 MAX_PIXELS = 8_000_000
 TIMEOUT = 120
 
@@ -83,10 +83,31 @@ def partition_units(units, repairs):
     return result
 
 
+def _reading_scale(display):
+    """Avoid enlarging a low-resolution page image beyond useful sampling.
+
+    A full-page raster below 108 dpi has no extra glyph detail at 216 dpi;
+    enlarging its existing stair steps can create false recognition strokes.
+    Keep the established 144-dpi sampling there. Higher-resolution scans and
+    vector pages retain the denser sampling needed for small printed words.
+    """
+    page = getattr(display, 'page', None)
+    images = getattr(page, 'get_image_info', None)
+    if images is not None:
+        page_area = display.rect.width * display.rect.height
+        for image in images():
+            x0, y0, x1, y1 = image['bbox']
+            area = max(0, x1-x0) * max(0, y1-y0)
+            if (area >= page_area*.9 and image['width'] > 0 and image['height'] > 0
+                    and image['width'] * image['height'] / area < 1.5**2):
+                return 2
+    return 3
+
+
 def recognize(display, cache):
-    """Recognize at 3x, capped at eight million pixels and 120 seconds per tile."""
+    """Recognize at bounded source sampling, at most 8M pixels and 120s/tile."""
     executable, version, data = ocr._engine('eng')
-    pix = display.pixmap(scale=3, max_pixels=MAX_PIXELS)
+    pix = display.pixmap(scale=_reading_scale(display), max_pixels=MAX_PIXELS)
     image = pix.tobytes('png')
     identity = dict(adapter=VERSION, image=hashlib.sha256(image).hexdigest(),
                     engine=version, data=data, rect=list(display.rect))
