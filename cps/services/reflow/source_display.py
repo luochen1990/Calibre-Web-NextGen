@@ -43,7 +43,7 @@ class SourceDisplay:
         if rect.is_empty:raise ValueError('source region outside page')
         # get_pixmap clips in the displayed PDF space, unlike text/figure boxes
         # that may be stored in unrotated PDF coordinates.
-        return extract.pymupdf.Rect(ocr._source_box(rect,self.displayed.width,self.displayed.height,self.angle))
+        return extract.pymupdf.Rect(ocr._source_box(rect,self.displayed.width,self.displayed.height,self.angle))&self.displayed
 
     def reading_rect(self,unrotated_rect):
         source=_rect(unrotated_rect)*self.page.rotation_matrix
