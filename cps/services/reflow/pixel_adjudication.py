@@ -532,9 +532,9 @@ def _terminal_word_view(model, words):
             result[-1]=dict(previous,text=previous['text']+suffix,bbox=box,
                 confidence=min(previous.get('confidence',100),word.get('confidence',100)))
         else:result.append(word)
-    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','word_context_readings','word_gap','dash_shape','word_scope','word_separation','fragment_boundary','word_end_dash','model_reading','failure')):
+    if any(hasattr(words,name) for name in ('alternates','resampled','word_readings','word_context_readings','word_gap','dash_shape','word_scope','word_separation','fragment_boundary','word_end_dash','model_reading','failure','neighbor_occurrences','source_occurrences')):
         result=CropWitness(result)
-        for name in ('alternates','resampled','mark_absence','word_readings','word_context_readings','word_gap','dash_shape','word_scope','word_separation','fragment_boundary','word_end_dash','model_reading','failure'):
+        for name in ('alternates','resampled','mark_absence','word_readings','word_context_readings','word_gap','dash_shape','word_scope','word_separation','fragment_boundary','word_end_dash','model_reading','failure','neighbor_occurrences','source_occurrences'):
             if hasattr(words,name):setattr(result,name,getattr(words,name))
     return result
 
@@ -687,12 +687,35 @@ def _letter_number_identity(value):
 
 def _symbol_identity_conflict(original,chosen):
     """A mathematical glyph cannot be certified as alphabetic/numeric text."""
-    symbols=lambda value:{c for c in value if unicodedata.category(c)in('Sm','So')}
+    def symbols(value):
+        # Vulgar fractions are numeric characters, not mathematical-symbol
+        # characters. Alphabet OCR agreement on a percent/digit guess cannot
+        # certify losing their numerator or denominator either.
+        return {c for c in value if unicodedata.category(c)in('Sm','So')
+                or unicodedata.category(c)=='No' and 0<unicodedata.numeric(c,0)<1}
     a,b=symbols(original),symbols(chosen)
     # A symbol and ordinary punctuation both have an empty letter inventory.
     # That equality is not evidence that their visible shapes are the same.
     left,right=_letter_number_identity(original),_letter_number_identity(chosen)
     return a!=b and (not(left or right)or bool(a and b)or left!=right)
+
+
+def _divided_tail_parts(word,model,witness):
+    """Locate a unique divided prefix; recognition of its tail is incomplete."""
+    import re
+    parts=re.split(r'[-\u00ad\u2010\u2011]',model.strip('.,;:!?'))
+    if len(parts)!=2 or not all(p.isalpha()for p in parts):return None
+    if _key(word['text']).strip('.,;:!?')!=_key(parts[-1]):return None
+    a=word['bbox'];height=max(1,a[3]-a[1]);matches=[]
+    for other in getattr(witness,'neighbor_occurrences',()):
+        b=other['bbox'];h=max(height,b[3]-b[1])
+        if (other['text'].endswith(('-', '\u00ad','\u2010','\u2011'))
+                and _key(other['text'][:-1])==_key(parts[0])
+                and b[0]>a[2] and .5*h<(a[1]+a[3]-b[1]-b[3])/2<3*h):
+            matches.append(other)
+    # An absent or ambiguous prefix remains unplaced. It is not permission to
+    # expose the tail as the complete model word or certify a new tail spelling.
+    return [list(matches[0]['bbox']),list(a)]if len(matches)==1 else []
 
 
 def _proved_wrap(source,model,witness,same_reading=False):
@@ -1393,7 +1416,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         partial_wrap=(z-a==y-b==1 and source_tokens[a].endswith(('-', '\u00ad'))
             and placement(proposed[b]).startswith(placement(source_tokens[a]))
             and len(placement(proposed[b]))>len(placement(source_tokens[a])))
-        if wrapped or partial_wrap:supported=[];boundary=None
+        divided_tail=(_divided_tail_parts(source[a],proposed[b],witness)
+            if z-a==y-b==1 else None)
+        if wrapped or partial_wrap or divided_tail is not None:supported=[];boundary=None
         # Letter noise resembling a number is not a verified replacement of a
         # well-formed ordinal. Inspect that exact original word with separate
         # language networks; if they cannot settle it, publish original ink.
@@ -1420,7 +1445,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             and any(c.isalpha()for c in proposed[b]+supported[0][1][0]))
         if network_conflict:supported=[]
         alternate=None;resampled=None;word_choice=None;word_method='two_own_word_language_readings'
-        if len(supported)!=1 and z-a==y-b==1 and not partial_wrap:
+        if len(supported)!=1 and z-a==y-b==1 and not partial_wrap and divided_tail is None:
             word_choice=_own_word_choice(source[a],witness)
             if (getattr(witness,'model_reading',False) and not unresolved_source
                     and visible[b][0]not in pending
@@ -1552,7 +1577,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
             and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter)
-            and not(ordinal_conflict or quote_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or doubtful_fragment or eroded_numeric is not None or word_scope_conflict and not partial_counter
+            and not(ordinal_conflict or quote_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or divided_tail is not None or doubtful_fragment or eroded_numeric is not None or word_scope_conflict and not partial_counter
                     or not (prefix_fragment or source[a].get('confidence',0)<85
                             and _weak_punctuation_tail(source_tokens[a],proposed[b]))
                     and _small_mark_conflict(source_tokens[a],proposed[b]))
@@ -1605,6 +1630,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         if doubtful_fragment and not resolved:
             record.update(source_image_only=True,source_bbox=list(source[a]['bbox']),
                 method='unproved_doubtful_leading_word_ink')
+        if divided_tail is not None and not resolved:
+            record.update(source_image_only=True,source_bbox=list(source[a]['bbox']),
+                method='unproved_complete_divided_word',unplaced_prefix=not bool(divided_tail))
+            if divided_tail:record['source_parts']=divided_tail
         if eroded_numeric is not None and not resolved:
             record.update(source_image_only=True,source_bbox=eroded_numeric,
                 method='incomplete_numeric_word_ink')
