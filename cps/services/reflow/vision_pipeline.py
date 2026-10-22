@@ -406,6 +406,27 @@ def _reserve_layer_instances(answer,words,display,regions):
     """
     from .source_geometry import unique_anchors
     key=lambda text:re.sub(r'[^\w]','',vision_reading.normalized(text).casefold())
+    instances=regions.setdefault('_instances',{})
+    # Recognition inventories can divide the same printed word differently.
+    # Transfer only an already proved physical owner, never its transcription.
+    # Competing owners or a word spanning two owners cannot establish a claim.
+    prior=list(instances.items())
+    for word in words:
+        occurrence=_source_instance(word)
+        if occurrence in instances:continue
+        x=word['bbox'];cx=(x[0]+x[2])/2;cy=(x[1]+x[3])/2
+        owners=set()
+        for (_,box),owner in prior:
+            height=min(x[3]-x[1],box[3]-box[1])
+            if height<=0:continue
+            overlap_x=max(0,min(x[2],box[2])-max(x[0],box[0]))
+            overlap_y=max(0,min(x[3],box[3])-max(x[1],box[1]))
+            if (overlap_x>=.5*min(x[2]-x[0],box[2]-box[0])
+                    and overlap_y>=.6*height
+                    and abs(cy-(box[1]+box[3])/2)<=.5*max(x[3]-x[1],box[3]-box[1])
+                    and (box[0]-.5<=cx<=box[2]+.5 or x[0]<= (box[0]+box[2])/2 <=x[2])):
+                owners.add(owner)
+        if len(owners)==1:instances[occurrence]=next(iter(owners))
     proposals={};proved_rows={};proved_row_words={}
     # A compact index entry may have only one ordinary lexical word plus an
     # ordinal and page number. Its complete printed row still proves ownership
@@ -456,7 +477,10 @@ def _reserve_layer_instances(answer,words,display,regions):
         if block['role'] not in ('body','other','caption','heading','footnote'):continue
         candidate=[key(token)for token in re.sub(r'<n:[^>]+>',' ',block['text']).split()]
         lexical=[token for token in candidate if any(c.isalpha()for c in token)]
-        if len(lexical)<3:continue
+        short_list=(block['role']=='body' and
+                    bool(re.match(r'^\d{1,3}[.)]\s',block['text'])) and
+                    2<=len(lexical)<=4 and len(candidate)<=6)
+        if len(lexical)<3 and not short_list:continue
         boxes=regions.get(block['id'],[block_rect(block,display)])
         if block['role']=='footnote' and block.get('marker'):
             heights=[w['bbox'][3]-w['bbox'][1]for w in words
@@ -468,9 +492,10 @@ def _reserve_layer_instances(answer,words,display,regions):
                               min(display.rect.x1,hint[2]+pad),hint[3]]]
         all_local=_pixel_line_order([word for word in words if any(owned_words([word],box)for box in boxes)])
         local=[word for word in all_local if any(c.isalpha()for c in key(word['text']))]
-        anchors=unique_anchors(local,range(len(local)),lexical,minimum=3)
+        anchors=unique_anchors(local,range(len(local)),lexical,minimum=2 if short_list else 3)
         covered={j for i,j in anchors}
         complete=covered==set(range(len(lexical)))
+        if short_list and len(_pixel_lines([local[i]for i,j in anchors]))!=1:continue
         if not complete and not(block['role']=='footnote'and len(covered)>=6
                                  and len(covered)/len(lexical)>=.8):continue
         selected={id(local[i])for i,j in anchors}
@@ -499,6 +524,23 @@ def _reserve_layer_instances(answer,words,display,regions):
     instances=regions.setdefault('_instances',{})
     for occurrence,owners in proposals.items():
         if len(owners)==1:instances.setdefault(occurrence,next(iter(owners)))
+    # OCR can omit a list's narrow number column entirely. Its independently
+    # owned lexical row locates the adjacent original label without certifying
+    # the label's spelling. A preceding row's label cannot join this row.
+    for block in answer['blocks']:
+        if block['role']!='body' or not re.match(r'^\d{1,3}[.)]\s',block['text']):continue
+        own=[w for w in words if instances.get(_source_instance(w))==block['id']]
+        for row in _pixel_lines(own):
+            if len(row)<2:continue
+            import statistics
+            left=min(w['bbox'][0]for w in row)
+            middle=statistics.median((w['bbox'][1]+w['bbox'][3])/2 for w in row)
+            height=statistics.median(w['bbox'][3]-w['bbox'][1]for w in row)
+            labels=[w for w in words if _source_instance(w)not in instances and
+                    re.fullmatch(r'\d{1,3}',key(w['text'])) and
+                    0<=left-w['bbox'][2]<=2*height and
+                    abs((w['bbox'][1]+w['bbox'][3])/2-middle)<=.5*height]
+            if len(labels)==1:instances[_source_instance(labels[0])]=block['id']
     for occurrence,owners in proved_rows.items():
         if len(owners)!=1:continue
         owner=next(iter(owners));instances[occurrence]=owner
@@ -978,6 +1020,13 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
                     strictly_inside(word,box) for box in territories if box is not territory):continue
             claim=(regions or {}).get('_instances',{}).get(_source_instance(word))
             if claim is not None and claim!=block['id']:continue
+            # A paragraph may wrap beside an original illustration. Its broad
+            # row envelope does not turn unclaimed diagram lettering into prose.
+            # Independently proved BODY occurrences still outrank a coarse hint.
+            if block['role']=='body' and claim!=block['id'] and any(
+                    strictly_inside(word,box) for other in answer['blocks']
+                    if other['id']!=block['id'] and other['role'] in ('figure','table')
+                    for box in (regions or {}).get(other['id'],[block_rect(other,display)])):continue
             strict=any(strictly_inside(word,box) for box in territories)
             # A final printed territory outranks its neighbour's rounding halo.
             # Strict/strict overlap retains the existing coherent-owner rule.

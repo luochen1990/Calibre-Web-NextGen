@@ -105,3 +105,84 @@ def test_index_row_tail_cannot_cross_a_new_lexical_column_label():
         vision_pipeline._reserve_layer_instances(reading, words, SourceDisplay(doc, 0), regions)
         foreign = next(w for w in words if w['text']=='92')
         assert regions.get('_instances', {}).get(vision_pipeline._source_instance(foreign)) != 'b1'
+
+
+@pytest.mark.parametrize('shift', [0, .4])
+def test_owned_caption_survives_a_differently_split_native_inventory(tmp_path, shift):
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=400, height=220)
+        page.insert_text((30, 50), 'The garden remains clearly visible.', fontsize=12)
+        page.insert_text((160, 80), 'The view from the path.', fontsize=12)
+        page.insert_text((30, 110), 'Its trees remain green throughout summer.', fontsize=12)
+        optical = [dict(text=w[4], bbox=list(w[:4]), confidence=99)
+                   for w in page.get_text('words')]
+        native = []
+        for word in optical:
+            box = word['bbox']
+            if word['text'] == 'from':
+                cut = box[0] + .72 * (box[2] - box[0])
+                native.extend([dict(word, text='fro', bbox=[box[0], box[1], cut, box[3]]),
+                               dict(word, text='m', bbox=[cut, box[1], box[2], box[3]])])
+            else:
+                native.append(dict(word, bbox=[v + shift for v in box]))
+        caption = [w for w in optical if 60 < w['bbox'][1] < 90]
+        regions = {'b1': [[25, 30, 380, 115]], 'c1': [[155, 60, 300, 85]],
+                   '_instances': {vision_pipeline._source_instance(w): 'c1' for w in caption}}
+        reading = answer(block('The garden remains clearly visible. Its trees remain green throughout summer.', ident='b1'),
+                         dict(block('The view from the path.', ident='c1'), role='caption'))
+        package = Package()
+        package.image = lambda *args: None
+        _, record = vision_pipeline.compile_page(reading, native, SourceDisplay(doc, 0),
+            0, package, {}, pixel_words=optical, regions=regions, body_owners={},
+            note_context={'cache': tmp_path/'cache', 'labels': {}, 'catalogue': {}, 'refs': {}})
+    body = next(b for b in record['blocks'] if b['id'] == 'b1')
+    assert body['published_tokens'] == reading['blocks'][0]['text'].split()
+
+
+def test_conflicting_optical_owners_cannot_rebind_a_native_occurrence():
+    with pymupdf.open() as doc:
+        doc.new_page(width=200, height=150)
+        word = dict(text='garden', bbox=[30, 40, 65, 52])
+        regions = {'_instances': {('garden', (29.8, 40, 65, 52)): 'b1',
+                                  ('garden', (30.2, 40, 65, 52)): 'b2'}}
+        reading = answer(block('garden', ident='b1'), block('garden', ident='b2'))
+        vision_pipeline._reserve_layer_instances(reading, [word], SourceDisplay(doc, 0), regions)
+    assert vision_pipeline._source_instance(word) not in regions['_instances']
+
+
+def test_broad_body_territory_does_not_adopt_unclaimed_art_lettering():
+    with pymupdf.open() as doc:
+        doc.new_page(width=400, height=220)
+        prose = dict(text='garden', bbox=[165, 65, 200, 77])
+        label = dict(text='DRAWING', bbox=[220, 65, 275, 77])
+        reading = answer(block('garden', ident='b1'),
+                         dict(block('An original drawing.', ident='f1'), role='figure'))
+        regions = {'b1': [[25, 30, 380, 115]], 'f1': [[160, 60, 300, 85]],
+                   '_instances': {vision_pipeline._source_instance(prose): 'b1'}}
+        result = vision_pipeline._owned_block_words(reading['blocks'][0], reading,
+            [prose, label], SourceDisplay(doc, 0), regions)
+    assert result == [prose]
+
+
+def test_numbered_short_rows_own_their_omitted_optical_labels(tmp_path):
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=300, height=160)
+        page.insert_text((30, 60), '1. RIVER, water', fontsize=12)
+        page.insert_text((30, 80), '2. GARDEN, flowers', fontsize=12)
+        native = [dict(text=w[4], bbox=list(w[:4]), confidence=99)
+                  for w in page.get_text('words')]
+        optical = [w for w in native if not w['text'][0].isdigit()]
+        reading = answer(block('1. RIVER, water', ident='b1'),
+                         block('2. GARDEN, flowers', ident='b2'))
+        regions = {'b1': [[25, 40, 250, 63]], 'b2': [[25, 50, 250, 83]]}
+        display = SourceDisplay(doc, 0)
+        vision_pipeline._reserve_layer_instances(reading, optical, display, regions)
+        vision_pipeline._reserve_layer_instances(reading, native, display, regions)
+        labels = [w for w in native if w['text'][0].isdigit()]
+        assert [regions['_instances'].get(vision_pipeline._source_instance(w))
+                for w in labels] == ['b1', 'b2']
+        _, record = vision_pipeline.compile_page(reading, native, display, 0,
+            Package(), {}, pixel_words=optical, regions=regions, body_owners={},
+            note_context={'cache': tmp_path/'cache', 'labels': {}, 'catalogue': {}, 'refs': {}})
+    assert [b['published_tokens'] for b in record['blocks']] == [
+        ['1.', 'RIVER,', 'water'], ['2.', 'GARDEN,', 'flowers']]
