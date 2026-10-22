@@ -215,3 +215,41 @@ def test_exact_hint_prefix_survives_a_proved_divided_word_across_art(monkeypatch
     assert all(owned.get(vp._source_instance(w))=='wrapped'for w in optical)
     assert min(r[1]for r in regions['wrapped'])==70
     assert len(regions['wrapped'])>=2,'an illustration gap must remain separate source territories'
+
+
+def test_complete_wide_hint_cannot_borrow_a_common_tail_from_another_column():
+    lines = ['Careful workers keep every sample beside the window',
+             'before recording the final result in the ledger.']
+    optical = [word(t, 30+i*23, 350+12*row, 20)
+               for row, line in enumerate(lines) for i, t in enumerate(line.split())]
+    # These ordinary words are real ink, but belong to another paragraph.
+    optical += [word(t, 300+i*23, 350+12*row, 20)
+                for row, line in enumerate(['the other passage', 'it continues here', 'is clearly separate'])
+                for i, t in enumerate(line.split())]
+    text = ' '.join(lines)+' the it is'
+    regions = bind(text, 'body', [40, 470, 940, 540], optical)
+    assert regions == [[30, 350, 211, 370]]
+    assert not any(vp.owned_words([w], r) for w in optical if w['bbox'][0]>=300
+                   for r in regions), 'equal common words do not prove paragraph continuity'
+
+
+def test_sparse_remote_tail_cannot_complete_an_unplaced_long_continuation(monkeypatch):
+    from cps.services.reflow import source_geometry
+    # Exercise the fallback when curvature/recognition prevents a unique
+    # compact-row proof. A few real common words remain in the other column.
+    monkeypatch.setattr(source_geometry, 'unique_anchors', lambda *args, **kwargs: [])
+    lines = ['Careful workers record each sample',
+             'beside the open window while',
+             'others prepare the quiet room',
+             'for another measured observation before',
+             'closing this detailed daily ledger.']
+    optical = [word(t, 30+i*23, 350+12*row, 20)
+               for row, line in enumerate(lines) for i, t in enumerate(line.split())]
+    optical += [word(t, 300+i*23, 350+12*row, 20)
+                for row, line in enumerate(['the other passage', 'it continues here', 'is clearly separate'])
+                for i, t in enumerate(line.split())]
+    text = ' '.join(lines)+' the account continues beyond this record and it is separate'
+    regions = bind(text, 'body', [40, 470, 940, 600], optical)
+    assert regions == [[30, 350, 142, 406]]
+    assert not any(vp.owned_words([w], r) for w in optical if w['bbox'][0]>=300
+                   for r in regions)

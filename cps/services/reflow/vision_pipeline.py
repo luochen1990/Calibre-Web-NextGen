@@ -3885,10 +3885,18 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
         corroborated=unique_anchors(optical,proof_pool,candidate) if not labelled and not seed_caption_complete and not complete_note else []
         if (corroborated and valid and block['role']=='body' and candidate and
                 {j for i,j in matched if source[i]==candidate[j]}==set(range(len(candidate)))):
-            # Complete exact ink inside the original hint may wrap around an
-            # illustration. A shorter compact-window proof cannot erase its
-            # independently matched rows merely because artwork separates them.
-            corroborated=matched
+            # Exact common words elsewhere in a wide hint do not establish
+            # paragraph continuity. Retain disjoint rows only when an actual
+            # source object separates them within the proved text column.
+            compact=vision_reading.union([optical[i]['bbox']for i,j in corroborated])
+            extent=vision_reading.union([optical[i]['bbox']for i,j in matched])
+            extra=[optical[i]['bbox']for i,j in matched if (i,j)not in corroborated]
+            same_column=all(min(box[2],compact[2])>max(box[0],compact[0])for box in extra)
+            art_between=any(box[1]>extent[1] and box[3]<extent[3]
+                and min(box[2],compact[2])>max(box[0],compact[0])
+                for other in answer['blocks']if other['role']in ('figure','table')
+                for box in [block_rect(other,display)])
+            if same_column and art_between:corroborated=matched
         if corroborated:
             # Compact exact proof must retain an independently located divided
             # edge atom. The existing matcher proves that partial word beside
@@ -4109,6 +4117,31 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             else:transition=True
             if transition:components.append([])
             components[-1].append(anchor)
+        if block['role']=='body' and len(components)>1:
+            # A long unplaced continuation can match a few common words deep
+            # inside another column. Those sparse suffix anchors do not prove
+            # that the paragraph crossed the intervening, unprinted words.
+            dominant=max(components,key=lambda component:len({j for i,j in component}))
+            positions={j for i,j in dominant}
+            if len(positions)>=8 and len(positions)/max(1,len(candidate))>=.5:
+                own=vision_reading.union([optical[i]['bbox']for i,j in dominant])
+                kept=[]
+                for component in components:
+                    slots={j for i,j in component}
+                    rect=vision_reading.union([optical[i]['bbox']for i,j in component])
+                    remote=rect[0]>own[2]+3 or rect[2]<own[0]-3
+                    span=max(slots)-max(positions) if min(slots)>max(positions) else 0
+                    sparse=(len(slots)<5 and span>=vision_reading.UNALIGNED_RUN
+                            and len(slots)/span<.5)
+                    if remote and sparse:
+                        repairs.append(dict(block=block['id'],method='unproved_remote_continuation_excluded',
+                            source_word_indices=[i for i,j in component]))
+                        continue
+                    kept.append(component)
+                components=kept
+                admitted={pair for component in components for pair in component}
+                anchors=[pair for pair in anchors if pair in admitted]
+                core_anchors.intersection_update(admitted)
         interior_rows=[]
         if block['role']=='footnote' and len(components)>1:
             # A damaged transcription may omit every matching word on a middle
