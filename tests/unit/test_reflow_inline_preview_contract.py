@@ -43,8 +43,16 @@ def test_only_appended_assistance_uses_a_temporary_seam_carrier():
     pages=[dict(pno=0,body=['<p>'+assist+opaque+'</p>'])]
     carriers=vision_pipeline._join_control_carriers(pages)
     assert len(carriers)==1
-    assert list(carriers.values())==['<a class="source-word-image" href="#v4-d-0-b1-1"><img src="images/v4-d-0-b1-1.jpg" alt=""/></a>']
+    assert list(carriers.values())==['<a class="source-word-image" title="Inspect original print" href="#v4-d-0-b1-1"><img src="images/v4-d-0-b1-1.jpg" alt=""/></a>']
     assert opaque in pages[0]['body'][0]
     for carrier,original in carriers.items():
         assert carrier in pages[0]['body'][0]
         assert pages[0]['body'][0].replace(carrier,original)=='<p>'+assist+opaque+'</p>'
+
+
+@pytest.mark.parametrize('title,valid', [('Inspect original print', True), ('Other label', False)])
+def test_named_source_preview_link_keeps_a_fixed_factory_label(title, valid):
+    link = ET.fromstring('<a xmlns="http://www.w3.org/1999/xhtml" class="source-word-image" '
+                         'href="#v4-d-0-b1-0" title="'+title+'"><img src="images/v4-word.png" '
+                         'alt="" style="height:1.2em;vertical-align:-0.36em;width:auto"/></a>')
+    assert build_epub._written_word_preview_style(link[0], link) is valid

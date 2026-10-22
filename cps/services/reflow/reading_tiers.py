@@ -106,7 +106,7 @@ def flagged_html(reading, image, target, style='', *, reading_html=None):
     metric = ' style="' + escape(style, quote=True) + '"' if style else ''
     return ('<span class="reflow-flagged-reading"><span class="reflow-plausible">'
             + (escape(reading) if reading_html is None else reading_html) + '</span>'
-            + '<a class="source-word-image" href="#' + target + '"><img src="'
+            + '<a class="source-word-image" title="Inspect original print" href="#' + target + '"><img src="'
             + image + '" alt=""' + metric + '/></a></span>')
 
 

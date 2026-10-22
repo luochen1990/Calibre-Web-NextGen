@@ -213,3 +213,12 @@ def test_compiler_appends_separate_legible_print_for_each_physical_line(tmp_path
         assert metadata['kind']=='inline_print_preview'
         assert metadata['xheight']<16,'The body letter height must not include the line gap'
         assert metadata['height_em']>=1
+
+
+def test_appended_print_has_named_evidence_link_without_repeating_the_reading():
+    root = ET.fromstring(tiers.flagged_html('modern', 'images/word.png', 'own-note'))
+    link = root.find('a')
+    assert link.get('title') == 'Inspect original print'
+    assert link.get('href') == '#own-note'
+    assert link.find('img').get('alt') == ''
+    assert ''.join(root.itertext()) == 'modern'

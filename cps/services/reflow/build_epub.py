@@ -3576,7 +3576,8 @@ def _written_word_preview_style(element, parent):
             or parent.tag != _XHTML_NS+'a' or parent.get('class') != 'source-word-image'
             or len(parent) != 1 or parent.text or len(element)
             or set(element.attrib) != {'src','alt','style'}
-            or set(parent.attrib) != {'class','href'}):
+            or set(parent.attrib) not in ({'class','href'}, {'class','href','title'})
+            or ('title' in parent.attrib and parent.get('title') != 'Inspect original print')):
         return False
     if not re.fullmatch(r'(?:[^/#]+\.xhtml)?#v4-(?:d|native)-[A-Za-z0-9_-]+',parent.get('href','')):
         return False

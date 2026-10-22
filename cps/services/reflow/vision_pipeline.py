@@ -6847,7 +6847,7 @@ def _join_control_carriers(pages):
     # Adjacent print assists the flagged reading; it is not another source word.
     # Hide only this factory-generated attachment from the lexical seam copy,
     # preserving its exact bytes and location when the join restores controls.
-    flagged=re.compile(r'(<span class="reflow-flagged-reading"><span class="reflow-plausible">.*?</span>)(<a class="source-word-image" href="[^"]+"><img [^>]+/></a>)(</span>)')
+    flagged=re.compile(r'(<span class="reflow-flagged-reading"><span class="reflow-plausible">.*?</span>)(<a class="source-word-image"(?: title="Inspect original print")? href="[^"]+"><img [^>]+/></a>)(</span>)')
     def assist(match):
         return match.group(1)+carrier_for(match.group(2))+match.group(3)
     for page in pages:
