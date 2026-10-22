@@ -70,7 +70,7 @@ def classify(words,tokens,boxes,notes,images,pno):
         if len(live)!=1:
             assets=[]
             for name,image in images.items():
-                if image.get('page')!=pno or not image.get('bbox'):continue
+                if image.get('page')!=pno or not image.get('bbox') or image.get('coverage_eligible') is False:continue
                 parts=image.get('source_parts')or [image['bbox']]
                 if any(_print_contains(part['bbox']if isinstance(part,dict)else part,box)for part in parts):assets.append((name,image))
             if assets:
@@ -99,6 +99,9 @@ def _surviving_indices(before,after):
 
 def _text(node):
     tag=node.tag.rsplit('}',1)[-1];classes=set(node.get('class','').split())
+    if 'reflow-flagged-reading'in classes:
+        live=next((c for c in node if 'reflow-plausible'in c.get('class','').split()),None)
+        return ''.join(live.itertext())if live is not None else ''
     if tag=='img' or classes.intersection({'source-disclosure-ref','source-reading-annotation',
             'source-word-image','vision-disclosure'}):return ' '
     return (node.text or '')+''.join(_text(c)+(c.tail or '')for c in node)
@@ -131,7 +134,8 @@ def final_publication(documents,records,frames,images,package,displays,homes):
             if node.tag.rsplit('}',1)[-1]=='img':used.add(node.get('src',''))
             if node.get('data-source-page')is not None and node.get('data-source-block'):
                 actual[(int(node.get('data-source-page')),node.get('data-source-block'))].extend(_text(node).split())
-    published={name:item for name,item in images.items()if name in used and _published_resource(name,package)is not None}
+    published={name:item for name,item in images.items()if name in used and _published_resource(name,package)is not None
+        and item.get('coverage_eligible') is not False}
     pages={}
     for pno,frame in frames.items():
         blocks=records[pno].get('blocks',[])+records[pno].get('native_note_adjudication',[]);claims=[];extras=[];exclusions=[]

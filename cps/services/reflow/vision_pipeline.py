@@ -3398,6 +3398,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 result['verified_unchanged']=sorted(set(result.get('verified_unchanged',[]))|
                     set(adjudication.get('verified_unchanged',[])))
             from . import reading_tiers
+            # Keep the independent optical bindings when reindexing words.
+            # The original layer's rectangles may describe unrelated blank paper.
+            result['boxes']=evidence_boxes
             reading_tiers.conserve_punctuation_boundaries(result,baseline if adjudication else local,first_tokens if adjudication else proposed)
             _remove_foreign_word_runs(result,bid,answer,pixel_words or [],regions)
             reading_tiers.join_letter_spaced_readings(result,witness or [])
@@ -3437,6 +3440,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             if ((result['fallback'] or result['marked'])
                     and complete_check(compiled_reading)['needs_read']):
                 raise _DisclosureQualityRejection('Unreliable chosen reading requires original source disclosure')
+            reading_tiers.settle_typographic_equivalents(result)
             reading_tiers.settle_repeated_word_shapes(result,display)
             flagged_readings=reading_tiers.prepare(result)
             groups=[]
@@ -3574,7 +3578,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         note_context['refs'].setdefault(owner,[]).append(ref);start=b
                     piece=''.join(parts)+escape(token[start:])
                 if index in endings:
-                    chosen_reading=' '.join(result['tokens'][i] for i in endings[index])
+                    chosen_reading=''.join((''if j==0 or i in wraps else' ')+result['tokens'][i]
+                        for j,i in enumerate(endings[index]))
                     if text_quality.inspect_disclosure(chosen_reading)['needs_read']:
                         raise _DisclosureQualityRejection('Unreliable chosen reading requires original source disclosure')
                     marked+=1;ident=f'v4-d-{pno}-{bid}-{index}';ref='r-'+ident
@@ -3605,6 +3610,12 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     else:
                         source_quote='Source reading: '+escape(' '.join(owned_word['text'] for owned_word in local if any(owned_word['bbox']==evidence_boxes.get(i) for i in endings[index])))+'.'
                     decision=(result.get('word_notes') or {}).get(index)
+                    if len(endings[index])>1:
+                        members=[result.get('word_notes',{}).get(i,{})for i in endings[index]]
+                        decision=dict(source=[s for d in members for s in d.get('source',[])],
+                            model=[s for d in members for s in d.get('model',[])],
+                            chosen=[result['tokens'][i]for i in endings[index]],status='UNRESOLVED',
+                            method='contiguous_unproved_reading')
                     if decision:
                         label=(('Unverified local OCR reading; pixel-supported correction' if decision['status']=='RESOLVED'
                                 else 'Unverified local OCR reading') if local_ocr else
@@ -3625,6 +3636,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     else:explanation=escape(' '.join(result['tokens'][i] for i in endings[index]))+'. '+source_quote
                     if decision and decision.get('source_image_only'):
                         explanation=((source_quote+' ')if decision['source']!=decision['chosen']else '')+'The independent pixel readings do not settle this printed word. Read the original image.'
+                    if index in flagged_readings:
+                        label='Unresolved source reading'
+                        explanation='Plausible reading; it has not been independently proved. Compare the adjacent original print. '+source_quote
                     extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
                     if index in flagged_readings or decision and decision.get('source_image_only'):
                         from . import inline_print
@@ -3635,7 +3649,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             data,metrics=preview
                             inline_src=f'images/{ident}-inline.png'
                             package.image(inline_src,data)
-                            image_records[inline_src]=dict(page=pno,kind='inline_print_preview',
+                            image_records[inline_src]=dict(page=pno,kind='inline_print_preview',coverage_eligible=False,
                                 inspection_image=src,**metrics)
                             inline_style=metrics['style']
                         if index in flagged_readings:
@@ -5903,7 +5917,7 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                         if preview is not None:
                             data,metrics=preview;inline_src=f'images/{ident}-inline.png'
                             package.image(inline_src,data)
-                            images[inline_src]=dict(page=page['pno'],kind='inline_print_preview',
+                            images[inline_src]=dict(page=page['pno'],kind='inline_print_preview',coverage_eligible=False,
                                 inspection_image=src,**metrics)
                             style=metrics['style']
                         replacement=reading_tiers.flagged_html(chosen,inline_src,ident,style)
@@ -6756,14 +6770,22 @@ def _join_control_carriers(pages):
     """
     pattern=re.compile(r'<a id="(?:r-v4-d-|r-v4-unit-source-|v4-ref-)[^"]+" class="(?:source-disclosure-ref|noteref)" epub:type="noteref" href="[^"]+"><sup>[^<]*</sup></a>')
     carriers={}
-    def wrap(match):
-        anchor=match.group(0);identity=hashlib.sha256(anchor.encode()).hexdigest()
+    def carrier_for(anchor):
+        identity=hashlib.sha256(anchor.encode()).hexdigest()
         carrier='<span class="source-reading-annotation" id="reading-return-reading-'+identity+'">'+anchor+'</span>'
         carriers[carrier]=anchor
         return carrier
+    def wrap(match):
+        return carrier_for(match.group(0))
+    # Adjacent print assists the flagged reading; it is not another source word.
+    # Hide only this factory-generated attachment from the lexical seam copy,
+    # preserving its exact bytes and location when the join restores controls.
+    flagged=re.compile(r'(<span class="reflow-flagged-reading"><span class="reflow-plausible">[^<]*</span>)( <a class="source-word-image" href="[^"]+"><img [^>]+/></a>)(</span>)')
+    def assist(match):
+        return match.group(1)+carrier_for(match.group(2))+match.group(3)
     for page in pages:
         with unit_recovery.guard(page['pno'],'seam_control_carriers'):
-            page['body']=[pattern.sub(wrap,fragment) for fragment in page['body']]
+            page['body']=[pattern.sub(wrap,flagged.sub(assist,fragment)) for fragment in page['body']]
     return carriers
 
 
