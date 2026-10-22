@@ -12,7 +12,7 @@ PRINT_ONLY = frozenset({
     'unproved_native_character_map', 'unproved_doubtful_leading_word_ink',
     'incomplete_vertical_word_ink', 'incomplete_numeric_word_ink',
     'unproved_complete_divided_word', 'unproved_complete_word_scope',
-    'local_numeric_suffix_not_identified',
+    'local_numeric_suffix_not_identified', 'unsettled_additional_pixel_ink',
 })
 
 
@@ -27,7 +27,7 @@ def equivalent(left, right):
     return typographic_key(left) == typographic_key(right)
 
 
-def choose(token, decision):
+def choose(token, decision, *, rank_lexical=True):
     """Choose assistance from an existing reader, with an explicit provenance.
 
     Numeric identifiers prefer a source reading when the model dropped a real
@@ -66,6 +66,17 @@ def choose(token, decision):
             or any(unicodedata.category(c) in ('Co', 'Cc', 'Cs') or c == '\ufffd' for c in token)
             or token.startswith('<n:')):
         return dict(tier='print', reading=None, method='no_lexical_reading')
+    if rank_lexical and len(source)==len(model)==1 and token.islower():
+        # A dictionary may rank already observed complete candidates; it never
+        # certifies their ink. Names, symbols and two valid words keep the first
+        # reader. The attached print retains the unresolved physical decision.
+        from .text_quality import english_lexicon
+        vocabulary=english_lexicon()
+        lexical=lambda s: bool(s) and s.islower() and s.isalpha() and s in vocabulary
+        if not lexical(token):
+            candidates={s for s in source+decision.get('alternative',[])if lexical(s)}
+            if len(candidates)==1:
+                return dict(tier='flagged',reading=candidates.pop(),method='lexical_reader_candidate')
     return dict(tier='flagged', reading=token, method='existing_reader_hypothesis')
 
 
@@ -90,11 +101,11 @@ def prepare(result):
     return flags
 
 
-def flagged_html(reading, image, target, style=''):
+def flagged_html(reading, image, target, style='', *, reading_html=None):
     """Print evidence is decorative to speech; the live reading is spoken once."""
     metric = ' style="' + escape(style, quote=True) + '"' if style else ''
     return ('<span class="reflow-flagged-reading"><span class="reflow-plausible">'
-            + escape(reading) + '</span> '
+            + (escape(reading) if reading_html is None else reading_html) + '</span>'
             + '<a class="source-word-image" href="#' + target + '"><img src="'
             + image + '" alt=""' + metric + '/></a></span>')
 
@@ -102,6 +113,7 @@ def flagged_html(reading, image, target, style=''):
 def stylesheet():
     return '''\n.reflow-plausible { border-bottom:1px solid currentColor; }
 .reflow-flagged-reading { font-style:inherit; }
+.reflow-flagged-reading > a.source-word-image { margin-left:.15em; }
 a.source-word-image, a.source-disclosure-ref { text-decoration:none; color:inherit; }
 a.source-word-image img { max-width:none; width:auto; }
 a.source-disclosure-ref sup { font-size:.55em; line-height:0; }

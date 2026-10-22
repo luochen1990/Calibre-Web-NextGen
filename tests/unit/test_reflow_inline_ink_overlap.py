@@ -21,7 +21,7 @@ def test_adjacent_uncertain_digit_crops_publish_one_complete_original_span(monke
         def uncertain(*args,**kwargs):
             result=real_align(*args,**kwargs)
             result['word_notes']={i:dict(source=[w['text']],model=[w['text']],chosen=[w['text']],
-                source_image_only=True,source_bbox=w['bbox'],status='UNRESOLVED',method='synthetic_unproved_numeric_ink')for i,w in enumerate(words)}
+                source_image_only=True,source_bbox=w['bbox'],status='UNRESOLVED',method='incomplete_numeric_word_ink')for i,w in enumerate(words)}
             result['marked']={0,1};return result
         monkeypatch.setattr(vp.vision_reading,'align',uncertain)
         class Package:
@@ -34,6 +34,9 @@ def test_adjacent_uncertain_digit_crops_publish_one_complete_original_span(monke
         inline=list(root.iter('img'))
         assert len(inline)==1,'padded neighboring crops must not print the middle digit twice'
         asset=images[inline[0].get('src')]
+        if asset.get('kind')=='inline_print_preview':
+            assert asset['coverage_eligible']is False
+            asset=images[asset['inspection_image']]
         assert asset['method']=='overlapping_inline_ink_once'
         assert pymupdf.Rect(asset['bbox']).contains(pymupdf.Rect(boxes[0])|pymupdf.Rect(boxes[1]))
         assert len([a for a in root.iter('a')if a.get('class')=='source-disclosure-ref'])==2

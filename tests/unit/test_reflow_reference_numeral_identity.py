@@ -41,7 +41,12 @@ def test_optically_recovered_clause_keeps_unproved_reference_as_its_own_print(tm
             SourceDisplay(doc,0),0,Package(),{},pixel_words=source,forced_uncertain=('b1',),
             note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
     unit=record['blocks'][0]
-    assert 5 in unit['source_image_words']
+    assert unit['source_image_words']==[]
+    from tests.unit.test_reflow_reading_tiers import assert_flagged_print
+    root,flags=assert_flagged_print(''.join(page['body']))
+    assert any('1.7.'in ''.join(f.itertext())for f in flags)
+    assert unit['flagged_readings']['5']['tier']=='flagged'
+    assert any(d['status']=='UNRESOLVED'for d in unit['adjudication'])
     assert unit['published_tokens'][:5]==text.split()[:5]
     assert 'source-word-image'in ''.join(page['body'])
 

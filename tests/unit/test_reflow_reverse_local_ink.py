@@ -27,6 +27,8 @@ def test_reverse_local_counterread_is_ink_without_an_unproved_live_replacement(t
             local_ocr_units=[dict(id='b1',words=words,source_word_indices=list(range(len(words))))],
             note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
     observed=record['blocks'][0]
-    assert (1 in observed['source_image_words'])is reverse
-    assert ('source-word-image'in ''.join(published['body']))is reverse
+    assert observed['source_image_words']==[]
+    from tests.unit.test_reflow_reading_tiers import assert_flagged_print
+    assert_flagged_print(''.join(published['body']), 'The form stays clear.'.split())
+    if reverse:assert any(d['status']=='UNRESOLVED'for d in observed['adjudication'])
     assert observed['published_tokens'][1]=='form','one counterread cannot certify a replacement'

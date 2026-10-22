@@ -43,7 +43,7 @@ def test_only_appended_assistance_uses_a_temporary_seam_carrier():
     pages=[dict(pno=0,body=['<p>'+assist+opaque+'</p>'])]
     carriers=vision_pipeline._join_control_carriers(pages)
     assert len(carriers)==1
-    assert list(carriers.values())==[' <a class="source-word-image" href="#v4-d-0-b1-1"><img src="images/v4-d-0-b1-1.jpg" alt=""/></a>']
+    assert list(carriers.values())==['<a class="source-word-image" href="#v4-d-0-b1-1"><img src="images/v4-d-0-b1-1.jpg" alt=""/></a>']
     assert opaque in pages[0]['body'][0]
     for carrier,original in carriers.items():
         assert carrier in pages[0]['body'][0]

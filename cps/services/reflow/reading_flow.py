@@ -44,7 +44,7 @@ def projection(node, images):
         # The attached print repeats the plausible reading; its spacing is
         # presentation, not a new source-word boundary.
         live=next((c for c in node if 'reflow-plausible' in c.get('class','').split()),None)
-        return (''.join(live.itertext()) if live is not None else '')+(node.tail or '')
+        return ((live.text or '')+''.join(projection(c,images)for c in live) if live is not None else '')+(node.tail or '')
     if 'source-glyph-presentation' in classes:
         # The visible ink expansion has a different resource identity. Its
         # sealed canonical sibling supplies the same source word witness.

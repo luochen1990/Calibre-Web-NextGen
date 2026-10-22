@@ -1038,7 +1038,10 @@ def _coalesce_inline_source_images(pieces,display,pno,bid,package,images):
         image=images.get(match[1])if match else None
         if not image or not image.get('bbox')or image.get('source_parts'):
             groups.append([]);continue
-        box=image['bbox'];entry=(index,match,box)
+        original=images.get(image.get('inspection_image'),image)
+        if original.get('source_parts'):
+            groups.append([]);continue
+        box=original['bbox'];entry=(index,match,box)
         previous=groups[-1][-1]if groups and groups[-1]else None
         if previous:
             other=previous[2]
@@ -1062,8 +1065,19 @@ def _coalesce_inline_source_images(pieces,display,pno,bid,package,images):
         _word_disclosure_image(package,src,display,extract.pymupdf.Rect(box))
         images[src]=dict(page=pno,bbox=list(box),kind='vision_disclosure',
             source_word_indices=[index for index,_,_ in group],method='overlapping_inline_ink_once')
+        from . import inline_print
+        preview=inline_print.preview(display,box)if hasattr(package,'image')else None
+        inline_src=src;style='height:1.4em;vertical-align:-0.25em;width:auto'
+        if preview is not None:
+            data,metrics=preview;inline_src=src[:-4]+'-inline.png'
+            package.image(inline_src,data)
+            images[inline_src]=dict(page=pno,kind='inline_print_preview',coverage_eligible=False,
+                inspection_image=src,**metrics)
+            style=metrics['style']
         for offset,(index,match,_)in enumerate(group):
-            replacement=match[0].replace(match[1],src)if offset==0 else ''
+            replacement=match[0].replace(match[1],inline_src)if offset==0 else ''
+            if replacement:
+                replacement=re.sub(r' style="[^"]*"',' style="'+style+'"',replacement)
             pieces[index]=pieces[index][:match.start()]+replacement+pieces[index][match.end():]
 
 
@@ -3443,11 +3457,24 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             reading_tiers.settle_typographic_equivalents(result)
             reading_tiers.settle_repeated_word_shapes(result,display)
             flagged_readings=reading_tiers.prepare(result)
+            literal={};placeholder_display={}
+            if note_context and role in ('body','other','caption'):
+                note_optical=_adjacent_source_note_glyphs(optical_local,pixel_words or [])
+                source_context=dict(note_context,source_words=pixel_words)
+                args=(result['tokens'],note_optical,display,box,note_context['cache'],note_context['labels'],pno,source_context)
+                literal=(_literal_note_refs(*args,allow_omitted=True) if role=='caption'
+                         else _literal_note_refs(*args))
+                placeholder_display=_placeholder_display_evidence(result['tokens'],optical_local,display,box,note_context,pno,literal)
+            individual_receipts={i for i,d in result.get('word_notes',{}).items()
+                if d.get('source') and (d.get('source')!=d.get('chosen') or
+                    d.get('model') and d.get('model')!=d.get('chosen'))}
             groups=[]
             for index in sorted(i for i in result['marked'] if not result['tokens'][i].startswith('<n:')):
                 resolved_local={i for i,d in (result.get('word_notes') or {}).items() if d['status']=='RESOLVED'} if local_ocr else set()
                 image_words={i for i,d in (result.get('word_notes') or {}).items() if d.get('source_image_only')}
                 if ((local_ocr or not result.get('adjudication')) and groups and index==groups[-1][-1]+1
+                        and index not in literal and groups[-1][-1] not in literal
+                        and index not in individual_receipts and groups[-1][-1] not in individual_receipts
                         and index not in resolved_local and groups[-1][-1] not in resolved_local
                         and index not in image_words and groups[-1][-1] not in image_words):groups[-1].append(index)
                 else:groups.append([index])
@@ -3459,6 +3486,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 previous=merged[-1]if merged else []
                 if (previous and group[0]==previous[-1]+1
                         and len(previous)+len(group)<=8
+                        and not any(i in literal or i in individual_receipts for i in previous+group)
                         and all(i in flagged_readings and i in evidence_boxes for i in previous+group)):
                     a=evidence_boxes[previous[-1]];b=evidence_boxes[group[0]]
                     same_row=min(a[3],b[3])-max(a[1],b[1])>=.5*min(a[3]-a[1],b[3]-b[1])
@@ -3473,14 +3501,6 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 chosen_reading=' '.join(result['tokens'][i] for i in group)
                 if text_quality.inspect_disclosure(chosen_reading)['needs_read']:
                     raise _DisclosureQualityRejection('Unreliable chosen reading requires original source disclosure')
-            literal={};placeholder_display={}
-            if note_context and role in ('body','other','caption'):
-                note_optical=_adjacent_source_note_glyphs(optical_local,pixel_words or [])
-                source_context=dict(note_context,source_words=pixel_words)
-                args=(result['tokens'],note_optical,display,box,note_context['cache'],note_context['labels'],pno,source_context)
-                literal=(_literal_note_refs(*args,allow_omitted=True) if role=='caption'
-                         else _literal_note_refs(*args))
-                placeholder_display=_placeholder_display_evidence(result['tokens'],optical_local,display,box,note_context,pno,literal)
             display_tokens=list(result['tokens'])
             for proof in placeholder_display.values():
                 if 'deduplicated_literal_token' in proof and not literal.get(proof['deduplicated_literal_token']):
@@ -3610,7 +3630,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     else:
                         source_quote='Source reading: '+escape(' '.join(owned_word['text'] for owned_word in local if any(owned_word['bbox']==evidence_boxes.get(i) for i in endings[index])))+'.'
                     decision=(result.get('word_notes') or {}).get(index)
-                    if len(endings[index])>1:
+                    if len(endings[index])>1 and all(i in flagged_readings for i in endings[index]):
                         members=[result.get('word_notes',{}).get(i,{})for i in endings[index]]
                         decision=dict(source=[s for d in members for s in d.get('source',[])],
                             model=[s for d in members for s in d.get('model',[])],
@@ -3624,7 +3644,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                                 and decision.get('model',[])!=decision['chosen'] else decision['source'])
                         source_quote=(escape(' '.join(before)) or '[no word]')+' → '+(escape(' '.join(decision['chosen'])) or '[no word]')+'.'
                     if local_ocr:
-                        explanation=((source_quote+' ') if decision and decision['status']=='RESOLVED' else '')+'This local OCR transcription has not been independently verified. Consult the original printed reading in the image. '+f'<a href="#v4-local-ocr-source-{pno}">View complete original page</a>.'
+                        explanation=((source_quote+' ') if decision and (decision['status']=='RESOLVED' or decision.get('source')!=decision.get('chosen')) else '')+'This local OCR transcription has not been independently verified. Consult the original printed reading in the image. '+f'<a href="#v4-local-ocr-source-{pno}">View complete original page</a>.'
                     elif decision:
                         if decision.get('method')=='complete_vision_reading_without_optical_counterevidence':
                             explanation=source_quote+' The complete vision reading is retained. The optical alternative has no complete competing word. Compare the original printed word in the image.'
@@ -3636,16 +3656,18 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     else:explanation=escape(' '.join(result['tokens'][i] for i in endings[index]))+'. '+source_quote
                     if decision and decision.get('source_image_only'):
                         explanation=((source_quote+' ')if decision['source']!=decision['chosen']else '')+'The independent pixel readings do not settle this printed word. Read the original image.'
+                    if original_quality['needs_read'] and not local_ocr:
+                        explanation='The text layer is unreliable; consult the original printed reading in the image. '+explanation
                     if index in flagged_readings:
-                        label='Unresolved source reading'
-                        explanation='Plausible reading; it has not been independently proved. Compare the adjacent original print. '+source_quote
+                        label='Unverified local OCR reading'if local_ocr else'Unresolved source reading'
+                        explanation='Plausible reading; it has not been independently proved. Compare the adjacent original print. '+explanation
                     extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
                     if index in flagged_readings or decision and decision.get('source_image_only'):
                         from . import inline_print
                         inline_src=src;inline_style='height:1.4em;vertical-align:-0.25em;width:auto'
                         preview=(inline_print.preview(display,crop)
                                  if not word_decision.get('source_parts') and len(territories)==1 else None)
-                        if preview is not None:
+                        if preview is not None and hasattr(package,'image'):
                             data,metrics=preview
                             inline_src=f'images/{ident}-inline.png'
                             package.image(inline_src,data)
@@ -3653,7 +3675,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                                 inspection_image=src,**metrics)
                             inline_style=metrics['style']
                         if index in flagged_readings:
-                            piece=reading_tiers.flagged_html(chosen_reading,inline_src,ident,inline_style)
+                            piece=reading_tiers.flagged_html(chosen_reading,inline_src,ident,inline_style,reading_html=piece if index in literal else None)
                         else:
                             piece=(f'<a class="source-word-image" href="#{ident}"><img src="{inline_src}" '
                                 f'alt="Unresolved printed word; inspect original" style="{inline_style}"/></a>')
@@ -3699,7 +3721,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 marked+=1
                 for row in missing:row.update(disposition='print',image=unit['image'],
                     source_reference=target,method='unplaced_occurrence_original_print')
-            text=''.join(('' if i==0 or i in wraps else ' ')+piece for i,piece in enumerate(pieces) if piece)
+            text=''.join(('' if (endings.get(i,[i])[0]==0 or endings.get(i,[i])[0] in wraps) else ' ')+piece
+                         for i,piece in enumerate(pieces) if piece)
             # The marker is typographic punctuation, not a standalone sentence block.
             text=re.sub(r'\s+(<a[^>]*class="noteref".*?</a>)',r'\1',text)
             text=(f'<span data-source-page="{pno}" data-source-block="{escape(bid,quote=True)}" '
@@ -3759,7 +3782,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             # Original-ink word images carry no live spelling. Rejected OCR
             # labels must not become structural anchors for that publication.
             live_tokens=[t for i,t in enumerate(result['tokens'])
-                if not result.get('word_notes',{}).get(i,{}).get('source_image_only')]
+                if not (result.get('word_notes',{}).get(i,{}).get('source_image_only') or
+                        result.get('word_notes',{}).get(i,{}).get('source_image_only_before_publication'))]
             printed_head,printed_tail=_published_pixel_edges(live_tokens,geometry_words)
             head_variant=None
             visible=[t for t in result['tokens'] if not t.startswith('<n:')]
@@ -5907,14 +5931,14 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                     decision['source_image_only']=True
                 elif decision['status']=='UNRESOLVED':
                     from . import reading_tiers,inline_print
-                    choice=reading_tiers.choose(tokens[index],decision)
+                    choice=reading_tiers.choose(tokens[index],decision,rank_lexical=False)
                     decision['publication']=choice
                     if choice['tier']=='flagged':
                         chosen=choice['reading'];inline_src=src
                         style='height:1.4em;vertical-align:-0.25em;width:auto'
                         preview=(inline_print.preview(display,box)
                             if not output_sources[index].get('native_parts')else None)
-                        if preview is not None:
+                        if preview is not None and hasattr(package,'image'):
                             data,metrics=preview;inline_src=f'images/{ident}-inline.png'
                             package.image(inline_src,data)
                             images[inline_src]=dict(page=page['pno'],kind='inline_print_preview',coverage_eligible=False,
@@ -6780,7 +6804,7 @@ def _join_control_carriers(pages):
     # Adjacent print assists the flagged reading; it is not another source word.
     # Hide only this factory-generated attachment from the lexical seam copy,
     # preserving its exact bytes and location when the join restores controls.
-    flagged=re.compile(r'(<span class="reflow-flagged-reading"><span class="reflow-plausible">[^<]*</span>)( <a class="source-word-image" href="[^"]+"><img [^>]+/></a>)(</span>)')
+    flagged=re.compile(r'(<span class="reflow-flagged-reading"><span class="reflow-plausible">.*?</span>)(<a class="source-word-image" href="[^"]+"><img [^>]+/></a>)(</span>)')
     def assist(match):
         return match.group(1)+carrier_for(match.group(2))+match.group(3)
     for page in pages:
@@ -7787,7 +7811,7 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         homes=unit_recovery.page_homes(chapters)
         documents={c.href:unit_recovery.document(c.title,'\n'.join(c.blocks),'en') for c in chapters}
         about='vision-about.xhtml'
-        documents[about]=unit_recovery.document('About this conversion','<h1>About this conversion</h1><p>Clean native pages retain deterministic text. Other pages were transcribed from their printed pixels. A dagger links a differing or uncertain reading to its original source crop. Running heads and folios are excluded from reading flow. Printed notes and transcription disclosures appear in the notes section with Return links.</p>','en')
+        documents[about]=unit_recovery.document('About this conversion','<h1>About this conversion</h1><p>Clean native pages retain deterministic text. Other pages were transcribed from their printed pixels. Proved words remain ordinary text. A plausible but unproved reading is underlined and accompanied by its original print; compare that print when the reading matters. When no complete reading is available, only the original print is shown. A dagger opens the full source crop. Independently supported corrections keep their correction notice. Running heads and folios are excluded from reading flow. Printed notes and transcription disclosures appear in the notes section with Return links.</p>','en')
         entries=[(about,'About this conversion')]+[(c.href,c.title) for c in chapters]
         identifier='urn:uuid:'+str(uuid.uuid4());meta={'title':'PDF vision conversion','language':'en'}
         manifest=[{'id':'nav','href':'nav.xhtml','type':'application/xhtml+xml','properties':'nav'},

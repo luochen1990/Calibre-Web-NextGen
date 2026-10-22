@@ -130,3 +130,39 @@ def test_representation_equivalence_removes_doubt_without_erasing_correction_not
     assert (result['word_notes'][0]['status']=='RESOLVED') is settled
     assert result['marked']=={0}
     if settled:assert not result['flagged_readings'] and not result['word_notes'][0]['source_image_only']
+
+
+@pytest.mark.parametrize('source,model,expected',[('garden','gardem','garden'),
+    ('modem','modern','modern'),('reader','Ravena','Ravena'),('cāre','care','care')])
+def test_assistance_ranks_observed_lexical_candidates_without_certifying_them(source,model,expected):
+    decision=dict(source=[source],model=[model],chosen=[model],status='UNRESOLVED',method='unsettled_alternate_pixel_readings')
+    choice=tiers.choose(model,decision)
+    assert choice['tier']=='flagged' and choice['reading']==expected
+    assert decision['status']=='UNRESOLVED' and decision['chosen']==[model]
+
+
+def assert_flagged_print(markup, readings=None):
+    """Every plausible run keeps live words and a linked decorative print copy."""
+    root = ET.fromstring('<root xmlns:epub="http://www.idpf.org/2007/ops">'+markup+'</root>')
+    flags = [n for n in root.iter() if n.get('class') == 'reflow-flagged-reading']
+    assert flags
+    actual = []
+    for flag in flags:
+        live = next(n for n in flag if n.get('class') == 'reflow-plausible')
+        reading = ''.join(live.itertext())
+        assert reading.strip()
+        link = next(n for n in flag if n.get('class') == 'source-word-image')
+        assert link.get('href', '').startswith('#v4-')
+        assert len(link) == 1 and link[0].tag == 'img'
+        assert link[0].get('src', '').startswith('images/') and link[0].get('alt') == ''
+        actual.append(reading)
+    if readings is not None:
+        assert ' '.join(actual).split() == readings
+    return root, flags
+
+
+def test_native_assistance_keeps_its_first_reading_without_lexical_overrule():
+    decision=dict(source=['remalns'],model=['remalns'],alternative=['remains'],
+                  status='UNRESOLVED',method='pixel_read_inconclusive')
+    choice=tiers.choose('remalns',decision,rank_lexical=False)
+    assert choice['tier']=='flagged' and choice['reading']=='remalns'

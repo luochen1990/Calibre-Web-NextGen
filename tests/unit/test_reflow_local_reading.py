@@ -409,7 +409,11 @@ def test_local_final_source_owner_tracks_exact_independent_optical_occurrences(r
     assert compiled['marked'] == list(range(len(optical)))
     guard = 'omitted_pixel_line_recovery' if route == 'recovered' else 'independent_pixel_line_fallback'
     assert any(item['kind'] == guard for item in compiled['guard'])
-    assert ''.join(page['body']).count('title="Unverified local OCR reading"') == len(optical)
+    from tests.unit.test_reflow_reading_tiers import assert_flagged_print
+    root,flags=assert_flagged_print(''.join(page['body']), [w['text']for w in optical])
+    uncertain=[n for n in root.iter()if n.get('class')=='uncertain']
+    assert uncertain and all(n.get('title')=='Unverified local OCR reading'for n in uncertain)
+    assert sum(len(''.join(n.itertext()).replace('†','').split())for n in uncertain)==len(optical)
     detail = images[f'images/v4-d-0-{ident}-{len(optical)-1}.jpg']
     assert detail['page'] == 0
     box = detail['bbox']

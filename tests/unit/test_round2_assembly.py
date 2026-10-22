@@ -96,7 +96,8 @@ def live_paragraphs(documents):
                         else:parent.text=(parent.text or '')+tail
                         parent.remove(child)
             rows.append(''.join(clone.itertext()).strip())
-            assert not p.findall('.//x:img',NS),'Live body text cannot become an inline crop'
+            from tests.unit.test_reflow_vision_pilot import assert_live_assistance_images
+            assert_live_assistance_images(p)
     return rows
 
 

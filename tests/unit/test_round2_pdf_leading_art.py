@@ -51,4 +51,6 @@ def test_cross_pdf_source_sentence_floats_only_proven_leading_art(tmp_path,monke
     if case=='table':expected_figures=1
     figures=[e for root in documents.values() for e in root.findall('.//x:figure',NS)]
     assert len(figures)==expected_figures,'Original artwork/table must survive exactly once without entering a body paragraph'
-    assert all(not p.findall('.//x:img',NS) for root in documents.values() for p in root.findall('.//x:p',NS))
+    from tests.unit.test_reflow_vision_pilot import assert_live_assistance_images
+    for root in documents.values():
+        for p in root.findall('.//x:p',NS):assert_live_assistance_images(p)

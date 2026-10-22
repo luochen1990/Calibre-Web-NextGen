@@ -58,7 +58,10 @@ def test_bad_short_source_quote_is_suppressed_but_good_model_reading_stays(compi
     published, report = vision_pipeline.compile_page(
         answer(block('green baskets fresh bread', bbox=(0, 0, 1000, 1000))),
         words('green blorple zzqxv bread'), display, 0, package, {})
-    assert 'green baskets' in ''.join(published['body'])
+    from tests.unit.test_round4_defects import plain
+    from xml.etree import ElementTree as E
+    root=E.fromstring('<root xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(published['body'])+'</root>')
+    assert 'green baskets' in plain(root)
     assert report['source_quote_suppressions']
     assert all('blorple' not in value and 'zzqxv' not in value for value in published['asides'])
     assert any('Original printed reading' in value and '<img ' in value for value in published['asides'])

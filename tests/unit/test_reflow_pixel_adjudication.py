@@ -248,7 +248,10 @@ def test_native_conflict_next_to_inline_ordinal_keeps_live_text_and_style(tmp_pa
     assert '1<sup>st</sup>'in page['body'][0]
     assert page['body'][0].count('class="source-disclosure-ref"')==1
     authored=re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',page['body'][0])
-    assert authored==fragment,'only the owned generated control is excluded from authored text'
+    from tests.unit.test_reflow_reading_tiers import assert_flagged_print
+    assert_flagged_print(authored,['remalns'])
+    authored=re.sub(r'<span class="reflow-flagged-reading"><span class="reflow-plausible">(.*?)</span><a class="source-word-image".*?</a></span>',r'\1',authored)
+    assert authored==fragment,'Only generated controls and appended print are excluded; the source word and ordinal style stay exact'
     assert len(page['asides'])==1 and 'Unresolved source reading: remalns.'in page['asides'][0]
     assert records[0]['marked']==[4]
 
@@ -511,7 +514,9 @@ def test_unplaced_multiword_edit_has_bounded_word_notes_not_repeated_paragraphs(
         page,report=vp.compile_page({'blocks':[block(model,role='footnote',marker='2',bbox=(0,0,1000,1000))]},
             original,SourceDisplay(doc,0),0,Package(),{},pixel_words=original,note_context={'cache':tmp_path/'cache'})
     assert report['blocks'][0]['published_tokens']==[w['text']for w in original]
-    assert report['blocks'][0]['source_image_words']==[3]
+    assert report['blocks'][0]['source_image_words']==[]
+    from tests.unit.test_reflow_reading_tiers import assert_flagged_print
+    assert_flagged_print(''.join(page['asides'][:1]), ['blue'])
     notes=[aside for aside in page['asides'] if 'Unresolved source reading' in aside]
     assert len(notes)==1,'One original occurrence owns this unproved multiword rewrite'
     assert all('small wooden sample and open' not in aside for aside in notes)
@@ -1269,7 +1274,11 @@ def test_unsettled_alternate_word_publishes_its_own_ink_not_wrong_live_text(tmp_
     assert len(images)==1
     assert len(images[0])==1 and images[0][0].tag.endswith('img')
     assert 'The clear sample'in text and 'readable beside the open window.'in text
-    assert report['pages'][0]['blocks'][0]['source_image_words']==[3]
+    assert report['pages'][0]['blocks'][0]['source_image_words']==[]
+    from tests.unit.test_reflow_reading_tiers import assert_flagged_print
+    flags=[n for root in docs.values()for n in root.iter()if n.get('class')=='reflow-plausible']
+    assert [''.join(n.itertext())for n in flags]==['remains']
+    assert all(d['status']=='UNRESOLVED'for d in report['pages'][0]['blocks'][0]['adjudication'])
 
 
 @pytest.mark.parametrize('dot',[False,True])
@@ -1537,7 +1546,8 @@ def test_fallback_extra_ink_survives_the_real_publication_as_its_own_image(tmp_p
     text=' '.join(ink.body_texts(docs))
     assert 'Before lunch'in text and 'a tray outside today.'in text
     assert 'carried'not in text, 'The image contains that word once; do not repeat it as live text'
-    images=[n for root in docs.values()for n in root.iter()if n.get('class')=='source-word-image']
+    images=[n for root in docs.values()for parent in root.iter()if parent.get('class')!='reflow-flagged-reading'
+            for n in parent if n.get('class')=='source-word-image']
     assert len(images)==1 and len(images[0])==1
     decision=next(d for d in record['adjudication']if d.get('method')=='unsettled_additional_pixel_ink')
     box=decision['source_bbox']
@@ -4012,8 +4022,10 @@ def test_compilation_cannot_publish_an_unproved_source_insertion_as_live_text(tm
         assert own['source_image_words']==[]
         assert all(d['status']=='RESOLVED'for d in own['adjudication'])
     else:
-        assert 'bright'not in vp._seam_text(body),'A dagger cannot make an unproved live insertion safe'
-        assert own['source_image_words']==[2]
+        from tests.unit.test_reflow_reading_tiers import assert_flagged_print
+        assert_flagged_print(body, ['bright'])
+        assert own['source_image_words']==[]
+        assert any(d['status']=='UNRESOLVED'for d in own['adjudication']), 'Assistance is not a fabricated proof'
         assert body.count('class="source-word-image"')==1
         assert package.images,'The actual original word must remain inspectable'
 
@@ -4071,10 +4083,14 @@ def test_fallback_refinement_keeps_original_ink_for_an_unchanged_unproved_word(t
             note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
     assert calls,'Exercise the later fallback refinement rather than bypassing it'
     record=report['blocks'][0]
-    assert record['source_image_words']==[2,3,4]
-    assert all(t not in vp._seam_text(' '.join(page['body'])).split()for t in ('bright','blue','wooden'))
+    assert record['source_image_words']==[]
+    from tests.unit.test_reflow_reading_tiers import assert_flagged_print
+    assert_flagged_print(''.join(page['body']), ['bright','blue','wooden'])
+    assert all(d['status']=='UNRESOLVED'for d in record['adjudication'])
     assert 'sample ready now.'in vp._seam_text(' '.join(page['body']))
-    assert len(package.images)>=3,'Every unproved word retains its inspectable original ink'
+    assert package.images,'The complete unproved phrase retains its inspectable original ink'
+    for meta in report['blocks']:
+        assert set(map(int,meta['flagged_readings']))=={2,3,4}
 
 
 @pytest.mark.parametrize('binding',['own','remote','repeated'])
@@ -4608,7 +4624,11 @@ def test_compilation_preserves_conserved_fragment_letters_through_both_sweeps(tm
     own = report['blocks'][0]
     body = vp._seam_text(' '.join(page['body']))
     if competing:
-        assert 'Harbor' not in body and own['source_image_words']
+        assert 'Harbor' not in body and own['source_image_words']==[]
+        from tests.unit.test_reflow_reading_tiers import assert_flagged_print
+        assert_flagged_print(''.join(page['body']), list('Harbor'))
+        assert 'HARBXR'not in body and 'HARROW'not in body
+        assert any(d['status']=='UNRESOLVED'for d in own['adjudication'])
     else:
         assert body == printed
         assert own['source_image_words'] == []

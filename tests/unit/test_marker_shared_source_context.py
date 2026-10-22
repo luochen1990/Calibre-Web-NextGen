@@ -57,4 +57,10 @@ def test_shared_marker_context_needs_actual_image_coverage_and_adjacency_and_kee
    wording=' '.join(''.join(p.itertext())for p in node.findall('.//x:p',m.h.NS)).lower()
    assert 'marker'in wording and 'uncertain'in wording,'Shared original-image target visibly discloses the additional marker uncertainty'
  if repeated:assert len({c['source_reference_origin']for c in listed})==2,'Each of these two physically separate marker slots has its own directly adjacent ordinary source control'
- assert len(report['images'])==expected,'No unreferenced duplicate source raster may remain after sharing'
+ inspection={k:v for k,v in report['images'].items()if v['kind']!='inline_print_preview'}
+ assert len(inspection)==expected,'No unreferenced duplicate source raster may remain after sharing'
+ emitted={n.get('src')for root in docs.values()for n in root.iter()if n.tag.endswith('}img')}
+ for name,preview in report['images'].items():
+  if preview['kind']=='inline_print_preview':
+   assert name in emitted and preview['coverage_eligible']is False
+   assert preview['inspection_image']in inspection
