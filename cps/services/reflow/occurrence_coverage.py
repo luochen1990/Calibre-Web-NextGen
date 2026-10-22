@@ -5,12 +5,14 @@ occurrences need published original ink; a different copy of the same spelling
 and an image's bounding envelope do not establish that coverage.
 """
 import unicodedata
+import re
 from collections import defaultdict
 from difflib import SequenceMatcher
 from xml.etree import ElementTree as ET
 
 
 def _key(text):
+    text=re.sub(r'<n:[^>]+>','',text)
     return ''.join(c for c in unicodedata.normalize('NFKC',text).casefold()if c.isalnum())
 
 
@@ -58,7 +60,7 @@ def classify(words,tokens,boxes,notes,images,pno):
         live=[j for j in placements if not notes.get(j,{}).get('source_image_only')]
         row=dict(source_index=index,source_text=word['text'],source_bbox=list(box),
                  disposition='live'if len(live)==1 else 'missing',published_indices=live)
-        if len(live)!=1 and any(notes.get(j,{}).get('source_image_only')for j in placements):
+        if len(live)!=1:
             assets=[]
             for name,image in images.items():
                 if image.get('page')!=pno or not image.get('bbox'):continue
@@ -91,7 +93,7 @@ def _surviving_indices(before,after):
 def _text(node):
     tag=node.tag.rsplit('}',1)[-1];classes=set(node.get('class','').split())
     if tag=='img' or classes.intersection({'source-disclosure-ref','source-reading-annotation',
-            'source-word-image','note-return','vision-disclosure'}):return ' '
+            'source-word-image','note-return','noteref','noteref-unresolved','vision-disclosure'}):return ' '
     return (node.text or '')+''.join(_text(c)+(c.tail or '')for c in node)
 
 
@@ -104,10 +106,11 @@ def final_publication(documents,records,frames,images,package,displays,homes):
     neither recognition pass identified. Furniture is excluded only at an
     explicitly attributed running-head or folio territory.
     """
-    actual=defaultdict(list);used=set()
+    actual=defaultdict(list);used=set();identifiers=set()
     for html in documents.values():
         root=ET.fromstring(html)
         for node in root.iter():
+            if node.get('id'):identifiers.add(node.get('id'))
             if node.tag.rsplit('}',1)[-1]=='img':used.add(node.get('src',''))
             if node.get('data-source-page')is not None and node.get('data-source-block'):
                 actual[(int(node.get('data-source-page')),node.get('data-source-block'))].extend(_text(node).split())
@@ -135,7 +138,8 @@ def final_publication(documents,records,frames,images,package,displays,homes):
                 rows=classify(source,expected,placements,notes,published,pno)
             for row in rows:
                 value=dict(row,block=block['id'])
-                if row['disposition']=='live'and not any(i in surviving for i in row['published_indices']):
+                if (row['disposition']=='live'and row.get('typed_reference')not in identifiers
+                        and not any(i in surviving for i in row['published_indices'])):
                     value.update(disposition='missing',method='removed_after_compilation')
                 claims.append(value)
                 if not any(_contains(w['bbox'],row['source_bbox'])for w in frame):
@@ -168,7 +172,10 @@ def final_publication(documents,records,frames,images,package,displays,homes):
             fragment,asides,case=source_unit(displays[pno],pno,'publication-coverage','other',
                 package,images,'Source occurrences without final live-word coverage are retained as original print')
             href=homes[pno]if pno in homes else homes[str(pno)]
-            documents[href]=documents[href].replace('</body>',fragment+''.join(asides)+'</body>')
+            # This is an inspection channel, not another prose paragraph. Keep
+            # its control in the notes lane with the retained original page.
+            context='<aside class="footnote vision-disclosure">'+fragment+'</aside>'+''.join(asides)
+            documents[href]=documents[href].replace('</body>',context+'</body>')
             if case['image']not in package.images:raise ValueError('Occurrence coverage source image was not published')
             for row in missing:row.update(disposition='print',image=case['image'],
                 kind='publication_coverage_source_context',source_reference=case['source_reference'])

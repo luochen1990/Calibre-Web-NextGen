@@ -3339,9 +3339,20 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     piece='<span class="uncertain" title="Unverified local OCR reading">'+piece+'</span>'
                 pieces.append(piece)
             from . import occurrence_coverage
-            inventory=(raw['words']if local_ocr and local_ocr_units is not None and raw else local or optical_local)
+            inventory=(raw['words']if local_ocr and local_ocr_units is not None and raw else optical_local or local)
             coverage=occurrence_coverage.classify(inventory,result['tokens'],evidence_boxes,
                 result.get('word_notes',{}),image_records,pno)
+            typed_occurrences=[dict(source_bbox=proof['source_bbox'],label=proof['label'],
+                target=f'v4-ref-{pno}-{bid}-{index}')for index,proof in placeholder_display.items()
+                if proof.get('status')=='PROVED'and proof.get('source_bbox')]
+            if opening_proof and opening_proof['identity_status']=='PROVED':
+                typed_occurrences.append(dict(source_bbox=opening_proof['source_bbox'],
+                    label=block['marker'],target=f'v4-note-{pno}-{bid}'))
+            for row in coverage:
+                matches=[proof for proof in typed_occurrences
+                    if occurrence_coverage._key(proof['label'])==occurrence_coverage._key(row['source_text'])
+                    and occurrence_coverage._contains(proof['source_bbox'],row['source_bbox'])]
+                if len(matches)==1:row.update(disposition='live',typed_reference=matches[0]['target'])
             missing=[row for row in coverage if row['disposition']=='missing']
             if missing:
                 # A replacement optical inventory cannot silently erase source
@@ -5509,7 +5520,9 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                     elif box[1]>=label_box.y1-1e-3:clip.y0=max(clip.y0,label_box.y1)
                     else:raise ValueError('Unmapped glyph overlaps its proved note action')
                 _word_disclosure_image(package,src,display,clip,output_sources[index].get('native_parts'))
-                images[src]=dict(page=page['pno'],bbox=list(clip),kind='vision_disclosure')
+                images[src]=dict(page=page['pno'],bbox=list(clip),kind='vision_disclosure',
+                    **({'source_parts':copy.deepcopy(output_sources[index]['native_parts'])}
+                       if output_sources[index].get('native_parts')else {}))
                 label='Pixel-verified correction' if decision['status']=='RESOLVED' else 'Unresolved source reading'
                 chosen=decision['chosen'][0] if decision['status']=='RESOLVED' else tokens[index]
                 explanation=(escape(tokens[index])+' → '+escape(chosen)+'.' if chosen!=tokens[index]

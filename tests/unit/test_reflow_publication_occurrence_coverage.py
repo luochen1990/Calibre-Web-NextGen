@@ -32,12 +32,16 @@ def test_optical_fallback_retains_unmatched_original_local_occurrences_as_print(
             forced_uncertain={'b1'},local_ocr=True,
             local_ocr_units=[dict(id='b1',words=source,source_word_indices=list(range(len(source))))],
             note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
-    assert 'v4-unit-source-0-coverage-b1' in ''.join(page['asides'])
+    # The already published complete local source page is sufficient; it must
+    # be named by the occurrence ledger, without inventing a second disclosure.
+    assert 'v4-local-ocr-source-0' in ''.join(page['asides'])
     coverage=record['blocks'][0]['occurrence_coverage']
     assert len(coverage)==len(source)
     assert [r['disposition']for r in coverage[:2]]==['print','print']
     assert all(r['disposition']in('live','print')for r in coverage)
     assert all(r.get('image')in images for r in coverage[:2])
+    assert all(images[r['image']]['bbox'][0]<=r['source_bbox'][0]
+        and images[r['image']]['bbox'][2]>=r['source_bbox'][2]for r in coverage[:2])
     assert record['occurrence_coverage']['missing']==0
     assert record['occurrence_coverage']['inventory']==len(source)
 
