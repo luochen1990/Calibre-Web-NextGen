@@ -397,6 +397,33 @@ def _reserve_object_instances(answer,optical,display,regions):
             for i,j in matches:instances.setdefault(_source_instance(optical[i]),block['id'])
 
 
+def _reserve_layer_instances(answer,words,display,regions):
+    """Bind complete local readings to this inventory's own word identities.
+
+    Optical and PDF word boxes are different observations of the same print.
+    A reservation keyed by one observation cannot exclude the other's words.
+    Re-establish only complete, unique local placements; this grants ownership,
+    never spelling authority. Competing complete owners remain unreserved.
+    """
+    from .source_geometry import unique_anchors
+    key=lambda text:re.sub(r'[^\w]','',vision_reading.normalized(text).casefold())
+    proposals={}
+    for block in answer['blocks']:
+        if block['role'] not in ('body','other','caption','heading'):continue
+        candidate=[key(token)for token in re.sub(r'<n:[^>]+>',' ',block['text']).split()]
+        candidate=[token for token in candidate if token]
+        if len(candidate)<3:continue
+        local=[word for word in words if key(word['text']) and any(
+            owned_words([word],box)for box in regions.get(block['id'],[block_rect(block,display)]))]
+        anchors=unique_anchors(local,range(len(local)),candidate,minimum=3)
+        if {j for i,j in anchors}!=set(range(len(candidate))):continue
+        for i,j in anchors:
+            proposals.setdefault(_source_instance(local[i]),set()).add(block['id'])
+    instances=regions.setdefault('_instances',{})
+    for occurrence,owners in proposals.items():
+        if len(owners)==1:instances.setdefault(occurrence,next(iter(owners)))
+
+
 def _native_lexical_view(display,words,marker_prefixes=()):
     from .native_text import lexical_word_view
     if not display.page.get_texttrace():return words
@@ -2580,6 +2607,10 @@ def _unproved_optical_letter_clusters(text,optical,display):
 def compile_page(answer,words,display,pno,package,image_records,pixel_words=None,forced_uncertain=(),regions=None,body_owners=None,note_context=None,figure_cases=None,local_ocr=False,local_ocr_units=None):
     vision_reading.validate(answer)
     if local_ocr:words=[]
+    if words:
+        regions=dict(regions or {})
+        regions['_instances']=dict(regions.get('_instances',{}))
+        _reserve_layer_instances(answer,words,display,regions)
     body=[];asides=[];alignment=[];marked=0;tokens_count=0;source_quote_suppressions={}
     footnotes={b['id']:b for b in answer['blocks'] if b['role']=='footnote'}
     controller=unit_recovery.current()
