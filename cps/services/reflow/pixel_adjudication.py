@@ -1103,6 +1103,56 @@ def _without_fragment_aliases(model,source,witness):
     return result
 
 
+def canonical_source_occurrences(model, source, witness, native_print_words=()):
+    """Collapse overlapping text-layer copies proved to be one printed word.
+
+    A spelling match alone cannot remove an occurrence. Each alias must bind
+    uniquely to the same strong pixel occurrence, with a complete source owner.
+    Separate repeats, ambiguous pixels and drawn native occurrences stay intact.
+    """
+    literals={_key(t) for t in model}
+    groups={}
+    for index, word in enumerate(source):
+        text=_key(word['text'])
+        if (text not in literals or sum(c.isalpha() for c in text)<2
+                or proved_native_occurrence(word['text'],word['bbox'],native_print_words)):
+            continue
+        a=word['bbox']
+        matches=[]
+        for j, pixel in enumerate(witness):
+            if _key(pixel['text'])!=text or pixel.get('confidence',0)<85:
+                continue
+            b=pixel['bbox']
+            overlap_x=max(0,min(a[2],b[2])-max(a[0],b[0]))
+            overlap_y=max(0,min(a[3],b[3])-max(a[1],b[1]))
+            if (overlap_x>=.5*max(.01,min(a[2]-a[0],b[2]-b[0]))
+                    and overlap_y>=.5*max(.01,min(a[3]-a[1],b[3]-b[1]))
+                    and _same_occurrence(word,pixel)):
+                matches.append(j)
+        if len(matches)==1:
+            groups.setdefault(matches[0],[]).append(index)
+    removed=set()
+    for j, indices in groups.items():
+        if len(indices)<2:
+            continue
+        pixel=witness[j];b=pixel['bbox']
+        owners=[i for i in indices if _complete_word_occurrence(source[i],pixel)]
+        if not owners:
+            continue
+        def fit(i):
+            a=source[i]['bbox']
+            intersection=max(0,min(a[2],b[2])-max(a[0],b[0]))*max(0,min(a[3],b[3])-max(a[1],b[1]))
+            union=(a[2]-a[0])*(a[3]-a[1])+(b[2]-b[0])*(b[3]-b[1])-intersection
+            return intersection/max(.01,union)
+        owner=max(owners,key=fit);a=source[owner]['bbox']
+        for i in indices:
+            c=source[i]['bbox']
+            if (i!=owner and _same_occurrence(source[i],source[owner])
+                    and min(a[2],c[2])-max(a[0],c[0])>=.8*min(a[2]-a[0],c[2]-c[0])):
+                removed.add(i)
+    return [word for i,word in enumerate(source) if i not in removed]
+
+
 def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False, source_print=False, native_print_words=()):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
@@ -1111,7 +1161,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     Source rectangles belong to occurrences, rather than spelling lookups.
     """
     uncertain=set(uncertain)
-    if not source_print:source=_without_fragment_aliases(model,source,witness)
+    if not source_print:
+        source=canonical_source_occurrences(model,source,witness,native_print_words)
+        source=_without_fragment_aliases(model,source,witness)
     if not source_print and not native_print_words:
         model_words=set()
         if (getattr(witness,'model_reading',False) and not unresolved_source

@@ -3178,6 +3178,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             witness=pixel_adjudication.CropWitness(witness)
                         witness.neighbor_occurrences=pixel_words or ()
                         witness.model_reading=not bool(getattr(witness,'failure',None))
+                        if not source_print:
+                            baseline=pixel_adjudication.canonical_source_occurrences(
+                                first_tokens,baseline,witness,native_print_words)
                         adjudication=pixel_adjudication.adjudicate(first_tokens,
                             baseline,witness,uncertain=pending,corroboration=marker_corroboration,
                             # Inconclusive OCR cannot revive a model passage already
