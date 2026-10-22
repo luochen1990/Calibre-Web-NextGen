@@ -4,7 +4,7 @@ import pytest
 
 from cps.services.reflow import build_epub, text_quality, vision_pipeline
 from cps.services.reflow.source_display import SourceDisplay
-from tests.unit.test_reflow_vision_pilot import answer, block
+from tests.unit.test_reflow_vision_pilot import answer, block, assistance_live_text, assert_live_assistance_images
 
 pytestmark = pytest.mark.unit
 CLEAN = 'Green baskets contain ripe apples while purple carts carry fresh bread.'
@@ -140,8 +140,11 @@ def test_complete_source_paragraph_keeps_its_guarded_tail_when_model_borrows_lon
                and item['layer_end'] - item['layer_start'] == 1
                for item in record['guard']), record['guard']
     assert record['published_tokens'] == CLEAN.split()
-    assert CLEAN in ''.join(published['body'])
-    assert ''.join(published['body']).count('Green baskets') == 1
+    from xml.etree import ElementTree as ET
+    root=ET.fromstring('<html xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(published['body'])+'</html>')
+    assert assistance_live_text(root)==CLEAN
+    assert assistance_live_text(root).count('Green baskets')==1
+    assert_live_assistance_images(root,require_flags=True)
 
 
 @pytest.mark.parametrize('printed,reading,verified',[

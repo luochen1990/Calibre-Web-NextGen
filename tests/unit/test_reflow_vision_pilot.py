@@ -259,8 +259,13 @@ def assert_links_resolve(docs):
 
 
 
-def assert_live_assistance_images(node):
+def assert_live_assistance_images(node, *, require_flags=False):
     """An appended preview accompanies live flagged text and its own source link."""
+    flags=[e for e in node.iter()if e.get('class')=='reflow-flagged-reading']
+    if require_flags:assert flags
+    for flag in flags:
+        links=[e for e in flag if e.get('class')=='source-word-image']
+        assert len(links)==1 and len(links[0])==1 and links[0][0].tag.rsplit('}',1)[-1]=='img'
     parents={c:p for p in node.iter()for c in p}
     for image in (e for e in node.iter()if e.tag.rsplit('}',1)[-1]=='img'):
         link=parents[image];flag=parents[link]
@@ -268,6 +273,15 @@ def assert_live_assistance_images(node):
         assert flag.get('class')=='reflow-flagged-reading'
         reading=next(e for e in flag if e.get('class')=='reflow-plausible')
         assert ''.join(reading.itertext()).strip() and image.get('alt')==''
+
+
+def assistance_live_text(node):
+    """Reading text across preview runs, excluding only generated controls."""
+    def visit(el):
+        if 'source-disclosure-ref' in el.get('class','').split():return ''
+        text=(el.text or '')+''.join(visit(child)+(child.tail or '') for child in el)
+        return ' '+text+' ' if el.tag.rsplit('}',1)[-1] in ('p','div','h1','h2') else text
+    return ' '.join(visit(node).split())
 
 @real_ocr
 def test_final_epub_note_and_disclosure_links_resolve_with_live_assistance(tmp_path,monkeypatch):
@@ -454,7 +468,9 @@ def test_contiguous_disagreement_has_one_resolving_disclosure_for_all_words(tmp_
         first=list(root.iter('p'))[0]
         assert_live_assistance_images(first)
         flags=[e for e in first.iter()if e.get('class')=='reflow-flagged-reading']
-        assert len(flags)==1 and flags[0].find('span').text=='narrow path'
+        assert flags and ' '.join(''.join(f.find('span').itertext())for f in flags)=='narrow path'
+        assert {f.find('a').get('href')for f in flags}=={refs[0].get('href')}
+        assert assistance_live_text(first)==reading
     finally:
         pkg.abandon()
         doc.close()
@@ -624,7 +640,11 @@ def test_missing_optical_paragraph_recovery_is_disclosed_and_figure_text_is_excl
     try:
         published, report = vision_pipeline.compile_page(recovered, missing, display, 0, pkg, {}, missing + figure, identities)
         body = ''.join(published['body'])
-        assert missing_text in ET.fromstring('<html xmlns:epub="http://www.idpf.org/2007/ops">' + body + '</html>').itertext()
+        root=ET.fromstring('<html xmlns:epub="http://www.idpf.org/2007/ops">' + body + '</html>')
+        own=next(n for n in root.iter()if n.get('data-source-block')==added['id'])
+        assert assistance_live_text(own)==missing_text
+        assert 'diagram label' not in assistance_live_text(root)
+        assert_live_assistance_images(own,require_flags=True)
         assert any(b['fallback'] and b['marked'] for b in report['blocks'] if b['id'] in identities)
         assert 'class="source-disclosure-ref"' in body
     finally:
