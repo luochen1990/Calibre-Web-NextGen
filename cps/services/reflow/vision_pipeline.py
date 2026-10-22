@@ -831,6 +831,42 @@ def _complete_native_reading_territory(block,answer,words,display,regions,body_o
     return candidate
 
 
+def _coalesce_inline_source_images(pieces,display,pno,bid,package,images):
+    """Publish overlapping adjacent ink once, with all inspection links intact.
+
+    Padding is useful for inspection, but two neighboring digit/glyph crops can
+    repeat the same printed strokes when inserted side by side. One original
+    span preserves that ink and its actual spacing without clipping either word.
+    Separate rows, columns and intervening live words never form a group.
+    """
+    pattern=re.compile(r'<a\b[^>]*class="source-word-image"[^>]*>\s*<img\b[^>]*src="([^"]+)"[^>]*/>\s*</a>')
+    groups=[]
+    for index,piece in enumerate(pieces):
+        match=pattern.search(piece)
+        image=images.get(match[1])if match else None
+        if not image or not image.get('bbox')or image.get('source_parts'):
+            groups.append([]);continue
+        box=image['bbox'];entry=(index,match,box)
+        previous=groups[-1][-1]if groups and groups[-1]else None
+        if previous:
+            other=previous[2]
+            same_row=min(other[3],box[3])-max(other[1],box[1])>=.5*min(other[3]-other[1],box[3]-box[1])
+            overlap=min(other[2],box[2])-max(other[0],box[0])
+            if same_row and overlap>.1*min(other[2]-other[0],box[2]-box[0]):
+                groups[-1].append(entry);continue
+        groups.append([entry])
+    for group in groups:
+        if len(group)<2:continue
+        box=vision_reading.union([entry[2]for entry in group])
+        src=f'images/v4-word-span-{pno}-{bid}-{group[0][0]}-{group[-1][0]}.jpg'
+        _word_disclosure_image(package,src,display,extract.pymupdf.Rect(box))
+        images[src]=dict(page=pno,bbox=list(box),kind='vision_disclosure',
+            source_word_indices=[index for index,_,_ in group],method='overlapping_inline_ink_once')
+        for offset,(index,match,_)in enumerate(group):
+            replacement=match[0].replace(match[1],src)if offset==0 else ''
+            pieces[index]=pieces[index][:match.start()]+replacement+pieces[index][match.end():]
+
+
 def _word_disclosure_image(package,name,display,clip,parts=None):
     if not parts:
         if hasattr(package,'disclosure_image'):package.disclosure_image(name,display,clip)
@@ -3340,6 +3376,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 if local_ocr and index in result['marked']:
                     piece='<span class="uncertain" title="Unverified local OCR reading">'+piece+'</span>'
                 pieces.append(piece)
+            _coalesce_inline_source_images(pieces,display,pno,bid,package,image_records)
             from . import occurrence_coverage
             inventory=(raw['words']if local_ocr and local_ocr_units is not None and raw else optical_local or local)
             coverage=occurrence_coverage.classify(inventory,result['tokens'],evidence_boxes,
