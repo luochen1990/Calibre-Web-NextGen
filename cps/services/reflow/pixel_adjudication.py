@@ -1028,7 +1028,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     operations=[];chunks=[]
     for kind,a,z,b,y in matcher.get_opcodes():
         chunks.extend(_conserved_token_chunks(original,candidate,a,z,b,y)
-            if kind=='replace' and 1<max(z-a,y-b)<=32 else [(kind,a,z,b,y)])
+            if kind=='replace' and 1<max(z-a,y-b)<=32
+            and not _symbol_identity_conflict(' '.join(original[a:z]),' '.join(candidate[b:y]))
+            else [(kind,a,z,b,y)])
     for kind,a,z,b,y in chunks:
         # An unreserved literal reference is still part of its lexical token.
         # Folding away that suffix would align the word while leaving the same
@@ -1038,6 +1040,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             and visible[j][0]+1<len(model)
             and model[visible[j][0]+1].startswith('<n:')for j in range(b,y))
         if (kind!='replace' or max(z-a,y-b)>32 or unplaced_reference
+                or _symbol_identity_conflict(' '.join(original[a:z]),' '.join(candidate[b:y]))
                 or ''.join(original[a:z])==''.join(candidate[b:y])):
             operations.append((kind,a,z,b,y));continue
         folded=SequenceMatcher(None,[placement(t) for t in original[a:z]],
@@ -1059,7 +1062,8 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     # ordinary transcription and uncertainty checks below.
     placed=[]
     for kind,a,z,b,y in operations:
-        if kind!='replace' or max(z-a,y-b)<=1 or max(z-a,y-b)>32:
+        if (kind!='replace' or max(z-a,y-b)<=1 or max(z-a,y-b)>32
+                or _symbol_identity_conflict(' '.join(original[a:z]),' '.join(candidate[b:y]))):
             placed.append((kind,a,z,b,y));continue
         def contextual(items):
             return any(len(own:=_whole_view_word(word,witness))==1
@@ -1536,8 +1540,8 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             if z-a==y-b==1 else None)
         if eroded_numeric is not None:
             supported=[];boundary=None;word_choice=None;resampled=None;alternate=None
-        symbol_conflict=(z-a==y-b==1 and _symbol_identity_conflict(
-            proposed[b],source_tokens[a]))
+        symbol_conflict=(bool(source_tokens[a:z]) and bool(proposed[b:y])
+            and _symbol_identity_conflict(' '.join(proposed[b:y]),' '.join(source_tokens[a:z])))
         if symbol_conflict:
             # Neither alphabetic network is a mathematical-glyph classifier.
             # Keep the exact original ink rather than certify its digit guess.
@@ -1578,7 +1582,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 or z-a>=3 and y-b==1 and all(
                     len(_key(t).strip('.,;:'))<=2 for t in source_tokens[a:z])))
         name,literal,evidence=(supported[0] if resolved else
-            boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or unproved_multiword or not proposed[b:y] else ('model',proposed[b:y],[]))
+            boundary if boundary else ('source',source_tokens[a:z],[]) if unresolved_source or unproved_multiword or symbol_conflict or not proposed[b:y] else ('model',proposed[b:y],[]))
         record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=list(literal),
                     status='RESOLVED' if resolved else 'UNRESOLVED',
                     method=('complete_vision_reading_without_optical_counterevidence'if retained_vision else word_method if word_choice else 'corroborated_resampled_pixel_readings' if resampled else 'two_alternate_alphabet_pixel_readings' if alternate else 'independent_upright_crop') if resolved else 'pixel_word_boundary_only' if boundary else 'pixel_read_inconclusive',
@@ -1644,6 +1648,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 if word['text'] and (weak or counter or collision or unproved_multiword
                                      or ambiguous_numeric or uncertain_optical is not None):withheld.add(j)
             if withheld:record['method']='unproved_source_transcription_change'
+        if symbol_conflict and not resolved:withheld.update(range(z-a))
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
                [w['bbox'] for w in source[a:z]])
