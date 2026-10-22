@@ -3091,6 +3091,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 result['guard'].append(dict(kind='independent_crop_unavailable',reason=witness.failure))
             if local_ocr and witness is not None:
                 pixel_adjudication.audit_local_numeric_suffixes(result,evidence_boxes,witness)
+                pixel_adjudication.audit_reverse_local_ink(result,evidence_boxes,witness,display,
+                    territories,text_quality.english_lexicon())
                 if local_ocr_units is not None:source_unit['published_words']=list(result['tokens'])
             if legacy_native_words:
                 unplaced=any(len([i for i,slot in result['boxes'].items()

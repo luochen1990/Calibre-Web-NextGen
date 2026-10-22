@@ -2365,6 +2365,40 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
     return dict(tokens=output,boxes=bounds,marked=set(notes),word_notes=notes,decisions=decisions)
 
 
+def audit_reverse_local_ink(result,boxes,witness,display,regions,vocabulary):
+    """Do not publish disputed local guesses from light-on-dark source ink.
+
+    A reverse-contrast page can give a confident dictionary word for a different
+    printed word. The independent own-word view may disprove that guess without
+    proving a replacement. Retain that occurrence as print, not wrong live text.
+    Ordinary model readings and positively decoded native paint are unaffected.
+    """
+    from . import vision_reading
+    raster=display.pixmap(vision_reading.union(regions),scale=1,gray=True,max_pixels=250_000)
+    samples=raster.samples
+    if not samples or sum(value<128 for value in samples)<len(samples)*.6:return
+    reader=getattr(witness,'word_readings',None)
+    for index,token in enumerate(result['tokens']):
+        if token.startswith('<n:')or index not in boxes:continue
+        letters=''.join(c for c in token.casefold()if c.isalpha())
+        if not letters and not any(c.isdigit()for c in token):continue
+        word=dict(text=token,bbox=boxes[index])
+        uncertain=any(c.isdigit()for c in token)or bool(letters and letters not in vocabulary)
+        if not uncertain and reader is not None:
+            for view in reader(word):
+                own=[w for w in view if _complete_recognition(word,w)and w.get('confidence',0)>=90]
+                if len(own)!=1:continue
+                alternative=own[0]['text'];key=''.join(c for c in alternative.casefold()if c.isalpha())
+                if key in vocabulary and _key(alternative)!=_key(token):uncertain=True;break
+        if not uncertain:continue
+        decision=dict(source=[token],model=[token],chosen=[token],status='UNRESOLVED',
+            method='unresolved_reverse_contrast_local_reading',source_image_only=True,
+            source_bbox=list(boxes[index]))
+        result.setdefault('word_notes',{})[index]=decision
+        result.setdefault('adjudication',[]).append(decision)
+        result['marked'].add(index)
+
+
 def audit_local_numeric_suffixes(result,boxes,witness):
     """Read ambiguous suffix ink; never infer an ordinal from its numeral.
 
