@@ -883,6 +883,10 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
             # Strict/strict overlap retains the existing coherent-owner rule.
             if block['role']=='body' and not strict and any(
                     strictly_inside(word,box) for box in other_body_regions):continue
+            if block['role']=='footnote' and not strict and any(
+                    strictly_inside(word,box)for other in answer['blocks']
+                    if other['id']!=block['id']and other['role']=='footnote'
+                    for box in (regions or {}).get(other['id'],[block_rect(other,display)])):continue
             # Reservations locate coherent paragraphs; only their final source
             # territories can exclude ink from another published block.
             if block['role'] in ('body','caption') and any(owned_words([word],box)
@@ -987,7 +991,16 @@ def _note_lexical_evidence(items, opening):
     """Exclude one bound label occurrence, without asserting its identity."""
     if not opening:return items
     expected=(opening['observed_text'],tuple(opening['source_bbox']))
-    return [word for word in items if _source_instance(word)!=expected]
+    if any(_source_instance(word)==expected for word in items):
+        return [word for word in items if _source_instance(word)!=expected]
+    box=opening['source_bbox']
+    def same_glyph(word):
+        slot=word['bbox'];width=min(box[2]-box[0],slot[2]-slot[0]);height=min(box[3]-box[1],slot[3]-slot[1])
+        return (min(box[2],slot[2])-max(box[0],slot[0])>=width*.7
+            and min(box[3],slot[3])-max(box[1],slot[1])>=height*.5
+            and max(box[2]-box[0],slot[2]-slot[0])<=3*max(.01,width))
+    matches=[word for word in items if same_glyph(word)]
+    return [word for word in items if word is not matches[0]]if len(matches)==1 else items
 
 
 def _printed_wraps(tokens,optical):
