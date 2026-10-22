@@ -126,6 +126,19 @@ def _pixel_lines(words):
             if abs(slope)>.15 or any(abs(y-slope*x-intercept)>max(2,height*.8)for x,y in centers):
                 valid=False;break
             rows.append(row)
+        if valid:
+            # OCR may put a narrow number column in a separate block. Two
+            # labelled groups sharing one adjacent physical baseline are one
+            # row, not a later continuation after the paragraph's last word.
+            for i,left in enumerate(rows):
+                for right in rows[i+1:]:
+                    height=statistics.median(w['bbox'][3]-w['bbox'][1]for w in left+right)
+                    a=vision_reading.union([w['bbox']for w in left])
+                    b=vision_reading.union([w['bbox']for w in right])
+                    if (abs((a[1]+a[3]-b[1]-b[3])/2)<=max(2,height*.55)
+                            and max(a[0],b[0])-min(a[2],b[2])<=2*height):
+                        valid=False;break
+                if not valid:break
         if valid:return rows
     tolerance=max(2,statistics.median(w['bbox'][3]-w['bbox'][1] for w in words)*.55)
     lines=[]
@@ -427,6 +440,38 @@ def _reserve_layer_instances(answer,words,display,regions):
                     and (box[0]-.5<=cx<=box[2]+.5 or x[0]<= (box[0]+box[2])/2 <=x[2])):
                 owners.add(owner)
         if len(owners)==1:instances[occurrence]=next(iter(owners))
+        elif len(owners)>1:
+            # A merged OCR column can cover several separately owned labels.
+            # It cannot be printed inline as another word in any of those rows;
+            # publication conservation retains its complete original context.
+            regions.setdefault('_ambiguous_instances',set()).add(occurrence)
+    # Short numbered rows can have a vertically clipped reader hint. Before a
+    # crop reread can replace it with the preceding row, locate the complete
+    # lexical row in a bounded neighbourhood. This moves geometry only when
+    # exactly one physical row proves every lexical anchor; repeated rows and
+    # already owned neighbouring occurrences cannot establish a new placement.
+    for block in answer['blocks']:
+        tokens=block['text'].split()
+        lexical=[key(t)for t in tokens if any(c.isalpha()for c in key(t))]
+        boxes=regions.get(block['id'],[block_rect(block,display)])
+        if (block['role']!='body' or not re.match(r'^\d{1,3}[.)]\s',block['text'])
+                or not 2<=len(lexical)<=4 or len(tokens)>6 or len(boxes)!=1):continue
+        box=boxes[0];pad=2*max(1,box[3]-box[1])
+        search=[box[0],max(display.rect.y0,box[1]-pad),box[2],min(display.rect.y1,box[3]+pad)]
+        candidates=[]
+        for row in _pixel_lines([w for w in words if owned_words([w],search)]):
+            matches=unique_anchors(row,range(len(row)),lexical,minimum=2)
+            if {j for i,j in matches}!=set(range(len(lexical))):continue
+            own=[row[i]for i,j in matches]
+            if any(instances.get(_source_instance(w),block['id'])!=block['id']for w in own):continue
+            candidates.append(own)
+        if len(candidates)!=1:continue
+        bounds=vision_reading.union([w['bbox']for w in candidates[0]])
+        # Preserve space for this row's adjacent printed number. Its spelling
+        # still has to pass the ordinary native/pixel identity checks.
+        regions[block['id']]=[[min(box[0],bounds[0]),bounds[1]-.01,
+                              max(box[2],bounds[2]),bounds[3]+.01]]
+        for word in candidates[0]:instances[_source_instance(word)]=block['id']
     proposals={};proved_rows={};proved_row_words={}
     # A compact index entry may have only one ordinary lexical word plus an
     # ordinal and page number. Its complete printed row still proves ownership
@@ -1014,6 +1059,7 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
     for territory in territories:
         local=[]
         for word in owned_words(items,territory):
+            if _source_instance(word)in(regions or {}).get('_ambiguous_instances',()):continue
             # Rounding admission must not pull a following row into an earlier
             # partial-row territory owned by this same block.
             if not strictly_inside(word,territory) and any(
@@ -2812,7 +2858,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
     if words:
         regions=dict(regions or {})
         regions['_instances']=dict(regions.get('_instances',{}))
+        regions['_ambiguous_instances']=set(regions.get('_ambiguous_instances',()))
         _reserve_layer_instances(answer,words,display,regions)
+        if pixel_words:_reserve_layer_instances(answer,pixel_words,display,regions)
     body=[];asides=[];alignment=[];marked=0;tokens_count=0;source_quote_suppressions={}
     footnotes={b['id']:b for b in answer['blocks'] if b['role']=='footnote'}
     controller=unit_recovery.current()

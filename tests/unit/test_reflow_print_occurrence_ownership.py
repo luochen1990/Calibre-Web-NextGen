@@ -186,3 +186,67 @@ def test_numbered_short_rows_own_their_omitted_optical_labels(tmp_path):
             note_context={'cache': tmp_path/'cache', 'labels': {}, 'catalogue': {}, 'refs': {}})
     assert [b['published_tokens'] for b in record['blocks']] == [
         ['1.', 'RIVER,', 'water'], ['2.', 'GARDEN,', 'flowers']]
+
+
+@pytest.mark.parametrize('vertical_shift', [0, -10])
+def test_complete_short_numbered_row_rebinds_a_clipped_vertical_hint(tmp_path, vertical_shift):
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=300, height=160)
+        lines = ['1. RIVER, water', '2. GARDEN, flowers', '3. WINDOW, light']
+        for y, text in zip((60, 76, 92), lines):
+            page.insert_text((30, y), text, fontsize=10)
+        native = [dict(text=w[4], bbox=list(w[:4]), confidence=99)
+                  for w in page.get_text('words')]
+        optical = [dict(w, bbox=[v + .2 for v in w['bbox']]) for w in native
+                   if not w['text'][0].isdigit()]
+        reading = answer(*(block(text, ident=f'b{i+1}') for i, text in enumerate(lines)))
+        regions = {f'b{i+1}': [[25, y-11 + (vertical_shift if i else 0), 220,
+                                y+2 + (vertical_shift if i else 0)]]
+                   for i, y in enumerate((60, 76, 92))}
+        display = SourceDisplay(doc, 0)
+        vision_pipeline._reserve_layer_instances(reading, optical, display, regions)
+        package = Package()
+        package.image = lambda *args: None
+        _, record = vision_pipeline.compile_page(reading, native, display, 0,
+            package, {}, pixel_words=optical, regions=regions, body_owners={},
+            note_context={'cache': tmp_path/'cache', 'labels': {}, 'catalogue': {}, 'refs': {}})
+    assert [b['published_tokens'] for b in record['blocks']] == [line.split() for line in lines]
+    assert all(not b.get('source_image_words') for b in record['blocks'])
+
+
+def test_repeated_short_row_cannot_move_a_hint_to_an_arbitrary_copy():
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=300, height=160)
+        for y in (60, 76):
+            page.insert_text((30, y), '2. GARDEN, flowers', fontsize=10)
+        words = [dict(text=w[4], bbox=list(w[:4])) for w in page.get_text('words')]
+        reading = answer(block('2. GARDEN, flowers', ident='b1'))
+        original = [[25, 57, 220, 66]]
+        regions = {'b1': [list(original[0])]}
+        vision_pipeline._reserve_layer_instances(reading, words, SourceDisplay(doc, 0), regions)
+    assert regions['b1'] == original
+
+
+def test_separate_ocr_number_column_stays_before_its_own_physical_row():
+    label = dict(text='10.', bbox=[30, 50, 44, 62], optical_line=[0, 2, 1, 1, 1])
+    words = [dict(text='RIVER,', bbox=[50, 50, 90, 62], optical_line=[0, 1, 1, 1, 1]),
+             dict(text='water', bbox=[95, 50, 125, 62], optical_line=[0, 1, 1, 1, 1]), label]
+    assert vision_pipeline._pixel_line_order(words) == [label, words[0], words[1]]
+
+
+def test_merged_ocr_number_column_cannot_be_an_extra_word_in_both_rows():
+    with pymupdf.open() as doc:
+        doc.new_page(width=300, height=160)
+        first = dict(text='10.', bbox=[30, 50, 44, 62])
+        second = dict(text='11.', bbox=[30, 66, 44, 78])
+        merged = dict(text='oe', bbox=[30, 50, 44, 78])
+        reading = answer(block('10. RIVER, water', ident='b1'),
+                         block('11. GARDEN, flowers', ident='b2'))
+        regions = {'b1': [[25, 48, 180, 64]], 'b2': [[25, 64, 180, 80]],
+                   '_instances': {vision_pipeline._source_instance(first): 'b1',
+                                  vision_pipeline._source_instance(second): 'b2'}}
+        display = SourceDisplay(doc, 0)
+        vision_pipeline._reserve_layer_instances(reading, [merged], display, regions)
+        for block_reading in reading['blocks']:
+            assert not vision_pipeline._owned_block_words(block_reading, reading,
+                [merged], display, regions), 'A multi-row OCR fragment has no unique inline word owner'
