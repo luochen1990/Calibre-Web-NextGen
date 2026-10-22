@@ -3400,6 +3400,13 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     if occurrence_coverage._key(proof['label'])==occurrence_coverage._key(row['source_text'])
                     and occurrence_coverage._contains(proof['source_bbox'],row['source_bbox'])]
                 if len(matches)==1:row.update(disposition='live',typed_reference=matches[0]['target'])
+            # A proved printed note label sits outside the lexical note span.
+            # Account for its own source occurrence and actual target explicitly.
+            for proof in typed_occurrences:
+                if not any(occurrence_coverage._key(row['source_text'])==occurrence_coverage._key(proof['label'])
+                        and occurrence_coverage._contains(proof['source_bbox'],row['source_bbox'])for row in coverage):
+                    coverage.append(dict(source_text=proof['label'],source_bbox=proof['source_bbox'],
+                        disposition='live',typed_reference=proof['target'],published_indices=[]))
             missing=[row for row in coverage if row['disposition']=='missing']
             if missing:
                 # A replacement optical inventory cannot silently erase source
@@ -5633,8 +5640,10 @@ def _audit_native_note_pixels(doc,book,page,cache,package,images):
             # A box already containing precisely the body must not lose its own
             # first word merely because that word equals the note number.
             local=vision_reading.normalized(' '.join(w['text']for w in words)).split()
+            printed_label=None
             if (note.num is not None and words and local!=vision_reading.normalized(note.text).split()
                     and vision_reading.normalized(words[0]['text']).strip('.,:;()[]{}')==str(note.num)):
+                printed_label=dict(text=words[0]['text'],bbox=list(display.reading_rect(words[0]['bbox'])),target=target)
                 words=words[1:]
             territories=[list(display.reading_rect(vision_reading.union([w['bbox']for w in row])))
                          for row in _pixel_lines(words)]
@@ -5658,7 +5667,7 @@ def _audit_native_note_pixels(doc,book,page,cache,package,images):
             index,a,z=candidates[0]
             original=page['asides'][index]
             page['asides'][index]=original[:a]+inner[1]+original[z:]
-            record.update(role='footnote',lane='asides',source_aside_index=index)
+            record.update(role='footnote',lane='asides',source_aside_index=index,printed_label_occurrence=printed_label)
             records.append(record);additions.extend(proxy['asides'])
     page['asides'].extend(additions)
     return records

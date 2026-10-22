@@ -93,7 +93,7 @@ def _surviving_indices(before,after):
 def _text(node):
     tag=node.tag.rsplit('}',1)[-1];classes=set(node.get('class','').split())
     if tag=='img' or classes.intersection({'source-disclosure-ref','source-reading-annotation',
-            'source-word-image','note-return','noteref','noteref-unresolved','vision-disclosure'}):return ' '
+            'source-word-image','vision-disclosure'}):return ' '
     return (node.text or '')+''.join(_text(c)+(c.tail or '')for c in node)
 
 
@@ -106,22 +106,29 @@ def final_publication(documents,records,frames,images,package,displays,homes):
     neither recognition pass identified. Furniture is excluded only at an
     explicitly attributed running-head or folio territory.
     """
-    actual=defaultdict(list);used=set();identifiers=set()
+    actual=defaultdict(list);used=set();identifiers=set();identified={}
     for html in documents.values():
         root=ET.fromstring(html)
         for node in root.iter():
-            if node.get('id'):identifiers.add(node.get('id'))
+            if node.get('id'):
+                identifiers.add(node.get('id'));identified[node.get('id')]=node
             if node.tag.rsplit('}',1)[-1]=='img':used.add(node.get('src',''))
             if node.get('data-source-page')is not None and node.get('data-source-block'):
                 actual[(int(node.get('data-source-page')),node.get('data-source-block'))].extend(_text(node).split())
     published={name:item for name,item in images.items()if name in used and name in package.images}
     pages={}
     for pno,frame in frames.items():
-        blocks=records[pno].get('blocks',[]);claims=[];extras=[];exclusions=[]
+        blocks=records[pno].get('blocks',[])+records[pno].get('native_note_adjudication',[]);claims=[];extras=[];exclusions=[]
         for block in blocks:
             if block.get('role')in('running_head','folio'):
                 exclusions.extend((box,block['role'])for box in block.get('source_regions',[block.get('bbox')])if box)
                 continue
+            label=block.get('printed_label_occurrence')
+            if label and label['target']in identified:
+                visible=_text(identified[label['target']]).split()
+                if visible and _key(visible[0])==_key(label['text']):
+                    claims.append(dict(source_text=label['text'],source_bbox=label['bbox'],
+                        disposition='live',typed_reference=label['target'],published_indices=[],block=block['id']))
             expected=block.get('published_tokens',[])
             surviving=_surviving_indices(expected,actual.get((pno,block['id']),[]))
             rows=block.get('occurrence_coverage',[])
