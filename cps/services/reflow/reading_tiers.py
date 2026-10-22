@@ -66,7 +66,10 @@ def choose(token, decision, *, rank_lexical=True):
             or any(unicodedata.category(c) in ('Co', 'Cc', 'Cs') or c == '\ufffd' for c in token)
             or token.startswith('<n:')):
         return dict(tier='print', reading=None, method='no_lexical_reading')
-    if rank_lexical and len(source)==len(model)==1 and token.islower():
+    if (rank_lexical and len(source)==len(model)==1
+            and token.islower() and token.isalpha() and token.isascii()):
+        # English word-list absence says nothing about an accent, possessive
+        # or compound. Rank only plain alphabetic readings.
         # A dictionary may rank already observed complete candidates; it never
         # certifies their ink. Names, symbols and two valid words keep the first
         # reader. The attached print retains the unresolved physical decision.

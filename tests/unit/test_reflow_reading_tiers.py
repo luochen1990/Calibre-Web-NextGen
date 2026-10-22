@@ -222,3 +222,13 @@ def test_appended_print_has_named_evidence_link_without_repeating_the_reading():
     assert link.get('href') == '#own-note'
     assert link.find('img').get('alt') == ''
     assert ''.join(root.itertext()) == 'modern'
+
+
+@pytest.mark.parametrize('first,source', [('cāre', 'care'), ('garden’s', 'gardens')])
+def test_dictionary_ranker_cannot_erase_a_reader_diacritic_or_possessive(first, source, monkeypatch):
+    from cps.services.reflow import text_quality
+    monkeypatch.setattr(text_quality, 'english_lexicon', lambda: {'care', 'gardens'})
+    choice = tiers.choose(first, dict(status='UNRESOLVED', method='unproved_quote_identity',
+                                     source=[source], model=[first]))
+    assert choice['tier'] == 'flagged'
+    assert choice['reading'] == first
