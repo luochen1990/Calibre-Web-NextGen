@@ -7,6 +7,7 @@ its character codes are ordinary Latin text.
 import hashlib
 import json
 import re
+from functools import lru_cache
 from dataclasses import replace
 
 from . import unit_recovery
@@ -42,13 +43,35 @@ def text_layer_overpainted(page, traces, *, word_overlap=False):
         for seq,box in carriers) for trace in traces)
 
 
-def _text_font_authorities(page):
+@lru_cache(maxsize=64)
+def _has_word_glyph_map(data):
+    """Whole-word glyph labels are optical hypotheses, not letter identity.
+
+    Reconstructed vector text can assign arbitrary strings to one ink shape.
+    A ToUnicode table then helps extraction but cannot independently certify
+    its own transcription. Ordinary typographic ligatures are unaffected.
+    """
+    ligatures={'ff','fi','fl','ffi','ffl','st','ct','Th','ij','IJ'}
+    for section in re.findall(rb'beginbfchar(.*?)endbfchar',data,re.S):
+        for target in re.findall(rb'<[^>]+>\s*<([0-9a-fA-F]+)>',section):
+            try:value=bytes.fromhex(target.decode('ascii')).decode('utf-16-be')
+            except (ValueError,UnicodeError):return True
+            if sum(c.isalpha()for c in value)>1 and value not in ligatures:
+                return True
+    return False
+
+
+def _text_font_authorities(page, *, optical_maps=False):
     bad=unresolved_fonts(page);faces={}
     for font in page.get_fonts():
         name=font[3].split('+',1)[-1]
-        mapped=page.parent.xref_get_key(font[0],'ToUnicode')[0]!='null'
+        kind,target=page.parent.xref_get_key(font[0],'ToUnicode')
+        mapped=kind!='null'
+        optical=False
+        if mapped and kind=='xref' and not optical_maps and hasattr(page.parent,'xref_stream'):
+            optical=_has_word_glyph_map(page.parent.xref_stream(int(target.split()[0])) or b'')
         standard=bool(re.fullmatch(r'(?:Times(?:NewRoman)?|Arial|Helvetica|Courier)(?:[-,](?:Roman|Bold|Italic|Oblique|BoldItalic|BoldOblique)|PS(?:MT|-BoldMT|-ItalicMT|-BoldItalicMT)?|MT)?',name,re.I))
-        faces[name]=(mapped or standard) and name not in bad
+        faces[name]=(mapped or standard) and name not in bad and not optical
     return faces
 
 
@@ -175,7 +198,7 @@ def lexical_word_view(page, words, marker_prefixes=()):
 
 def unproved_legacy_word(page,word):
     """A visible custom code without a character map needs original glyph ink."""
-    faces=_text_font_authorities(page);boxes=[p['bbox']for p in word.get('native_parts',[word])]
+    faces=_text_font_authorities(page,optical_maps=True);boxes=[p['bbox']for p in word.get('native_parts',[word])]
     return any(trace.get('type')in(0,1) and trace.get('opacity',1)>=.99 and
         not _face_authority(faces,trace.get('font','').split('+',1)[-1]) and
         any(char[0]>32 and _inside_character(char,boxes)for char in trace.get('chars',()))
