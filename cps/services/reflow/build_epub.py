@@ -124,6 +124,8 @@ from .source_reading_display import glyph_stylesheet
 STYLESHEET += glyph_stylesheet()+"\n"
 from .glyph_presentation import stylesheet as glyph_presentation_stylesheet
 STYLESHEET += glyph_presentation_stylesheet()
+from .reading_tiers import stylesheet as reading_tiers_stylesheet
+STYLESHEET += reading_tiers_stylesheet()
 STYLESHEET += ".source-reading-annotation { font-size:1em; font-style:normal; border-bottom:1px dotted currentColor; }\n"
 STYLESHEET += """\
 .source-control, .source-reading-annotation a { display:inline-block; min-height:1.75em; padding:0.5em 0.7em; line-height:1.5; text-indent:0; text-align:left; border:1px solid currentColor; margin:0.25em 0; }
@@ -3568,6 +3570,22 @@ def _written_glyph_style(element, parent):
     return bool(page and re.fullmatch(r'images/glyph_p'+page.group(1)+r'_[a-f0-9]{20}\.(?:jpg|png)', element.get('src','')))
 
 
+def _written_word_preview_style(element, parent):
+    """Bounded factory metrics apply only to a local source-word image link."""
+    if (element.tag != _XHTML_NS+'img' or parent is None
+            or parent.tag != _XHTML_NS+'a' or parent.get('class') != 'source-word-image'
+            or len(parent) != 1 or parent.text or len(element)
+            or set(element.attrib) != {'src','alt','style'}
+            or set(parent.attrib) != {'class','href'}):
+        return False
+    if not re.fullmatch(r'(?:[^/#]+\.xhtml)?#v4-(?:d|native)-[A-Za-z0-9_-]+',parent.get('href','')):
+        return False
+    if not re.fullmatch(r'images/v4-[A-Za-z0-9_-]+\.(?:png|jpg)',element.get('src','')):
+        return False
+    metric=re.fullmatch(r'height:([0-9]+(?:\.[0-9]+)?)em;vertical-align:(-[0-9]+(?:\.[0-9]+)?)em;width:auto',element.get('style',''))
+    return bool(metric and 0<float(metric[1])<=8 and -4<=float(metric[2])<0)
+
+
 def _active_markup(name, root, names):
     """The written bytes of one document, held to what the builder writes.
 
@@ -3591,7 +3609,7 @@ def _active_markup(name, root, names):
             value = value or ""
             if key.startswith("on") or key in _NEVER_WRITTEN_URLS:
                 found.append('%s gives <%s> the attribute "%s"' % (name, local, key))
-            elif key == "style" and not (_WRITTEN_STYLE.match(value) or _written_glyph_style(element, parents.get(element))):
+            elif key == "style" and not (_WRITTEN_STYLE.match(value) or _written_glyph_style(element, parents.get(element)) or _written_word_preview_style(element, parents.get(element))):
                 found.append('%s styles <%s> with "%s"' % (name, local, value[:80]))
             elif key in ("href", "src") and _LEAVES_THE_BOOK.match(value):
                 found.append('%s points <%s> outside the book: "%s"'

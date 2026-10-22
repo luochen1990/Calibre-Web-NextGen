@@ -3376,6 +3376,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             if ((result['fallback'] or result['marked'])
                     and complete_check(compiled_reading)['needs_read']):
                 raise _DisclosureQualityRejection('Unreliable chosen reading requires original source disclosure')
+            from . import reading_tiers
+            flagged_readings=reading_tiers.prepare(result)
             groups=[]
             for index in sorted(i for i in result['marked'] if not result['tokens'][i].startswith('<n:')):
                 resolved_local={i for i,d in (result.get('word_notes') or {}).items() if d['status']=='RESOLVED'} if local_ocr else set()
@@ -3384,6 +3386,21 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         and index not in resolved_local and groups[-1][-1] not in resolved_local
                         and index not in image_words and groups[-1][-1] not in image_words):groups[-1].append(index)
                 else:groups.append([index])
+            # Adjacent plausible words on one printed row share one reading
+            # underline and one adjacent print preview. A typed reference,
+            # resolved correction or another physical row ends the run.
+            merged=[]
+            for group in groups:
+                previous=merged[-1]if merged else []
+                if (previous and group[0]==previous[-1]+1
+                        and len(previous)+len(group)<=8
+                        and all(i in flagged_readings and i in evidence_boxes for i in previous+group)):
+                    a=evidence_boxes[previous[-1]];b=evidence_boxes[group[0]]
+                    same_row=min(a[3],b[3])-max(a[1],b[1])>=.5*min(a[3]-a[1],b[3]-b[1])
+                    if same_row and -.5<=b[0]-a[2]<=1.5*max(a[3]-a[1],b[3]-b[1]):
+                        previous.extend(group);continue
+                merged.append(list(group))
+            groups=merged
             endings={g[-1]:g for g in groups}
             # Reject each chosen span before emitting markers or source images.
             # Keep the rendering-time check as a defensive publication boundary.
@@ -3485,6 +3502,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             marker_record.update(unit,unit_kind='note_marker',status='DEGRADED_SOURCE_CONTEXT')
                             marker_disclosures.append(marker_record)
                     pieces.append(piece);continue
+                if index in flagged_readings and not any(index==group[-1] for group in groups):
+                    pieces.append('');continue
                 piece=escape(token)
                 if index in literal:
                     start=0;parts=[]
@@ -3500,9 +3519,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     marked+=1;ident=f'v4-d-{pno}-{bid}-{index}';ref='r-'+ident
                     src=f'images/{ident}.jpg'
                     word_decision=(result.get('word_notes')or{}).get(index,{})
-                    boxes=([word_decision['source_bbox']] if word_decision.get('source_image_only') else
+                    boxes=([word_decision['source_bbox']] if len(endings[index])==1 and word_decision.get('source_bbox') and (word_decision.get('source_image_only') or word_decision.get('source_image_only_before_publication')) else
                            [evidence_boxes[i] for i in endings[index] if i in evidence_boxes])
-                    crop=(word_decision['source_bbox'] if word_decision.get('source_image_only') else
+                    crop=(word_decision['source_bbox'] if len(endings[index])==1 and word_decision.get('source_bbox') and (word_decision.get('source_image_only') or word_decision.get('source_image_only_before_publication')) else
                           list(display.rect) if len(territories)>1 else
                           vision_reading.union(boxes) if len(boxes)==len(endings[index]) else box)
                     # Tight evidence remains in final notes, never an inline word crop.
@@ -3546,8 +3565,23 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     if decision and decision.get('source_image_only'):
                         explanation=((source_quote+' ')if decision['source']!=decision['chosen']else '')+'The independent pixel readings do not settle this printed word. Read the original image.'
                     extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
-                    if decision and decision.get('source_image_only'):
-                        piece=f'<a class="source-word-image" href="#{ident}"><img src="{src}" alt="Unresolved printed word; inspect original"/></a>'
+                    if index in flagged_readings or decision and decision.get('source_image_only'):
+                        from . import inline_print
+                        inline_src=src;inline_style='height:1.4em;vertical-align:-0.25em;width:auto'
+                        preview=(inline_print.preview(display,crop)
+                                 if not word_decision.get('source_parts') and len(territories)==1 else None)
+                        if preview is not None:
+                            data,metrics=preview
+                            inline_src=f'images/{ident}-inline.png'
+                            package.image(inline_src,data)
+                            image_records[inline_src]=dict(page=pno,kind='inline_print_preview',
+                                inspection_image=src,**metrics)
+                            inline_style=metrics['style']
+                        if index in flagged_readings:
+                            piece=reading_tiers.flagged_html(chosen_reading,inline_src,ident,inline_style)
+                        else:
+                            piece=(f'<a class="source-word-image" href="#{ident}"><img src="{inline_src}" '
+                                f'alt="Unresolved printed word; inspect original" style="{inline_style}"/></a>')
                     piece+=f'<a id="{ref}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'
                 if local_ocr and index in result['marked']:
                     piece='<span class="uncertain" title="Unverified local OCR reading">'+piece+'</span>'
@@ -3705,6 +3739,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 published_word_boxes={str(i):list(box)for i,box in evidence_boxes.items()},
                 published_tokens=result['tokens'],
                 marked=sorted(result['marked']),fallback=result['fallback'],guard=result['guard'],
+                flagged_readings={str(i):choice for i,choice in flagged_readings.items()},
                 adjudication=result.get('adjudication',[]),source_image_words=sorted(i for i,d in (result.get('word_notes')or{}).items()if d.get('source_image_only')),verified_unchanged=sorted(set(result.get('verified_unchanged',[]))|set(adjudication.get('verified_unchanged',[]) if adjudication else [])),original_model_tokens=original_model_tokens,
                 layer_words=[w['text'] for w in local],dropped_layer_words=result['dropped_layer_words'],
                 continues_previous=block['continues_previous'],continues_next=block['continues_next']))
@@ -5795,6 +5830,24 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 if legacy_ink:
                     edits.append((a,z,f'<a class="source-word-image" href="#{ident}"><img src="{src}" alt="Unmapped printed glyph; inspect original"/></a>'+retained_action))
                     decision['source_image_only']=True
+                elif decision['status']=='UNRESOLVED':
+                    from . import reading_tiers,inline_print
+                    choice=reading_tiers.choose(tokens[index],decision)
+                    decision['publication']=choice
+                    if choice['tier']=='flagged':
+                        chosen=choice['reading'];inline_src=src
+                        style='height:1.4em;vertical-align:-0.25em;width:auto'
+                        preview=(inline_print.preview(display,box)
+                            if not output_sources[index].get('native_parts')else None)
+                        if preview is not None:
+                            data,metrics=preview;inline_src=f'images/{ident}-inline.png'
+                            package.image(inline_src,data)
+                            images[inline_src]=dict(page=page['pno'],kind='inline_print_preview',
+                                inspection_image=src,**metrics)
+                            style=metrics['style']
+                        replacement=reading_tiers.flagged_html(chosen,inline_src,ident,style)
+                        edits.append((a,z,replacement))
+                        record.setdefault('flagged_readings',{})[str(index)]=choice
                 elif chosen!=tokens[index]:edits.append((a,z,formatted if formatted is not None else escape(chosen)))
                 # Add the control after any enclosing inline action closes;
                 # never nest a new link inside a typed source reference.

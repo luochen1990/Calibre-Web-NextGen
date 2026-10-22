@@ -1,0 +1,88 @@
+"""Synthetic reader disagreements retain assistance and adjacent original ink."""
+import pytest
+from xml.etree import ElementTree as ET
+from cps.services.reflow import reading_tiers as tiers
+
+pytestmark = pytest.mark.unit
+
+
+def test_unproved_complete_reading_is_flagged_without_fabricating_a_resolution():
+    original = dict(source=['modem'], model=['modern'], chosen=['modern'],
+                    status='UNRESOLVED', method='unproved_shared_stroke_identity', source_image_only=True)
+    result = dict(tokens=['modern'], marked={0}, word_notes={0: original})
+    tiers.prepare(result)
+    assert result['flagged_readings'][0]['reading'] == 'modern'
+    assert not result['word_notes'][0]['source_image_only']
+    assert original['source_image_only'] and original['status'] == 'UNRESOLVED'
+    root = ET.fromstring(tiers.flagged_html('modern', 'images/word.png', 'own-note'))
+    assert root.find('.//a').get('href') == '#own-note'
+    assert root.find('.//img').get('src') == 'images/word.png'
+    assert root.find('.//img').get('alt') == ''
+    assert ''.join(root.itertext()).strip() == 'modern'
+
+
+@pytest.mark.parametrize('method', ['unproved_native_character_map', 'incomplete_vertical_word_ink',
+                                   'unproved_doubtful_leading_word_ink'])
+def test_opaque_codes_or_missing_ink_do_not_become_guessed_assistance(method):
+    choice = tiers.choose('garden', dict(status='UNRESOLVED', method=method, source=['garden'], model=['garden']))
+    assert choice['tier'] == 'print' and choice['reading'] is None
+
+
+def test_numeric_identifier_uses_complete_source_candidate_but_remains_flagged():
+    choice = tiers.choose('7E42', dict(status='UNRESOLVED', source=['71E42'], model=['7E42']))
+    assert choice == dict(tier='flagged', reading='71E42', method='source_complete_numeric_identifier')
+
+
+def test_resolved_correction_keeps_its_existing_proof_and_notice():
+    assert tiers.choose('modern', dict(status='RESOLVED'))['tier'] == 'proved'
+
+
+@pytest.mark.parametrize('a,b,same', [('reader’s', "reader's", True), ('ﬁeld', 'field', True),
+                                      ('co\u00adoperate', 'cooperate', True), ('cāre', 'care', False),
+                                      ('modem', 'modern', False), ('O', '0', False)])
+def test_only_representation_differences_are_typographically_equivalent(a, b, same):
+    assert tiers.equivalent(a, b) is same
+
+
+def test_real_page_compiler_keeps_plausible_reading_with_its_own_print(tmp_path, monkeypatch):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa, vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import answer, block
+    printed = 'The modern garden stays green.'
+    with pymupdf.open() as drawn, pymupdf.open() as scan:
+        pg = drawn.new_page(width=350, height=140)
+        pg.insert_text((25, 60), printed, fontsize=12)
+        words = [dict(text=w[4], bbox=list(w[:4]), confidence=95) for w in pg.get_text('words')]
+        pg = scan.new_page(width=350, height=140)
+        pg.insert_image(pg.rect, pixmap=drawn[0].get_pixmap())
+        monkeypatch.setattr(pa, 'read_crop', lambda *a, **kw: pa.CropWitness(words))
+        # This is a real unresolved occurrence, not a fabricated proof. The
+        # rendering contract keeps its plausible reader and actual own image.
+        original = pa.adjudicate
+        def unsettled(*a, **kw):
+            result = original(*a, **kw)
+            result['marked'].add(1)
+            result.setdefault('word_notes', {})[1] = dict(source=['modem'], model=['modern'],
+                chosen=['modern'], status='UNRESOLVED', method='unproved_shared_stroke_identity',
+                source_image_only=True, source_bbox=words[1]['bbox'])
+            return result
+        monkeypatch.setattr(pa, 'adjudicate', unsettled)
+        class Package:
+            def __init__(self): self.data = {}
+            def image(self, name, data): self.data[name] = data
+        package = Package(); images = {}
+        page, record = vp.compile_page(answer(block(printed)), words, SourceDisplay(scan, 0), 0,
+            package, images, pixel_words=words, regions={'b1': [[20, 40, 300, 70]]}, body_owners={},
+            note_context={'cache': tmp_path/'cache', 'labels': {}, 'catalogue': {}, 'refs': {}})
+    html = ''.join(page['body'])
+    root = ET.fromstring('<root xmlns:epub="http://www.idpf.org/2007/ops">'+html+'</root>')
+    flag = root.find('.//span[@class="reflow-flagged-reading"]')
+    assert flag is not None and flag.find('span').text == 'modern'
+    image = flag.find('.//img')
+    assert image.get('src') in package.data
+    assert image.get('alt') == ''
+    assert 'vertical-align:-' in image.get('style')
+    assert record['blocks'][0]['flagged_readings']['1']['tier'] == 'flagged'
+    assert record['blocks'][0]['source_image_words'] == []
+
