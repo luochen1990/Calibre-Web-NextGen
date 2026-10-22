@@ -72,13 +72,19 @@ def test_complete_short_index_row_owns_its_occurrences_over_a_borrowed_tail(tmp_
         ['Birch', '2nd', '66'], ['Birch', '12th', '92']]
 
 
-def test_short_index_row_ownership_does_not_require_guessing_its_damaged_reference(tmp_path):
+@pytest.mark.parametrize('tab_gap', [False, True])
+@pytest.mark.parametrize('clipped_tail', [False, True])
+def test_short_index_row_ownership_does_not_require_guessing_its_damaged_reference(tmp_path, tab_gap, clipped_tail):
     with pymupdf.open() as doc:
         page = doc.new_page(width=300, height=200)
         page.insert_text((30, 60), 'Birch 2nd 66', fontsize=12)
-        page.insert_text((30, 85), 'Alder 12th X 92', fontsize=12)
+        if tab_gap:
+            for x, text in ((30, 'Alder'), (170, '12th'), (215, 'X'), (245, '92')):
+                page.insert_text((x, 85), text, fontsize=12)
+        else:
+            page.insert_text((30, 85), 'Alder 12th X 92', fontsize=12)
         words = [dict(text=w[4], bbox=list(w[:4]), confidence=99) for w in page.get_text('words')]
-        regions = {'b1': [[25, 40, 220, 90]], 'b2': [[25, 70, 220, 90]]}
+        regions = {'b1': [[25, 40, 280, 90]], 'b2': [[25, 70, 230 if clipped_tail and tab_gap else 280, 90]]}
         reading = answer(block('Birch 2nd 66 Alder 12th X 92', ident='b1'),
                          block('Alder 12th Y 92', ident='b2'))
         _, record = vision_pipeline.compile_page(reading, words, SourceDisplay(doc, 0),
@@ -86,3 +92,16 @@ def test_short_index_row_ownership_does_not_require_guessing_its_damaged_referen
             note_context={'cache': tmp_path/'cache', 'labels': {}, 'catalogue': {}, 'refs': {}})
     assert [b['published_tokens'] for b in record['blocks']] == [
         ['Birch', '2nd', '66'], ['Alder', '12th', 'X', '92']]
+
+
+def test_index_row_tail_cannot_cross_a_new_lexical_column_label():
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=300, height=200)
+        for x, text in ((30, 'Birch'), (100, '2nd'), (135, '66'), (165, 'Other'), (205, '92')):
+            page.insert_text((x, 60), text, fontsize=12)
+        words = [dict(text=w[4], bbox=list(w[:4])) for w in page.get_text('words')]
+        regions = {'b1': [[25, 40, 180, 65]]}
+        reading = answer(block('Birch 2nd 92', ident='b1'))
+        vision_pipeline._reserve_layer_instances(reading, words, SourceDisplay(doc, 0), regions)
+        foreign = next(w for w in words if w['text']=='92')
+        assert regions.get('_instances', {}).get(vision_pipeline._source_instance(foreign)) != 'b1'

@@ -406,7 +406,7 @@ def _reserve_layer_instances(answer,words,display,regions):
     """
     from .source_geometry import unique_anchors
     key=lambda text:re.sub(r'[^\w]','',vision_reading.normalized(text).casefold())
-    proposals={};proved_rows={}
+    proposals={};proved_rows={};proved_row_words={}
     # A compact index entry may have only one ordinary lexical word plus an
     # ordinal and page number. Its complete printed row still proves ownership
     # against a larger neighbor that borrowed that same row as a tail.
@@ -416,20 +416,42 @@ def _reserve_layer_instances(answer,words,display,regions):
         if (not 3<=len(candidate)<=6 or not all(candidate) or
                 not any(token.isdigit()for token in candidate)):continue
         boxes=regions.get(block['id'],[block_rect(block,display)])
-        local=[w for w in words if any(owned_words([w],box)for box in boxes)]
+        nearby=[w for w in words if any(owned_words([w],box)for box in boxes)]
+        if not nearby:continue
+        import statistics
+        pad=3*statistics.median(w['bbox'][3]-w['bbox'][1]for w in nearby)
+        search=[[box[0],box[1],min(display.rect.x1,box[2]+pad),box[3]]for box in boxes]
+        local=[w for w in words if any(owned_words([w],box)for box in search)]
         rows=[]
         for row in _pixel_lines(local):
+            # An index's numeric tail cannot borrow the next lexical column.
+            numeric=False;bounded=[]
+            for word in row:
+                token=key(word['text'])
+                reference=any(c.isdigit()for c in token)or bool(re.fullmatch(r'[ivxlcdm]+',token,re.I))
+                if numeric and any(c.isalpha()for c in token)and not reference:break
+                bounded.append(word)
+                numeric|=reference
+            row=bounded
             if not row or key(row[0]['text'])!=candidate[0]:continue
-            anchors=unique_anchors(row,range(len(row)),candidate,minimum=3,complete_short=False)
+            # This is one measured index row inside the unit's original
+            # territory. Its tab gap is intentional; the generic prose anchor
+            # finder would incorrectly split label and numeric columns here.
+            from difflib import SequenceMatcher
+            matcher=SequenceMatcher(None,[key(w['text'])for w in row],candidate,autojunk=False)
+            anchors=[(i,j)for a,b,count in matcher.get_matching_blocks()
+                     for i,j in zip(range(a,a+count),range(b,b+count))]
             covered={j for _,j in anchors}
             # One damaged reference must not transfer its row's label/tail
             # into a preceding entry. Three literal own-row anchors and the
             # first label establish placement, never the uncertain spelling.
             if 0 in covered and len(covered)>=3 and len(covered)/len(candidate)>=.75:
-                rows.append(row)
+                rows.append(row[min(i for i,_ in anchors):max(i for i,_ in anchors)+1])
         if len(rows)!=1:continue
         for word in rows[0]:
-            proved_rows.setdefault(_source_instance(word),set()).add(block['id'])
+            occurrence=_source_instance(word)
+            proved_rows.setdefault(occurrence,set()).add(block['id'])
+            proved_row_words[occurrence]=word
     for block in answer['blocks']:
         if block['role'] not in ('body','other','caption','heading','footnote'):continue
         candidate=[key(token)for token in re.sub(r'<n:[^>]+>',' ',block['text']).split()]
@@ -478,7 +500,16 @@ def _reserve_layer_instances(answer,words,display,regions):
     for occurrence,owners in proposals.items():
         if len(owners)==1:instances.setdefault(occurrence,next(iter(owners)))
     for occurrence,owners in proved_rows.items():
-        if len(owners)==1:instances[occurrence]=next(iter(owners))
+        if len(owners)!=1:continue
+        owner=next(iter(owners));instances[occurrence]=owner
+        word=proved_row_words[occurrence]
+        bound=regions.setdefault(owner,[block_rect(next(b for b in answer['blocks']if b['id']==owner),display)])
+        if not any(owned_words([word],box)for box in bound):
+            bound.append(list(word['bbox']))
+            additions=regions.setdefault('_row_additions',{}).setdefault(owner,[])
+            if not isinstance(additions,list):
+                additions=list(additions);regions['_row_additions'][owner]=additions
+            additions.append(occurrence)
 
 
 def _native_lexical_view(display,words,marker_prefixes=()):
