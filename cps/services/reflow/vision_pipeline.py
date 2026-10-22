@@ -398,12 +398,11 @@ def _reserve_object_instances(answer,optical,display,regions):
 
 
 def _reserve_layer_instances(answer,words,display,regions):
-    """Bind complete local readings to this inventory's own word identities.
+    """Rebind unique lexical occurrences to this inventory's physical identities.
 
-    Optical and PDF word boxes are different observations of the same print.
-    A reservation keyed by one observation cannot exclude the other's words.
-    Re-establish only complete, unique local placements; this grants ownership,
-    never spelling authority. Competing complete owners remain unreserved.
+    A dotted leader and its distant page number do not form prose anchors.
+    Locate the lexical reading first, then bind the original punctuation and
+    numeric tail only on those same printed rows. This grants ownership only.
     """
     from .source_geometry import unique_anchors
     key=lambda text:re.sub(r'[^\w]','',vision_reading.normalized(text).casefold())
@@ -411,13 +410,10 @@ def _reserve_layer_instances(answer,words,display,regions):
     for block in answer['blocks']:
         if block['role'] not in ('body','other','caption','heading','footnote'):continue
         candidate=[key(token)for token in re.sub(r'<n:[^>]+>',' ',block['text']).split()]
-        candidate=[token for token in candidate if token]
-        if len(candidate)<3:continue
+        lexical=[token for token in candidate if any(c.isalpha()for c in token)]
+        if len(lexical)<3:continue
         boxes=regions.get(block['id'],[block_rect(block,display)])
         if block['role']=='footnote' and block.get('marker'):
-            # A hanging note row can start left of the first indented row.
-            # Its own vertical extent and a complete unique lexical placement
-            # locate that ink before omission recovery creates another unit.
             heights=[w['bbox'][3]-w['bbox'][1]for w in words
                      if any(owned_words([w],box)for box in boxes)]
             if heights:
@@ -425,21 +421,36 @@ def _reserve_layer_instances(answer,words,display,regions):
                 hint=block_rect(block,display);pad=3*statistics.median(heights)
                 boxes=boxes+[[max(display.rect.x0,hint[0]-pad),hint[1],
                               min(display.rect.x1,hint[2]+pad),hint[3]]]
-        local=_pixel_line_order([word for word in words if key(word['text']) and any(
-            owned_words([word],box)for box in boxes)])
-        anchors=unique_anchors(local,range(len(local)),candidate,minimum=3)
-        if {j for i,j in anchors}!=set(range(len(candidate))):continue
-        if block['role']=='footnote':
-            bound=regions.setdefault(block['id'],[block_rect(block,display)])
-            for i,j in anchors:
-                if not any(owned_words([local[i]],box)for box in bound):
-                    bound.append(list(local[i]['bbox']))
+        all_local=_pixel_line_order([word for word in words if any(owned_words([word],box)for box in boxes)])
+        local=[word for word in all_local if any(c.isalpha()for c in key(word['text']))]
+        anchors=unique_anchors(local,range(len(local)),lexical,minimum=3)
+        covered={j for i,j in anchors}
+        complete=covered==set(range(len(lexical)))
+        if not complete and not(block['role']=='footnote'and len(covered)>=6
+                                 and len(covered)/len(lexical)>=.8):continue
+        selected={id(local[i])for i,j in anchors}
+        # Ancillary dot leaders cannot become a second row's lexical bridge.
+        # Numbers bind only when their literal is unique on this anchored row.
+        for row in _pixel_lines(all_local):
+            row_anchors=[w for w in row if id(w)in selected]
+            if not row_anchors:continue
+            for number in {t for t in candidate if t.isdigit()}:
+                hits=[w for w in row if key(w['text'])==number]
+                if len(hits)==1:selected.add(id(hits[0]));row_anchors+=hits
+            left=min(w['bbox'][0]for w in row_anchors);right=max(w['bbox'][2]for w in row_anchors)
+            selected.update(id(w)for w in row if not key(w['text'])
+                            and left<=w['bbox'][0]and w['bbox'][2]<=right)
+        for word in all_local:
+            if id(word)not in selected:continue
+            proposals.setdefault(_source_instance(word),set()).add(block['id'])
+            if block['role']=='footnote':
+                bound=regions.setdefault(block['id'],[block_rect(block,display)])
+                if not any(owned_words([word],box)for box in bound):
+                    bound.append(list(word['bbox']))
                     additions=regions.setdefault('_row_additions',{}).setdefault(block['id'],[])
                     if not isinstance(additions,list):
                         additions=list(additions);regions['_row_additions'][block['id']]=additions
-                    additions.append(_source_instance(local[i]))
-        for i,j in anchors:
-            proposals.setdefault(_source_instance(local[i]),set()).add(block['id'])
+                    additions.append(_source_instance(word))
     instances=regions.setdefault('_instances',{})
     for occurrence,owners in proposals.items():
         if len(owners)==1:instances.setdefault(occurrence,next(iter(owners)))
