@@ -2293,7 +2293,8 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
         positive=bool(evidence) and all(w.get('confidence',0)>=90 for w in evidence)
         unique=len(_matches(pixels,left+pixels[b:y]+right))==1
         anchors=list(zip(range(max(0,a-2),a),witness[max(0,b-len(left)):b]))+list(zip(range(z,z+len(right)),witness[y:y+len(right)]))
-        anchored=bool(left and right) and all(i in source_map and _same_occurrence(source_map[i],word) for i,word in anchors)
+        anchored=(bool(left and right) and len(anchors)==len(left)+len(right)
+                  and all(i in source_map and _same_occurrence(source_map[i],word)for i,word in anchors))
         lexical=(all(known(w['text']) for w in evidence) and
                  (not tokens[a:z] or
                   all(not any(c.isupper() for c in t) for t in tokens[a:z]) and
@@ -2312,24 +2313,32 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
         two_views=owned_span and all(len([other for other in corroboration
             if _same_occurrence(word,other) and _key(other['text'])==_key(word['text'])])==1
             for word in evidence)
-        resolved=bool(positive and ((unique and anchored and (lexical or numeral))
-                                   or case_only or two_views))
-        if _accent_conflict(''.join(tokens[a:z]),''.join(w['text'] for w in evidence)):resolved=False
-        if kind=='insert' and not resolved and unique and anchored and a-1 in source_map and a in source_map:
+        def in_gap(word):
+            if a-1 not in source_map or a not in source_map:return False
             left_box=source_map[a-1]['bbox'];right_box=source_map[a]['bbox']
             height=max(left_box[3]-left_box[1],right_box[3]-right_box[1],1)
-            # Additional recognized ink is not a proved letter. When it sits
-            # inside this exact short same-row gap, retain the gap and following
-            # word as original ink rather than silently dropping the edit.
-            # A remote row or another column cannot own it.
-            def in_gap(word):
-                box=word['bbox'];small=min(box[3]-box[1],left_box[3]-left_box[1],right_box[3]-right_box[1])
-                return (word.get('confidence',0)>=40 and any(c.isalnum()or c=='|'for c in word['text'])
-                    and box[0]>=left_box[2]-.5 and box[2]<=right_box[0]+.5
-                    and 0<right_box[0]-left_box[2]<=height*4
-                    and min(box[3],left_box[3],right_box[3])-max(box[1],left_box[1],right_box[1])>=small*.5)
+            box=word['bbox'];small=min(box[3]-box[1],left_box[3]-left_box[1],right_box[3]-right_box[1])
+            return (word.get('confidence',0)>=40 and any(c.isalnum()or c=='|'for c in word['text'])
+                and box[0]>=left_box[2]-.5 and box[2]<=right_box[0]+.5
+                and 0<right_box[0]-left_box[2]<=height*4
+                and min(box[3],left_box[3],right_box[3])-max(box[1],left_box[1],right_box[1])>=small*.5)
+        # A dictionary and matching context cannot place an inserted word.
+        # Require its own short, same-row gap or the affected source occurrence;
+        # a crop spanning columns may contain perfectly legible unrelated prose.
+        affected=[source_map[i]for i in range(a,z)if i in source_map]
+        if len(affected)!=z-a and a-1 in source_map and z in source_map:
+            positions={id(word):i for i,word in enumerate(source)}
+            lo=positions[id(source_map[a-1])]+1;hi=positions[id(source_map[z])]
+            affected=source[lo:hi]if lo<=hi else []
+        owns_edit=(all(in_gap(word)for word in evidence)if kind=='insert'else
+            bool(affected)and
+            all(any(_same_occurrence(own,word)for own in affected)for word in evidence))
+        resolved=bool(positive and owns_edit and ((unique and anchored and (lexical or numeral))
+                                   or case_only or two_views))
+        if _accent_conflict(''.join(tokens[a:z]),''.join(w['text'] for w in evidence)):resolved=False
+        if kind=='insert' and not resolved and unique and anchored:
             if evidence and all(in_gap(word)for word in evidence):
-                boxes=[right_box]+[word['bbox']for word in evidence]
+                boxes=[source_map[a]['bbox']]+[word['bbox']for word in evidence]
                 gaps.append((len(output),[min(b[0]for b in boxes),min(b[1]for b in boxes),
                     max(b[2]for b in boxes),max(b[3]for b in boxes)]))
         chosen=[w['text'] for w in evidence] if resolved else tokens[a:z]
