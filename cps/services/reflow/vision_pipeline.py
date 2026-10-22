@@ -3018,15 +3018,18 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     if pixel_adjudication._complete_word_occurrence(w,dict(bbox=slot))])!=1
                     for w in legacy_native_words)
                 legacy_ids={id(w)for w in legacy_native_words}
-                if (unplaced and native_print_words and role in ('body','other','caption')
+                script_loss=text_quality.reading_script_mismatches(block['text'],' '.join(result['tokens']))
+                if ((unplaced or script_loss) and native_print_words and role in ('body','other','caption')
                         and not any(t.startswith('<n:')for t in proposed+result['tokens'])
                         and all(proved or id(w)in legacy_ids for w,proved in zip(local,native_proof))):
                     from .native_text import visible_word_ink
                     if all(visible_word_ink(display.page,native_occurrences)):
-                        # A reader can expand opaque font codes into several
-                        # tokens sharing an interpolated box. Preserve the exact
-                        # mapped print instead, with only those opaque original
-                        # occurrences in ink. No guessed word binding is needed.
+                        # A reader can expand opaque codes into several tokens,
+                        # or replace each with a script the font cannot map. The
+                        # complete visible native inventory proves the prose;
+                        # only opaque occurrences require original ink. This
+                        # containment applies whether their token binding was
+                        # already unique or must be restored from native print.
                         result.update(tokens=[w['text']for w in local],fallback=False,native_ink_stencil=True,
                             boxes={i:w['bbox']for i,w in enumerate(local)},marked=set(),
                             word_notes={},adjudication=[],
