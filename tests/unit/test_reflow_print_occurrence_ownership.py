@@ -70,3 +70,19 @@ def test_complete_short_index_row_owns_its_occurrences_over_a_borrowed_tail(tmp_
             note_context={'cache': tmp_path/'cache', 'labels': {}, 'catalogue': {}, 'refs': {}})
     assert [b['published_tokens'] for b in record['blocks']] == [
         ['Birch', '2nd', '66'], ['Birch', '12th', '92']]
+
+
+def test_short_index_row_ownership_does_not_require_guessing_its_damaged_reference(tmp_path):
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=300, height=200)
+        page.insert_text((30, 60), 'Birch 2nd 66', fontsize=12)
+        page.insert_text((30, 85), 'Alder 12th X 92', fontsize=12)
+        words = [dict(text=w[4], bbox=list(w[:4]), confidence=99) for w in page.get_text('words')]
+        regions = {'b1': [[25, 40, 220, 90]], 'b2': [[25, 70, 220, 90]]}
+        reading = answer(block('Birch 2nd 66 Alder 12th X 92', ident='b1'),
+                         block('Alder 12th Y 92', ident='b2'))
+        _, record = vision_pipeline.compile_page(reading, words, SourceDisplay(doc, 0),
+            0, Package(), {}, pixel_words=words, regions=regions, body_owners={},
+            note_context={'cache': tmp_path/'cache', 'labels': {}, 'catalogue': {}, 'refs': {}})
+    assert [b['published_tokens'] for b in record['blocks']] == [
+        ['Birch', '2nd', '66'], ['Alder', '12th', 'X', '92']]

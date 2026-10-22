@@ -406,23 +406,30 @@ def _reserve_layer_instances(answer,words,display,regions):
     """
     from .source_geometry import unique_anchors
     key=lambda text:re.sub(r'[^\w]','',vision_reading.normalized(text).casefold())
-    proposals={};complete_rows={}
+    proposals={};proved_rows={}
     # A compact index entry may have only one ordinary lexical word plus an
     # ordinal and page number. Its complete printed row still proves ownership
     # against a larger neighbor that borrowed that same row as a tail.
     for block in answer['blocks']:
         if block['role'] not in ('body','other','caption','heading'):continue
         candidate=[key(token)for token in block['text'].split()]
-        if (len(candidate)<3 or not all(candidate) or
-                not any(token.isdigit()for token in candidate) or
-                sum(any(c.isalpha()for c in token)for token in candidate)>=3):continue
+        if (not 3<=len(candidate)<=6 or not all(candidate) or
+                not any(token.isdigit()for token in candidate)):continue
         boxes=regions.get(block['id'],[block_rect(block,display)])
         local=[w for w in words if any(owned_words([w],box)for box in boxes)]
-        rows=[row for row in _pixel_lines(local)
-              if [key(w['text'])for w in row if key(w['text'])]==candidate]
+        rows=[]
+        for row in _pixel_lines(local):
+            if not row or key(row[0]['text'])!=candidate[0]:continue
+            anchors=unique_anchors(row,range(len(row)),candidate,minimum=3,complete_short=False)
+            covered={j for _,j in anchors}
+            # One damaged reference must not transfer its row's label/tail
+            # into a preceding entry. Three literal own-row anchors and the
+            # first label establish placement, never the uncertain spelling.
+            if 0 in covered and len(covered)>=3 and len(covered)/len(candidate)>=.75:
+                rows.append(row)
         if len(rows)!=1:continue
         for word in rows[0]:
-            complete_rows.setdefault(_source_instance(word),set()).add(block['id'])
+            proved_rows.setdefault(_source_instance(word),set()).add(block['id'])
     for block in answer['blocks']:
         if block['role'] not in ('body','other','caption','heading','footnote'):continue
         candidate=[key(token)for token in re.sub(r'<n:[^>]+>',' ',block['text']).split()]
@@ -470,7 +477,7 @@ def _reserve_layer_instances(answer,words,display,regions):
     instances=regions.setdefault('_instances',{})
     for occurrence,owners in proposals.items():
         if len(owners)==1:instances.setdefault(occurrence,next(iter(owners)))
-    for occurrence,owners in complete_rows.items():
+    for occurrence,owners in proved_rows.items():
         if len(owners)==1:instances[occurrence]=next(iter(owners))
 
 
