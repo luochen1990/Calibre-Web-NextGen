@@ -28,3 +28,15 @@ def test_complete_independent_source_word_can_survive_reader_omission():
     result=pa.adjudicate(['Keep','the','sample','readable.'],source,witness,unresolved_source=True)
     assert result['tokens']==[w['text']for w in source]
     assert not result['word_notes'].get(2,{}).get('source_image_only')
+
+
+@pytest.mark.parametrize('complete',[True,False])
+def test_tiny_complete_function_word_is_not_a_nonword_fragment(complete):
+    source=[dict(text=t,bbox=[i*30,20,i*30+25,32],confidence=99)
+            for i,t in enumerate(['Keep','words','to','read','nearby.'])]
+    witness=pa.CropWitness([dict(w,confidence=88)for w in source])
+    witness.word_scope=lambda word:list(word['bbox'])if complete else[word['bbox'][0]-15,*word['bbox'][1:]]
+    witness.word_readings=lambda word:[]
+    result=pa.adjudicate(['Keep','words','read','nearby.'],source,witness,unresolved_source=True)
+    assert result['tokens']==[w['text']for w in source]
+    assert bool(result['word_notes'].get(2,{}).get('source_image_only'))is not complete

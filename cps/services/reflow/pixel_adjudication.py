@@ -614,8 +614,21 @@ def _unproved_source_fragment(word,witness):
     if reader is None:return False
     scope=measure(word)if measure is not None else None
     if scope is None:return True
-    complete=dict(word,bbox=list(scope))
-    choice=_paired_word_choice(complete,reader(complete))
+    complete=dict(word,bbox=list(scope));views=reader(complete)
+    # Single-word modes can lose a tiny complete function word while reading
+    # its neighbor's stroke in their padding. A unique confident contextual
+    # reading and measured whole ink inside this exact source word remain
+    # positive evidence unless an own-word view supplies a credible counter.
+    functions={'a','i','an','as','at','be','by','do','go','he','if','in','is','it',
+        'me','my','no','of','on','or','so','to','up','us','we'}
+    own=[w for w in witness if _same_occurrence(word,w)]
+    box=word['bbox'];contained=all(box[j]-.25<=scope[j]for j in(0,1))and all(scope[j]<=box[j]+.25 for j in(2,3))
+    counter=any(w.get('confidence',0)>=85 and _same_occurrence(complete,w)
+        and _key(w['text'])!=_key(word['text'])for view in views for w in view)
+    if (contained and token.casefold()in functions and word.get('confidence',0)>=95
+            and len(own)==1 and _key(own[0]['text'])==_key(word['text'])
+            and own[0].get('confidence',0)>=85 and not counter):return False
+    choice=_paired_word_choice(complete,views)
     return not(choice and _key(choice['text'])==_key(word['text'])
         and _owns_complete_ink([choice],scope))
 
