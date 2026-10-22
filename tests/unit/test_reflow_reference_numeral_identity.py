@@ -44,3 +44,18 @@ def test_optically_recovered_clause_keeps_unproved_reference_as_its_own_print(tm
     assert 5 in unit['source_image_words']
     assert unit['published_tokens'][:5]==text.split()[:5]
     assert 'source-word-image'in ''.join(page['body'])
+
+
+@pytest.mark.parametrize('proved',[True,False])
+def test_local_short_reference_label_needs_complete_independent_identity(proved):
+    source=words('Read chapter QN, next.')
+    word=source[2]
+    witness=pa.CropWitness(source)
+    witness.word_scope=lambda value:list(value['bbox'])
+    witness.word_readings=lambda value:[[dict(value,confidence=99 if proved else 35)],
+        [dict(value,text=value['text']if proved else'1N,',confidence=99 if proved else 20)]]
+    result=dict(tokens=[w['text']for w in source],word_notes={},marked=set())
+    pa.audit_local_numeric_suffixes(result,{i:w['bbox']for i,w in enumerate(source)},witness)
+    assert result['tokens']==[w['text']for w in source],'Reference identity is never guessed from its context'
+    assert bool(result['word_notes'].get(2,{}).get('source_image_only'))is not proved
+    assert 0 not in result['marked']and 3 not in result['marked']

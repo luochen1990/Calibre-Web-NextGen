@@ -1553,9 +1553,14 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 stroke_conflict=stroke_conflict or unsafe_stroke
                 supported=[];word_choice=None;resampled=None;alternate=None
         if ordinal_conflict:supported=[choice for choice in supported if len(choice[1])==1 and _ordinal(choice[1][0])]
+        positive_model_accent=(len(supported)==1
+            and ''.join(supported[0][1])==''.join(proposed[b:y])
+            and any(unicodedata.combining(c)for c in
+                    unicodedata.normalize('NFD',''.join(proposed[b:y]))))
         accent_conflict=(len(supported)==1 and (
             _accent_conflict(''.join(supported[0][1]),''.join(proposed[b:y]))
-            or _accent_conflict(''.join(supported[0][1]),''.join(source_tokens[a:z]))))
+            or not positive_model_accent and _accent_conflict(
+                ''.join(supported[0][1]),''.join(source_tokens[a:z]))))
         if accent_conflict and alternate is not None:
             marks=lambda value:{c for c in unicodedata.normalize('NFD',value)if unicodedata.combining(c)}
             removed=(marks(''.join(source_tokens[a:z]))|marks(''.join(proposed[b:y])))-marks(alternate['text'])
@@ -2530,6 +2535,26 @@ def audit_local_numeric_suffixes(result,boxes,witness):
     """
     import re
     for i,token in enumerate(result['tokens']):
+        label_context=(i>0 and result['tokens'][i-1].strip('([]').casefold()
+            in ('ch.','chapter','sec.','section','vol.','volume')
+            and re.fullmatch(r'[A-ZIl|0-9]{1,6}[.,;:]?',token)and i in boxes)
+        if label_context:
+            own=dict(text=token,bbox=boxes[i])
+            reader=getattr(witness,'word_readings',None)
+            views=reader(own)if reader is not None else []
+            def confirmed(view):
+                words=[w for w in view if _complete_word_occurrence(own,w)]
+                return (len(words)==1 and words[0].get('confidence',0)>=90
+                    and _key(words[0]['text'])==_key(token))
+            proved=any(confirmed(views[j])and confirmed(views[j+1])
+                for j in range(0,len(views)-1,2))
+            if not proved:
+                record=dict(source=[token],model=[token],chosen=[token],status='UNRESOLVED',
+                    method='unproved_local_reference_label',source_image_only=True,
+                    source_bbox=list(boxes[i]))
+                result.setdefault('word_notes',{})[i]=record
+                result.setdefault('adjudication',[]).append(record);result['marked'].add(i)
+                continue
         reference=(i>0 and result['tokens'][i-1].strip('([]').casefold()in('see','cf.','cf')
             and re.fullmatch(r'1(?:\.[0-9]+)+[.,;:]?',token)and i in boxes)
         if reference:
