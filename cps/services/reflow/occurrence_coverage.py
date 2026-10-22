@@ -22,6 +22,13 @@ def _contains(outer,inner):
             and min(outer[3],inner[3])-max(outer[1],inner[1])>=.9*height)
 
 
+def _print_contains(outer,inner):
+    """Print retention needs the complete occurrence, allowing only rounding."""
+    epsilon=.01
+    return (outer[0]<=inner[0]+epsilon and outer[1]<=inner[1]+epsilon
+            and outer[2]>=inner[2]-epsilon and outer[3]>=inner[3]-epsilon)
+
+
 def classify(words,tokens,boxes,notes,images,pno):
     """Return one explicit live/print/missing disposition per lexical occurrence."""
     rows=[];conserved={}
@@ -65,7 +72,7 @@ def classify(words,tokens,boxes,notes,images,pno):
             for name,image in images.items():
                 if image.get('page')!=pno or not image.get('bbox'):continue
                 parts=image.get('source_parts')or [image['bbox']]
-                if any(_contains(part['bbox']if isinstance(part,dict)else part,box)for part in parts):assets.append((name,image))
+                if any(_print_contains(part['bbox']if isinstance(part,dict)else part,box)for part in parts):assets.append((name,image))
             if assets:
                 name,_=min(assets,key=lambda item:(item[1]['bbox'][2]-item[1]['bbox'][0])*
                     (item[1]['bbox'][3]-item[1]['bbox'][1]))
@@ -179,7 +186,7 @@ def final_publication(documents,records,frames,images,package,displays,homes):
                 for name,image in published.items():
                     if image.get('page')!=pno:continue
                     parts=image.get('source_parts')or [image.get('bbox')]
-                    if any(part and _contains(part.get('bbox')if isinstance(part,dict)else part,box)for part in parts):
+                    if any(part and _print_contains(part.get('bbox')if isinstance(part,dict)else part,box)for part in parts):
                         row.update(disposition='print',image=name,kind=image.get('kind'));break
             rows.append(row)
         missing=[r for r in rows if r['disposition']=='missing']

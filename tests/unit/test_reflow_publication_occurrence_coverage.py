@@ -110,3 +110,26 @@ def test_coverage_resolves_only_aliases_with_an_actual_published_resource(monkey
         result=coverage.final_publication(documents,records,frames,images,package,{0:None},{0:'ch001.xhtml'})
         assert result['totals']==dict(inventory=1,live=0,print=1,missing=0,excluded=0)
         assert result['pages'][0]['rows'][0]['image']==alias
+
+
+@pytest.mark.parametrize('right_edge,needs_repair',[(100,True),(110,False)])
+def test_print_coverage_cannot_accept_a_clipped_end_of_the_source_word(monkeypatch,right_edge,needs_repair):
+    from cps.services.reflow import occurrence_coverage as coverage,unit_source
+    from types import SimpleNamespace
+    source=dict(text='waterfront',bbox=[10,20,110,32])
+    partial='images/partial.jpg';complete='images/complete.jpg'
+    package=SimpleNamespace(images={partial:42},aliases={})
+    images={partial:dict(page=0,bbox=[10,20,right_edge,32])}
+    documents={'ch001.xhtml':'<html><body><img src="'+partial+'"/></body></html>'}
+    calls=[]
+    def retain_complete(display,pno,bid,role,writer,assets,reason):
+        calls.append(pno);writer.images[complete]=84
+        assets[complete]=dict(page=0,bbox=[0,0,120,40])
+        return '<p><img src="'+complete+'"/></p>',[],dict(image=complete,source_reference='original')
+    monkeypatch.setattr(unit_source,'source_unit',retain_complete)
+    result=coverage.final_publication(documents,{0:{'blocks':[]}},{0:[source]},images,package,{0:None},{0:'ch001.xhtml'})
+    assert calls==([0]if needs_repair else[])
+    assert result['totals']==dict(inventory=1,live=0,print=1,missing=0,excluded=0)
+    assert result['pages'][0]['rows'][0]['image']==(complete if needs_repair else partial)
+    classified=coverage.classify([source],[],{},{},{partial:images[partial]},0)
+    assert classified[0]['disposition']==('missing'if needs_repair else'print')
