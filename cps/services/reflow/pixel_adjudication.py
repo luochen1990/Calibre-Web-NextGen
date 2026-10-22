@@ -588,6 +588,30 @@ def _unsettled_optical_nonword(word,witness):
     return None
 
 
+def _unproved_source_fragment(word,witness):
+    """Unaligned optical fragments need a complete positive word certificate.
+
+    This applies only after a source/reader disagreement remains unresolved.
+    It never challenges a complete first reading or positively decoded paint.
+    Repeated short letter debris and a lowercase nonword without a complete
+    independent pair remain original ink, rather than confident extra prose.
+    """
+    from .text_quality import english_lexicon
+    token=_key(word['text']).strip('.,;:!?"\'()[]')
+    if not token.isascii()or not token.isalpha():return False
+    suspicious=(len(token)<=2 or token.islower()and token.casefold()not in english_lexicon())
+    if not suspicious:return False
+    reader=getattr(witness,'word_readings',None)
+    measure=getattr(witness,'word_scope',None)
+    if reader is None:return False
+    scope=measure(word)if measure is not None else None
+    if scope is None:return True
+    complete=dict(word,bbox=list(scope))
+    choice=_paired_word_choice(complete,reader(complete))
+    return not(choice and _key(choice['text'])==_key(word['text'])
+        and _owns_complete_ink([choice],scope))
+
+
 def _joined_stroke_conflict(original,chosen):
     """Agreement on joined Latin strokes cannot certify a different whole word.
 
@@ -1594,6 +1618,13 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             # Repeating a source-only nonword in the block recognizer does not
             # settle a competing stroke seen at its own complete occurrence.
             supported=[];boundary=None;word_choice=None;resampled=None;alternate=None
+        if (unresolved_source and not proposed[b:y] and len(supported)==1
+                and supported[0][1]==source_tokens[a:z]
+                and any(_unproved_source_fragment(word,witness)for word in source[a:z])):
+            # Context matching cannot certify a clipped fragment as an extra
+            # complete source word. Its own measured ink and diverse reads
+            # are still required even when the block recognizer repeats it.
+            supported=[];boundary=None;word_choice=None;resampled=None;alternate=None
         resolved=len(supported)==1
         unproved_multiword=(not resolved and bool(source_tokens[a:z]) and bool(proposed[b:y])
             and getattr(witness,'model_reading',False) and not unresolved_source
@@ -1674,8 +1705,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 uncertain_optical=_unsettled_optical_nonword(word,witness)
                 if uncertain_optical is not None:
                     record.setdefault('word_alternatives',{})[j]=uncertain_optical['text']
+                fragment=(unresolved_source and _unproved_source_fragment(word,witness))
                 if word['text'] and (weak or counter or collision or unproved_multiword
-                                     or ambiguous_numeric or uncertain_optical is not None):withheld.add(j)
+                                     or fragment or ambiguous_numeric or uncertain_optical is not None):withheld.add(j)
             if withheld:record['method']='unproved_source_transcription_change'
         if symbol_conflict and not resolved:withheld.update(range(z-a))
         decisions.append(record)
