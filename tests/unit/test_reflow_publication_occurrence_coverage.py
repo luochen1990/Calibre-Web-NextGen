@@ -89,3 +89,24 @@ def test_final_publication_preserves_unmarked_complete_live_reading(tmp_path,mon
     coverage=result['publication_coverage']['totals']
     assert coverage==dict(inventory=5,live=5,print=0,missing=0,excluded=0)
     assert not any(image.get('block')=='publication-coverage'for image in result['images'].values())
+
+
+@pytest.mark.parametrize('resource_exists',[True,False])
+def test_coverage_resolves_only_aliases_with_an_actual_published_resource(monkeypatch,resource_exists):
+    from cps.services.reflow import occurrence_coverage as coverage,unit_source
+    from types import SimpleNamespace
+    alias='images/shared-page.jpg';encoded='images/encoded-page.png'
+    package=SimpleNamespace(images={encoded:42}if resource_exists else{},aliases={alias:encoded})
+    def needs_repair(*args,**kwargs):raise RuntimeError('Uncovered source occurrence needs original print')
+    monkeypatch.setattr(unit_source,'source_unit',needs_repair)
+    documents={'ch001.xhtml':'<html><body><img src="'+alias+'"/></body></html>'}
+    records={0:{'blocks':[]}}
+    frames={0:[dict(text='sample',bbox=[10,20,30,32])]}
+    images={alias:dict(page=0,bbox=[0,0,100,100])}
+    if not resource_exists:
+        with pytest.raises(RuntimeError,match='Uncovered source occurrence'):
+            coverage.final_publication(documents,records,frames,images,package,{0:None},{0:'ch001.xhtml'})
+    else:
+        result=coverage.final_publication(documents,records,frames,images,package,{0:None},{0:'ch001.xhtml'})
+        assert result['totals']==dict(inventory=1,live=0,print=1,missing=0,excluded=0)
+        assert result['pages'][0]['rows'][0]['image']==alias

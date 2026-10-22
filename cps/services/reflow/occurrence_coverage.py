@@ -97,6 +97,15 @@ def _text(node):
     return (node.text or '')+''.join(_text(c)+(c.tail or '')for c in node)
 
 
+def _published_resource(name,package):
+    """Resolve the writer's declared aliases to an actual encoded resource."""
+    aliases=getattr(package,'aliases',{});seen=set()
+    while name in aliases:
+        if name in seen:raise ValueError('Cyclic image resource alias')
+        seen.add(name);name=aliases[name]
+    return name if name in package.images else None
+
+
 def final_publication(documents,records,frames,images,package,displays,homes):
     """Audit the attributed source frame against the actual final documents.
 
@@ -115,7 +124,7 @@ def final_publication(documents,records,frames,images,package,displays,homes):
             if node.tag.rsplit('}',1)[-1]=='img':used.add(node.get('src',''))
             if node.get('data-source-page')is not None and node.get('data-source-block'):
                 actual[(int(node.get('data-source-page')),node.get('data-source-block'))].extend(_text(node).split())
-    published={name:item for name,item in images.items()if name in used and name in package.images}
+    published={name:item for name,item in images.items()if name in used and _published_resource(name,package)is not None}
     pages={}
     for pno,frame in frames.items():
         blocks=records[pno].get('blocks',[])+records[pno].get('native_note_adjudication',[]);claims=[];extras=[];exclusions=[]
@@ -183,7 +192,7 @@ def final_publication(documents,records,frames,images,package,displays,homes):
             # its control in the notes lane with the retained original page.
             context='<aside class="footnote vision-disclosure">'+fragment+'</aside>'+''.join(asides)
             documents[href]=documents[href].replace('</body>',context+'</body>')
-            if case['image']not in package.images:raise ValueError('Occurrence coverage source image was not published')
+            if _published_resource(case['image'],package)is None:raise ValueError('Occurrence coverage source image was not published')
             for row in missing:row.update(disposition='print',image=case['image'],
                 kind='publication_coverage_source_context',source_reference=case['source_reference'])
         pages[pno]=dict(rows=rows,**summary([r for r in rows if r['disposition']!='excluded']),
