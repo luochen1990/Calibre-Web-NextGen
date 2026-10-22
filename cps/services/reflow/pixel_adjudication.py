@@ -1042,6 +1042,30 @@ def _spaced_source_view(source,witness,model=()):
     return result
 
 
+def _without_fragment_aliases(model,source,witness):
+    """One printed word cannot acquire an extra live fragment over its ink.
+
+    Require a unique complete source word repeated by the first reader and a
+    strong independent pixel occurrence. A separate short word, a distant match
+    or a model omission supplies no alias proof.
+    """
+    literals={_key(t).strip('.,;:!?')for t in model}
+    result=[]
+    for index,word in enumerate(source):
+        text=_key(word['text']).strip('.,;:!?');a=word['bbox'];owners=[]
+        if text.isascii()and text.isalpha()and len(text)<=3 and text not in literals:
+            for j,other in enumerate(source):
+                full=_key(other['text']).strip('.,;:!?');b=other['bbox']
+                if j==index or len(full)<=len(text)or text not in full or full not in literals:continue
+                overlap=(min(a[2],b[2])-max(a[0],b[0])>=.65*max(.01,a[2]-a[0])
+                    and min(a[3],b[3])-max(a[1],b[1])>=.65*max(.01,a[3]-a[1]))
+                proof=[w for w in witness if _key(w['text']).strip('.,;:!?')==full
+                       and w.get('confidence',0)>=85 and _complete_word_occurrence(other,w)]
+                if overlap and len(proof)==1:owners.append(j)
+        if len(owners)!=1:result.append(word)
+    return result
+
+
 def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corroboration=(), unresolved_source=False, source_print=False, native_print_words=()):
     """Return word-level decisions; ``witness`` is independent crop OCR.
 
@@ -1050,6 +1074,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
     Source rectangles belong to occurrences, rather than spelling lookups.
     """
     uncertain=set(uncertain)
+    if not source_print:source=_without_fragment_aliases(model,source,witness)
     if not source_print and not native_print_words:
         model_words=set()
         if (getattr(witness,'model_reading',False) and not unresolved_source
