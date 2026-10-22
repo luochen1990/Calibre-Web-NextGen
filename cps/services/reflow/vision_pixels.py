@@ -18,7 +18,7 @@ def words(display,cache):
     pix=display.pixmap(scale=3,max_pixels=8_000_000)
     image=pix.tobytes('png');identity=hashlib.sha256(image).hexdigest()
     root=Path(cache);root.mkdir(parents=True,exist_ok=True)
-    target=root/(CACHE_PREFIX+('split-landscape-v1-' if pix.width>=pix.height*1.2 else '')+identity+'.json')
+    target=root/(CACHE_PREFIX+('split-landscape-v2-' if pix.width>=pix.height*1.2 else '')+identity+'.json')
     with (root/(identity+'.lock')).open('a') as handle:
         fcntl.flock(handle,fcntl.LOCK_EX)
         if target.exists():return json.loads(target.read_text())
@@ -35,10 +35,17 @@ def _recognize(display,pix,image,target):
     tiles=[(image,0)]
     if pix.width>=pix.height*1.2:
         from PIL import Image
-        picture=Image.open(io.BytesIO(image));mid=pix.width//2;tiles=[]
-        for left,right in ((0,mid),(mid,pix.width)):
-            stream=io.BytesIO();picture.crop((left,0,right,pix.height)).save(stream,format='PNG')
-            tiles.append((stream.getvalue(),left))
+        picture=Image.open(io.BytesIO(image));mid=pix.width//2
+        # A wide raster is not evidence of a blank division. Cutting through
+        # printed words creates a second, damaged inventory which must never
+        # overrule the complete first reading. Keep the bounded full raster
+        # unless the actual shared gutter is positively blank.
+        gutter=picture.convert('L').crop((max(0,mid-2),0,min(pix.width,mid+2),pix.height))
+        if gutter.getextrema()[0]>=235:
+            tiles=[]
+            for left,right in ((0,mid),(mid,pix.width)):
+                stream=io.BytesIO();picture.crop((left,0,right,pix.height)).save(stream,format='PNG')
+                tiles.append((stream.getvalue(),left))
     output=[];sx=display.rect.width/pix.width;sy=display.rect.height/pix.height
     for tile,offset in tiles:
         proc=subprocess.run([engine,'stdin','stdout','-l','eng','--psm','3','tsv'],
