@@ -1792,7 +1792,8 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 fragment=_unproved_source_fragment(word,witness)
                 if word['text'] and (weak or counter or collision or unproved_multiword
                                      or fragment or ambiguous_numeric or uncertain_optical is not None):withheld.add(j)
-            if withheld:record['method']='unproved_source_transcription_change'
+            if withheld and not symbol_conflict:
+                record['method']='unproved_source_transcription_change'
         if symbol_conflict and not resolved:withheld.update(range(z-a))
         decisions.append(record)
         boxes=([w['bbox'] for w in evidence] if evidence else
