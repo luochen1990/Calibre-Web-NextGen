@@ -7,6 +7,7 @@ Explicit doubt and conflicting complete evidence stay linked to the source; a
 dictionary word alone never certifies a substitution, omission or insertion.
 """
 from difflib import SequenceMatcher
+import re
 import unicodedata
 
 
@@ -601,13 +602,15 @@ def _unproved_source_fragment(word,witness):
 
     This applies only after a source/reader disagreement remains unresolved.
     It never challenges a complete first reading or positively decoded paint.
-    Repeated short letter debris and a lowercase nonword without a complete
-    independent pair remain original ink, rather than confident extra prose.
+    Repeated short letter debris, source-only numerals and a lowercase nonword
+    without a complete independent pair remain original ink, rather than
+    confident extra prose.
     """
     from .text_quality import english_lexicon
     token=_key(word['text']).strip('.,;:!?"\'()[]')
-    if not token.isascii()or not token.isalpha():return False
-    suspicious=(len(token)<=2 or token.islower()and token.casefold()not in english_lexicon())
+    numeric=bool(re.fullmatch(r'\d+(?:[.,]\d+)*',token))
+    if not token.isascii()or not(token.isalpha()or numeric):return False
+    suspicious=(numeric or len(token)<=2 or token.islower()and token.casefold()not in english_lexicon())
     if not suspicious:return False
     reader=getattr(witness,'word_readings',None)
     measure=getattr(witness,'word_scope',None)

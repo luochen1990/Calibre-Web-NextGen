@@ -6,7 +6,7 @@ pytestmark=pytest.mark.unit
 
 
 @pytest.mark.parametrize('context_confidence',[60,99])
-@pytest.mark.parametrize('token',['respecti','f','ge','CJ'])
+@pytest.mark.parametrize('token',['respecti','f','ge','CJ','7','12.5'])
 @pytest.mark.parametrize('unresolved_source',[True,False])
 def test_unresolved_source_fragment_needs_a_complete_independent_occurrence(token,context_confidence,unresolved_source):
     source=[dict(text=t,bbox=[i*30,20,i*30+25,32],confidence=99)
@@ -21,9 +21,10 @@ def test_unresolved_source_fragment_needs_a_complete_independent_occurrence(toke
     assert 0 not in result['marked']and 4 not in result['marked']
 
 
-def test_complete_independent_source_word_can_survive_reader_omission():
+@pytest.mark.parametrize('token', ['unit', '7', '12.5'])
+def test_complete_independent_source_word_can_survive_reader_omission(token):
     source=[dict(text=t,bbox=[i*30,20,i*30+25,32],confidence=99)
-            for i,t in enumerate(['Keep','the','unit','sample','readable.'])]
+            for i,t in enumerate(['Keep','the',token,'sample','readable.'])]
     witness=pa.CropWitness(source);witness.word_scope=lambda word:list(word['bbox'])
     witness.word_readings=lambda word:[[dict(word,confidence=99)]]*2
     result=pa.adjudicate(['Keep','the','sample','readable.'],source,witness,unresolved_source=True)
