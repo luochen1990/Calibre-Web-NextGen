@@ -17,7 +17,7 @@ import tempfile
 
 from . import ocr, vision_reading
 
-VERSION = 'local-reading-1'
+VERSION = 'local-reading-2'
 MAX_PIXELS = 8_000_000
 TIMEOUT = 120
 
@@ -108,11 +108,17 @@ def recognize(display, cache):
         from PIL import Image
         picture = Image.open(io.BytesIO(image))
         middle = pix.width // 2
-        tiles = []
-        for left, right in ((0, middle), (middle, pix.width)):
-            buffer = io.BytesIO()
-            picture.crop((left, 0, right, pix.height)).save(buffer, format='PNG')
-            tiles.append((buffer.getvalue(), left, right-left))
+        # Aspect ratio does not prove two independent leaves. A midpoint cut
+        # through ink can split a word into separate paragraph owners and lose
+        # its middle letters. Tile only across a positively blank source gutter;
+        # the complete raster is already bounded by MAX_PIXELS otherwise.
+        gutter=picture.convert('L').crop((max(0,middle-2),0,min(pix.width,middle+2),pix.height))
+        if gutter.getextrema()[0]>=235:
+            tiles = []
+            for left, right in ((0, middle), (middle, pix.width)):
+                buffer = io.BytesIO()
+                picture.crop((left, 0, right, pix.height)).save(buffer, format='PNG')
+                tiles.append((buffer.getvalue(), left, right-left))
     output = []
     sx, sy = display.rect.width / pix.width, display.rect.height / pix.height
     for tile_index, (encoded, offset, width) in enumerate(tiles):
