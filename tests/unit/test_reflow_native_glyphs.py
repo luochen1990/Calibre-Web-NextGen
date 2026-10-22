@@ -341,3 +341,34 @@ def test_raised_suffix_can_occupy_the_source_whitespace_before_punctuation():
     assert len(result[0].lines)==1
     assert ''.join(s.text for s in result[0].lines[0].spans)=='10th . Next'
     assert [s.text for s in result[0].lines[0].spans if s.superscript]==['th']
+
+
+@pytest.mark.parametrize("encoding", ["Identity-H", "Identity-V"])
+def test_mapped_cid_resource_encoding_suffix_preserves_drawn_words(encoding):
+    """Synthetic mapped font names differ from their paint-trace names."""
+    from cps.services.reflow import native_text
+    class Doc:
+        def xref_get_key(self, xref, key):
+            return ('xref', '9 0 R') if key == 'ToUnicode' else ('null', 'null')
+    class Page:
+        parent = Doc()
+        def get_fonts(self):
+            return [(1, 'cid', 'Type0', 'ABCDEF+TextFace-' + encoding, 'F1', encoding)]
+        def get_texttrace(self):
+            return [dict(font='TextFace', type=0, opacity=1, seqno=0,
+                         bbox=(10, 10, 50, 20), chars=[
+                (ord(c), i + 1, (10 + i * 8, 20), (10 + i * 8, 10, 18 + i * 8, 20))
+                for i, c in enumerate('clear')])]
+        def get_bboxlog(self):
+            return [('fill-text', (10, 10, 50, 20))]
+    page = Page()
+    word = dict(text='clear', bbox=(10, 10, 50, 20))
+    assert native_text.drawn_word_authorities(page, [word]) == [True]
+    assert not native_text.unproved_legacy_word(page, word)
+
+
+def test_cid_trace_alias_cannot_hide_a_conflicting_unmapped_resource():
+    from cps.services.reflow import native_text
+    assert not native_text._face_authority(
+        {'TextFace-Identity-H': True, 'TextFace': False}, 'TextFace')
+    assert not native_text._face_authority({'TextFace-Unrelated': True}, 'TextFace')

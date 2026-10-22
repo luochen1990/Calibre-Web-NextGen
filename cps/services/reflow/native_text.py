@@ -55,7 +55,12 @@ def _text_font_authorities(page):
 def _face_authority(faces,name):
     # Embedded resource names and PostScript trace names may differ only in
     # separators. Every colliding resource must have the same reliable map.
-    canonical=lambda value:re.sub(r'[^a-z0-9]','',value.casefold())
+    # Type-0 resource BaseFont names may carry their CMap encoding suffix,
+    # while MuPDF's paint trace reports only the embedded face. Strip only
+    # these exact standard encoding suffixes; all aliases must still agree
+    # on character-map authority, including colliding unmapped resources.
+    canonical=lambda value:re.sub(r'[^a-z0-9]','',
+        re.sub(r'-Identity-[HV]$', '', value, flags=re.I).casefold())
     name=canonical(name)
     matches=[value for key,value in faces.items()if canonical(key)==name]
     if matches:return all(matches)
