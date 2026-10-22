@@ -732,6 +732,19 @@ def _letter_number_identity(value):
 
 def _symbol_identity_conflict(original,chosen):
     """A mathematical glyph cannot be certified as alphabetic/numeric text."""
+    def enclosed_digit(value):
+        value=_key(value).rstrip('.,;:!?')
+        enclosed=(len(value)==3 and (value[0],value[-1])in(('(',')'),('[',']')))
+        core=value[1:-1]if enclosed else value
+        return (core,enclosed)if len(core)==1 and core in'0123456789'else (None,False)
+    left_digit,left_enclosed=enclosed_digit(original)
+    right_digit,right_enclosed=enclosed_digit(chosen)
+    # Conflicting guesses for an isolated enclosed mark do not establish that
+    # the print is a digit. Alphabet recognizers can agree on the same numeric
+    # substitute for drawn ink. Preserve its own print until identity is proved.
+    if (left_digit is not None and right_digit is not None
+            and left_digit!=right_digit and (left_enclosed or right_enclosed)):
+        return True
     def symbols(value):
         # Vulgar fractions are numeric characters, not mathematical-symbol
         # characters. Alphabet OCR agreement on a percent/digit guess cannot
