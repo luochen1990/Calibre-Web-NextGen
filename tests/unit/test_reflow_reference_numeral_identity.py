@@ -22,3 +22,25 @@ def test_unsettled_local_reference_is_print_but_ordinary_decimal_is_live(context
     pa.audit_local_numeric_suffixes(result,{i:w['bbox']for i,w in enumerate(source)},pa.CropWitness(source))
     assert bool(result['word_notes'].get(1,{}).get('source_image_only'))is(context=='See')
     assert result['tokens']==[w['text']for w in source],'The source image preserves the numeral; no replacement I is guessed'
+
+
+def test_optically_recovered_clause_keeps_unproved_reference_as_its_own_print(tmp_path,monkeypatch):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import answer,block
+    text='Read the next section. See 1.7.'
+    source=words(text)
+    witness=pa.CropWitness(source)
+    monkeypatch.setattr(pa,'read_crop',lambda *args:witness)
+    class Package:
+        def image(self,*args):pass
+    with pymupdf.open()as doc:
+        doc.new_page(width=400,height=150).insert_text((30,44),'Read the next section. See I.7.')
+        page,record=vp.compile_page(answer(block(text,bbox=(0,0,1000,1000))),[],
+            SourceDisplay(doc,0),0,Package(),{},pixel_words=source,forced_uncertain=('b1',),
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    unit=record['blocks'][0]
+    assert 5 in unit['source_image_words']
+    assert unit['published_tokens'][:5]==text.split()[:5]
+    assert 'source-word-image'in ''.join(page['body'])

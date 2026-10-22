@@ -3133,8 +3133,12 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     if i in result['marked'] and not t.startswith('<n:')}
                 result['adjudication']=list(result['word_notes'].values())
                 result['guard'].append(dict(kind='independent_crop_unavailable',reason=witness.failure))
-            if local_ocr and witness is not None:
+            if witness is not None and (local_ocr or (bid in forced_uncertain and not native_print_words)):
+                # Recovered optical clauses have no independent model reading.
+                # Their numeral identity needs the same print retention as a
+                # local-only first pass, without downgrading drawn native text.
                 pixel_adjudication.audit_local_numeric_suffixes(result,evidence_boxes,witness)
+            if local_ocr and witness is not None:
                 pixel_adjudication.audit_reverse_local_ink(result,evidence_boxes,witness,display,
                     territories,text_quality.english_lexicon())
                 if local_ocr_units is not None:source_unit['published_words']=list(result['tokens'])
