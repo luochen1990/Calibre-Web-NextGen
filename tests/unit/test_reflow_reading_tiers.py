@@ -86,3 +86,27 @@ def test_real_page_compiler_keeps_plausible_reading_with_its_own_print(tmp_path,
     assert record['blocks'][0]['flagged_readings']['1']['tier'] == 'flagged'
     assert record['blocks'][0]['source_image_words'] == []
 
+
+def test_numeric_identifier_cannot_be_a_silent_deleted_digit(tmp_path, monkeypatch):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa, vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import answer, block
+    printed='The printed position is 71E42 beside this marker.'
+    with pymupdf.open() as drawn, pymupdf.open() as scan:
+        p=drawn.new_page(width=400,height=150);p.insert_text((20,60),printed,fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in p.get_text('words')]
+        pg=scan.new_page(width=400,height=150);pg.insert_image(pg.rect,pixmap=p.get_pixmap())
+        wrong=[dict(w,text='7E42'if w['text']=='71E42'else w['text'])for w in source]
+        witness=pa.CropWitness(wrong);witness.model_reading=True
+        monkeypatch.setattr(pa,'read_crop',lambda *a,**kw:witness)
+        class Package:
+            def image(self,*a):pass
+        page,record=vp.compile_page(answer(block(printed.replace('71E42','7E42'))),source,
+            SourceDisplay(scan,0),0,Package(),{},pixel_words=source,regions={'b1':[[15,40,390,75]]},
+            body_owners={},note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    b=record['blocks'][0]; index=4
+    assert str(index) in b['flagged_readings']
+    assert b['published_tokens'][index]=='71E42'
+    assert b['flagged_readings'][str(index)]['method']=='source_complete_numeric_identifier'
+    assert 'reflow-flagged-reading' in ''.join(page['body'])

@@ -1423,6 +1423,18 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                     decisions.append(record);chosen.append((source_tokens[a],source[a]['bbox'],record))
                 else:chosen.append((proposed[b],source[a]['bbox'],None))
                 continue
+        if z-a==y-b==1:
+            from .reading_tiers import choose
+            proposal=choose(proposed[b],dict(status='UNRESOLVED',source=source_tokens[a:z],model=proposed[b:y]))
+            if proposal['method']=='source_complete_numeric_identifier':
+                # An old-style digit can disappear from both model and OCR.
+                # Generic alphabet agreement cannot prove that printed digit
+                # absent. Keep the complete source hypothesis explicitly flagged.
+                record=dict(source=source_tokens[a:z],model=proposed[b:y],chosen=source_tokens[a:z],
+                    status='UNRESOLVED',method='unproved_numeric_identifier',
+                    source_range=[a,z],model_range=[b,y])
+                decisions.append(record);chosen.append((source_tokens[a],source[a]['bbox'],record))
+                continue
         alternatives=[('source',original[a:z],source_tokens[a:z]),
                       ('model',candidate[b:y],proposed[b:y])]
         # At least one nonempty adjacent anchor must locate the edit. Empty
