@@ -2365,6 +2365,50 @@ def refine_fallback(tokens, witness, lexicon, source=(), corroboration=()):
     return dict(tokens=output,boxes=bounds,marked=set(notes),word_notes=notes,decisions=decisions)
 
 
+def audit_local_numeric_suffixes(result,boxes,witness):
+    """Read ambiguous suffix ink; never infer an ordinal from its numeral.
+
+    Small raised letters are often labelled as quotes or opaque symbols by
+    ordinary OCR. Alphabetic agreement on that guess does not identify them.
+    Two independent word-reading networks must see the complete literal suffix;
+    otherwise the complete original occurrence is retained as print.
+    """
+    import re
+    for i,token in enumerate(result['tokens']):
+        match=re.fullmatch(r'(\d+)([^\d\s]+)',token)
+        if not match or i not in boxes:continue
+        suffix=match[2]
+        if re.fullmatch(r'(?:st|nd|rd|th)[.,;:!?]?',suffix,re.I)or suffix in ('.',',',';',':','!',')',']'):continue
+        own=dict(text=token,bbox=boxes[i]);scope_reader=getattr(witness,'word_scope',None)
+        scope=scope_reader(own)if scope_reader is not None else None
+        bounds=list(scope or boxes[i]);reader=getattr(witness,'word_readings',None)
+        views=reader(dict(own,bbox=bounds))if reader is not None else []
+        def complete(view):
+            ink=[w for w in view if _same_occurrence(dict(bbox=bounds),w)]
+            if not 1<=len(ink)<=2 or any(w.get('confidence',0)<85 for w in ink):return None
+            if len(ink)==2:
+                number,raised=ink;left,right=number['bbox'],raised['bbox'];height=left[3]-left[1]
+                if not(number['text']==match[1]and re.fullmatch(r'st|nd|rd|th',raised['text'],re.I)
+                    and -.5<=right[0]-left[2]<=height*.4
+                    and right[3]<left[3]-height*.35):return None
+            literal=''.join(w['text']for w in ink)
+            if not re.fullmatch(re.escape(match[1])+r'(?:st|nd|rd|th)',literal,re.I):return None
+            if not _covers_ink_scope(ink,bounds):return None
+            return literal
+        chosen=None
+        for start in range(0,len(views)-1,2):
+            a,b=complete(views[start]),complete(views[start+1])
+            if a is not None and a==b:chosen=a;break
+        record=dict(source=[token],model=[token],chosen=[chosen or token],
+            status='RESOLVED'if chosen else'UNRESOLVED',
+            method='two_pixel_readings_raised_numeric_suffix'if chosen else'local_numeric_suffix_not_identified')
+        if chosen:result['tokens'][i]=chosen
+        else:record.update(source_image_only=True,source_bbox=bounds)
+        result.setdefault('word_notes',{})[i]=record
+        result.setdefault('adjudication',[]).append(record)
+        result['marked'].add(i);boxes[i]=bounds
+
+
 def audit_agreement(tokens, source, witness, boundary_proof=None, word_boxes=None,conserved_boundaries=None):
     """Flag pixel conflicts even where a layer and the first reading agree.
 
