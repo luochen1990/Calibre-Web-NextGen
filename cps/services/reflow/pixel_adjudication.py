@@ -38,6 +38,14 @@ def _quote_conflict(left,right):
     return a[0]==b[0] and a[1]!=b[1]
 
 
+def _roman_reference_conflict(left,right):
+    """Alphabet networks cannot settle a volume I versus digit 1 reference."""
+    import re
+    pattern=r'([I1l])((?:\.[0-9]+)+[.,;:]?)'
+    a,b=(re.fullmatch(pattern,_key(t))for t in(left,right))
+    return bool(a and b and a[2]==b[2]and a[1]!=b[1])
+
+
 def _initialism_mark_conflict(left,right,chosen=None):
     """Omitted internal dots are not proof that printed initials lack them."""
     import re
@@ -1532,6 +1540,17 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 stroke_conflict=stroke_conflict or unsafe_stroke
                 supported=[];word_choice=None;resampled=None;alternate=None
         if ordinal_conflict:supported=[choice for choice in supported if len(choice[1])==1 and _ordinal(choice[1][0])]
+        accent_conflict=(len(supported)==1 and (
+            _accent_conflict(''.join(supported[0][1]),''.join(proposed[b:y]))
+            or _accent_conflict(''.join(supported[0][1]),''.join(source_tokens[a:z]))))
+        if accent_conflict and alternate is not None:
+            marks=lambda value:{c for c in unicodedata.normalize('NFD',value)if unicodedata.combining(c)}
+            removed=(marks(''.join(source_tokens[a:z]))|marks(''.join(proposed[b:y])))-marks(alternate['text'])
+            absence=getattr(witness,'mark_absence',None)
+            if removed=={'\u0323'}and absence is not None and absence(alternate):accent_conflict=False
+        roman_conflict=(z-a==y-b==1 and _roman_reference_conflict(source_tokens[a],proposed[b]))
+        if accent_conflict or roman_conflict:
+            supported=[];boundary=None;word_choice=None;resampled=None;alternate=None
         quote_conflict=(z-a==y-b==1 and _quote_conflict(source_tokens[a],proposed[b])
             and (len(supported)!=1 or len(supported[0][1])!=1
                  or _quote_conflict(supported[0][1][0],proposed[b])
@@ -1626,7 +1645,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         retained_vision=(len(supported)!=1 and z-a==y-b==1
             and getattr(witness,'model_reading',False) and not unresolved_source
             and visible[b][0]not in pending and (source[a].get('confidence',0)<85 or partial_counter)
-            and not(ordinal_conflict or quote_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or divided_tail is not None or doubtful_fragment or eroded_numeric is not None or word_scope_conflict and not partial_counter
+            and not(ordinal_conflict or quote_conflict or accent_conflict or roman_conflict or symbol_conflict or initialism_conflict or incomplete_ink or partial_wrap or divided_tail is not None or doubtful_fragment or eroded_numeric is not None or word_scope_conflict and not partial_counter
                     or not (prefix_fragment or source[a].get('confidence',0)<85
                             and _weak_punctuation_tail(source_tokens[a],proposed[b]))
                     and _small_mark_conflict(source_tokens[a],proposed[b]))
@@ -1676,6 +1695,9 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             elif lexical_conflict:record['method']='unproved_shared_network_nonword'
             elif symbol_conflict:record['method']='unproved_mathematical_symbol_identity'
             elif network_conflict:record['method']='unproved_shared_network_word'
+        if (accent_conflict or roman_conflict)and not resolved:
+            record.update(source_image_only=True,source_bbox=list(source[a]['bbox']),
+                method='unproved_diacritic_identity'if accent_conflict else'unproved_reference_numeral_identity')
         if word_scope_conflict and not resolved:
             record.update(source_image_only=True,
                 source_bbox=list(word_scope or source[a]['bbox']),
@@ -2495,6 +2517,14 @@ def audit_local_numeric_suffixes(result,boxes,witness):
     """
     import re
     for i,token in enumerate(result['tokens']):
+        reference=(i>0 and result['tokens'][i-1].strip('([]').casefold()in('see','cf.','cf')
+            and re.fullmatch(r'1(?:\.[0-9]+)+[.,;:]?',token)and i in boxes)
+        if reference:
+            record=dict(source=[token],model=[token],chosen=[token],status='UNRESOLVED',
+                method='unproved_local_reference_numeral',source_image_only=True,source_bbox=list(boxes[i]))
+            result.setdefault('word_notes',{})[i]=record
+            result.setdefault('adjudication',[]).append(record);result['marked'].add(i)
+            continue
         match=re.fullmatch(r'(\d+)([^\d\s]+)',token)
         if not match or i not in boxes:continue
         suffix=match[2]
