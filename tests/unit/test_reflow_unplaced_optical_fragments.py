@@ -7,12 +7,13 @@ pytestmark=pytest.mark.unit
 
 @pytest.mark.parametrize('context_confidence',[60,99])
 @pytest.mark.parametrize('token',['respecti','f','ge','CJ'])
-def test_unresolved_source_fragment_needs_a_complete_independent_occurrence(token,context_confidence):
+@pytest.mark.parametrize('unresolved_source',[True,False])
+def test_unresolved_source_fragment_needs_a_complete_independent_occurrence(token,context_confidence,unresolved_source):
     source=[dict(text=t,bbox=[i*30,20,i*30+25,32],confidence=99)
             for i,t in enumerate(['Keep','the',token,'sample','readable.'])]
     witness=pa.CropWitness([dict(w,confidence=context_confidence)for w in source]);witness.word_scope=lambda word:None
     witness.word_readings=lambda word:[[dict(word,confidence=60)]]*2
-    result=pa.adjudicate(['Keep','the','sample','readable.'],source,witness,unresolved_source=True)
+    result=pa.adjudicate(['Keep','the','sample','readable.'],source,witness,unresolved_source=unresolved_source)
     assert result['tokens']==[w['text']for w in source]
     note=result['word_notes'][2]
     assert note.get('source_image_only'),'An unplaced optical fragment is visible as print, not a confident extra word'

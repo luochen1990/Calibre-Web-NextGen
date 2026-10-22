@@ -1693,7 +1693,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             # Repeating a source-only nonword in the block recognizer does not
             # settle a competing stroke seen at its own complete occurrence.
             supported=[];boundary=None;word_choice=None;resampled=None;alternate=None
-        if (unresolved_source and not proposed[b:y] and len(supported)==1
+        if (not proposed[b:y] and len(supported)==1
                 and supported[0][1]==source_tokens[a:z]
                 and any(_unproved_source_fragment(word,witness)for word in source[a:z])):
             # Context matching cannot certify a clipped fragment as an extra
@@ -1783,7 +1783,10 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 uncertain_optical=_unsettled_optical_nonword(word,witness)
                 if uncertain_optical is not None:
                     record.setdefault('word_alternatives',{})[j]=uncertain_optical['text']
-                fragment=(unresolved_source and _unproved_source_fragment(word,witness))
+                # The unit may have a usable first reading while this extra
+                # source-only fragment has none. Its own completeness proof
+                # cannot depend on whether the whole unit entered fallback.
+                fragment=_unproved_source_fragment(word,witness)
                 if word['text'] and (weak or counter or collision or unproved_multiword
                                      or fragment or ambiguous_numeric or uncertain_optical is not None):withheld.add(j)
             if withheld:record['method']='unproved_source_transcription_change'
