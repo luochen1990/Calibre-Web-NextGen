@@ -3394,8 +3394,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 result['marked'].add(index)
                 result.setdefault('word_notes',{})[index]=decision
                 result.setdefault('adjudication',[]).append(decision)
-            _remove_foreign_word_runs(result,bid,answer,pixel_words or [],regions)
             from . import reading_tiers
+            reading_tiers.conserve_punctuation_boundaries(result,baseline if adjudication else local,first_tokens if adjudication else proposed)
+            _remove_foreign_word_runs(result,bid,answer,pixel_words or [],regions)
             reading_tiers.join_letter_spaced_readings(result,witness or [])
             evidence_boxes=result['boxes']
             compiled_reading=' '.join(result['tokens'])
@@ -3430,7 +3431,6 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             if ((result['fallback'] or result['marked'])
                     and complete_check(compiled_reading)['needs_read']):
                 raise _DisclosureQualityRejection('Unreliable chosen reading requires original source disclosure')
-            from . import reading_tiers
             flagged_readings=reading_tiers.prepare(result)
             groups=[]
             for index in sorted(i for i in result['marked'] if not result['tokens'][i].startswith('<n:')):

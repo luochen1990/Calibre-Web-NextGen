@@ -153,3 +153,30 @@ def join_letter_spaced_readings(result, witness):
     result.setdefault('guard',[]).append(dict(kind='letter_spaced_printed_words',groups=[dict(
         original_indices=list(range(a,z)),reading=text,source_bbox=box)for a,z,text,box,note in groups]))
 
+
+def conserve_punctuation_boundaries(result, source, model):
+    """A source delimiter moved across whitespace is still one occurrence.
+
+    A local correction may keep a source's glued leading comma while the first
+    reader already placed that same comma on the preceding token. Account for
+    both source tokens and both model tokens before consuming the duplicate.
+    Two genuinely printed delimiters and decimal points are unchanged.
+    """
+    for index, note in list(result.get('word_notes',{}).items()):
+        chosen=result['tokens'][index]
+        if (index==0 or not chosen or chosen[0] not in ',.;:'
+                or not chosen[1:].isalpha() or note.get('status')!='RESOLVED'):
+            continue
+        a,z=note.get('source_range',[-1,-1]);b,y=note.get('model_range',[-1,-1])
+        if not(0<a<z<=len(source) and z-a==1 and 0<b<y<=len(model) and y-b==1):continue
+        glyph=chosen[0];left,right=source[a-1],source[a]
+        if (left['text'].endswith(tuple(',.;:')) or right['text'][:1]not in ',.;:'
+                or model[b]!=chosen[1:] or not model[b-1].endswith(glyph)
+                or not result['tokens'][index-1].endswith(glyph)):
+            continue
+        u,v=left['bbox'],right['bbox']
+        if not(min(u[3],v[3])>max(u[1],v[1]) and -.5<=v[0]-u[2]<=2*max(u[3]-u[1],v[3]-v[1])):continue
+        result['tokens'][index]=chosen[1:]
+        result['marked'].discard(index);result['word_notes'].pop(index,None)
+        result.setdefault('guard',[]).append(dict(kind='source_punctuation_boundary_conserved',
+            index=index,original_chosen=chosen,reading=chosen[1:],source_range=[a-1,z],model_range=[b-1,y]))
