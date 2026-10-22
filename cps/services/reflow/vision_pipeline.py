@@ -974,6 +974,55 @@ def _complete_native_reading_territory(block,answer,words,display,regions,body_o
     return candidate
 
 
+def _remove_foreign_word_runs(result,bid,answer,optical,regions):
+    """Remove a borrowed run only at a proved own-to-foreign source boundary.
+
+    Recovery can reserve the rest of a printed row as a new unit. A model's
+    unbound continuation must not publish those same occurrences again. Equal
+    words elsewhere, absent geometry and isolated unplaced words prove no copy.
+    """
+    if not regions or not optical:return
+    from .pixel_adjudication import _complete_word_occurrence, _key
+    tokens=result['tokens'];boxes=result['boxes'];removed=set();runs=[]
+    start=0
+    while start<len(tokens):
+        if start in boxes or tokens[start].startswith('<n:'):
+            start+=1;continue
+        end=start+1
+        while end<len(tokens)and end not in boxes and not tokens[end].startswith('<n:'):end+=1
+        if end-start>=2 and start>0 and start-1 in boxes:
+            literal=[_key(t)for t in tokens[start:end]];matches=[]
+            for offset in range(1,len(optical)-len(literal)+1):
+                prior=optical[offset-1]
+                if (_key(prior['text'])!=_key(tokens[start-1])
+                        or not _complete_word_occurrence(prior,dict(bbox=boxes[start-1]))):continue
+                words=optical[offset:offset+len(literal)]
+                if [_key(w['text'])for w in words]!=literal:continue
+                owners=[]
+                for word in words:
+                    own=regions.get('_instances',{}).get(_source_instance(word))
+                    if own is None:
+                        candidates=[b['id']for b in answer['blocks']if b['id']!=bid
+                            and any(owned_words([word],r)for r in regions.get(b['id'],[]))]
+                        own=candidates[0]if len(candidates)==1 else None
+                    owners.append(own)
+                if owners and len(set(owners))==1 and owners[0] not in (None,bid):
+                    matches.append((words,owners[0]))
+            if len(matches)==1:
+                words,owner=matches[0];removed.update(range(start,end))
+                runs.append(dict(indices=list(range(start,end)),words=tokens[start:end],owner=owner,
+                    source_boxes=[w['bbox']for w in words]))
+        start=end
+    if not removed:return
+    mapping={old:new for new,old in enumerate(i for i in range(len(tokens))if i not in removed)}
+    result['tokens']=[t for i,t in enumerate(tokens)if i not in removed]
+    for key in ('boxes','word_notes'):
+        result[key]={mapping[i]:v for i,v in result.get(key,{}).items()if i in mapping}
+    result['marked']={mapping[i]for i in result['marked']if i in mapping}
+    result['verified_unchanged']=[mapping[i]for i in result.get('verified_unchanged',[])if i in mapping]
+    result.setdefault('guard',[]).append(dict(kind='foreign_owned_run_published_once',runs=runs))
+
+
 def _coalesce_inline_source_images(pieces,display,pno,bid,package,images):
     """Publish overlapping adjacent ink once, with all inspection links intact.
 
@@ -3345,6 +3394,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 result['marked'].add(index)
                 result.setdefault('word_notes',{})[index]=decision
                 result.setdefault('adjudication',[]).append(decision)
+            _remove_foreign_word_runs(result,bid,answer,pixel_words or [],regions)
+            evidence_boxes=result['boxes']
             compiled_reading=' '.join(result['tokens'])
             lost_scripts=(text_quality.reading_script_mismatches(block['text'],compiled_reading)
                           if result['fallback'] else text_quality.script_mismatches(block['text'],compiled_reading))
