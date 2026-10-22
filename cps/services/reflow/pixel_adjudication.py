@@ -2538,7 +2538,11 @@ def audit_local_numeric_suffixes(result,boxes,witness):
         label_context=(i>0 and result['tokens'][i-1].strip('([]').casefold()
             in ('ch.','chapter','sec.','section','vol.','volume')
             and re.fullmatch(r'[A-ZIl|0-9]{1,6}[.,;:]?',token)and i in boxes)
-        if label_context:
+        # A local-only Roman-looking label with an alien trailing capital
+        # may be a collapsed numeral/punctuation sequence. Its first optical
+        # spelling is not a second proof of that same short occurrence.
+        roman_shaped=(i in boxes and re.fullmatch(r'[IVXLCDM]{2,}[A-HJ-KN-UW-Y][.,;:]?',token))
+        if label_context or roman_shaped:
             own=dict(text=token,bbox=boxes[i])
             reader=getattr(witness,'word_readings',None)
             views=reader(own)if reader is not None else []

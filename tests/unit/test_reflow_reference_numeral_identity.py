@@ -59,3 +59,18 @@ def test_local_short_reference_label_needs_complete_independent_identity(proved)
     assert result['tokens']==[w['text']for w in source],'Reference identity is never guessed from its context'
     assert bool(result['word_notes'].get(2,{}).get('source_image_only'))is not proved
     assert 0 not in result['marked']and 3 not in result['marked']
+
+
+@pytest.mark.parametrize('proved', [False, True])
+def test_local_roman_shaped_abbreviation_requires_complete_literal_identity(proved):
+    source = words('The citation ends VIT.')
+    word = source[3]
+    witness = pa.CropWitness(source)
+    witness.word_readings = lambda value: [
+        [dict(value, confidence=99)],
+        [dict(value, text=value['text'] if proved else 'VII.1', confidence=99)]]
+    result = dict(tokens=[w['text'] for w in source], word_notes={}, marked=set())
+    pa.audit_local_numeric_suffixes(result, {i:w['bbox'] for i,w in enumerate(source)}, witness)
+    assert bool(result['word_notes'].get(3, {}).get('source_image_only')) is not proved
+    assert result['tokens'] == [w['text'] for w in source]
+    assert not ({0,1,2} & result['marked'])
