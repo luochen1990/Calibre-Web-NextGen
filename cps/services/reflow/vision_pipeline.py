@@ -1017,10 +1017,18 @@ def _owned_block_words(block,answer,items,display,regions=None,body_owners=None,
             overlap=(min(prior[2],territory[2])-max(prior[0],territory[0]) if prior else 0)
             same_column=(prior is not None and overlap>=.5*min(prior[2]-prior[0],territory[2]-territory[0])
                          and prior[1]<=territory[1]<=prior[3]+2*height)
+            # A raised terminal symbol can form a tiny territory before its
+            # baseline text. Join only a single physically adjacent row, so
+            # vertical sorting cannot move that glyph to the paragraph head.
+            same_row=(bool(ordered_groups) and
+                      len(_pixel_lines(ordered_groups[-1][1]+local))==1 and
+                      any(-.1*height<=w['bbox'][0]-v['bbox'][2]<=2*height or
+                          -.1*height<=v['bbox'][0]-w['bbox'][2]<=2*height
+                          for w in local for v in ordered_groups[-1][1]))
             # Rounding can admit the last word of a split row through the first
             # territory. Order the connected column as one occurrence inventory;
             # a following column keeps its supplied reading-flow position.
-            if same_column:
+            if same_column or same_row:
                 ordered_groups[-1][0]=territory;ordered_groups[-1][1].extend(local)
             else:ordered_groups.append([territory,list(local)])
     while pending_additions:
@@ -3890,10 +3898,15 @@ def bind_geometry(answer,optical,display,regions=None,body_owners=None):
             # source object separates them within the proved text column.
             compact=vision_reading.union([optical[i]['bbox']for i,j in corroborated])
             extent=vision_reading.union([optical[i]['bbox']for i,j in matched])
-            extra=[optical[i]['bbox']for i,j in matched if (i,j)not in corroborated]
-            same_column=all(min(box[2],compact[2])>max(box[0],compact[0])for box in extra)
-            art_between=any(box[1]>extent[1] and box[3]<extent[3]
-                and min(box[2],compact[2])>max(box[0],compact[0])
+            rows=[vision_reading.union([word['bbox']for word in row])
+                  for row in _pixel_lines([optical[i]for i,j in matched])]
+            # A broad row can extend beside a narrower wrapped row. Column
+            # continuity is a row-span property, not an every-word overlap.
+            same_column=all(min(box[2],compact[2])>max(box[0],compact[0])for box in rows)
+            ordered_rows=sorted(rows,key=lambda box:box[1])
+            art_between=any(any(left[3]<box[3] and box[1]<right[1]
+                                for left,right in zip(ordered_rows,ordered_rows[1:]))
+                and min(box[2],extent[2])>max(box[0],extent[0])
                 for other in answer['blocks']if other['role']in ('figure','table')
                 for box in [block_rect(other,display)])
             if same_column and art_between:corroborated=matched

@@ -253,3 +253,39 @@ def test_sparse_remote_tail_cannot_complete_an_unplaced_long_continuation(monkey
     assert regions == [[30, 350, 142, 406]]
     assert not any(vp.owned_words([w], r) for w in optical if w['bbox'][0]>=300
                    for r in regions)
+
+
+def test_complete_wrapped_rows_keep_their_broad_row_across_source_art(monkeypatch):
+    from cps.services.reflow import source_geometry
+    monkeypatch.setattr(vp,'_reserve_object_instances',lambda *args:None)
+    lines = ['Careful workers cross the broad room before recording observations.',
+             'Narrow rows remain beside the illustration.',
+             'Later words complete the same paragraph.']
+    optical = [word(t, x+27*i, y, 24) for x,y,line in
+               [(25,70,lines[0]),(150,250,lines[1]),(150,265,lines[2])]
+               for i,t in enumerate(line.split())]
+    all_pairs=list(enumerate(range(len(optical))))
+    narrow=all_pairs[len(lines[0].split()):]
+    monkeypatch.setattr(source_geometry,'unique_anchors',lambda *args,**kwargs:narrow)
+    monkeypatch.setattr(vp,'_geometry_anchors',lambda *args,**kwargs:all_pairs)
+    block=dict(id='wrapped',role='body',text=' '.join(lines),bbox=[20,80,950,400],
+               marker='',low_confidence=[],continues_previous=False,continues_next=False)
+    art=dict(block,id='art',role='figure',text='',bbox=[50,160,280,300])
+    regions={};display=SimpleNamespace(rect=pymupdf.Rect(0,0,500,720),pno=0)
+    vp.bind_geometry({'blocks':[block,art]},optical,display,regions,{})
+    assert all(regions['_instances'].get(vp._source_instance(w))=='wrapped' for w in optical)
+    assert len(regions['wrapped'])>=2,'original artwork gap keeps distinct territories'
+
+
+def test_raised_terminal_symbol_stays_after_its_own_baseline_words():
+    optical=[dict(text='*',bbox=[110.7,40.2,111.9,43.1])]
+    optical += [dict(text=t,bbox=b)for t,b in
+                [('The',[22,41.7,35,45.9]),('quiet',[37,41.7,57,45.9]),
+                 ('bridge.',[59,41.7,109.1,45.9])]]
+    block=dict(id='body',role='body',text='The quiet bridge. *',marker='',
+               bbox=[0,0,1000,1000],low_confidence=[],continues_previous=False,
+               continues_next=False)
+    regions={'body':[[110.7,40.2,111.9,43.1],[22,41.7,109.1,45.9]]}
+    display=SimpleNamespace(rect=pymupdf.Rect(0,0,300,400))
+    actual=vp._owned_block_words(block,{'blocks':[block]},optical,display,regions,ordered=True)
+    assert [w['text']for w in actual]==['The','quiet','bridge.','*']
