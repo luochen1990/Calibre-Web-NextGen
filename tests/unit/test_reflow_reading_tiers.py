@@ -166,3 +166,50 @@ def test_native_assistance_keeps_its_first_reading_without_lexical_overrule():
                   status='UNRESOLVED',method='pixel_read_inconclusive')
     choice=tiers.choose('remalns',decision,rank_lexical=False)
     assert choice['tier']=='flagged' and choice['reading']=='remalns'
+
+
+@pytest.mark.parametrize('prove_one',[False,True])
+def test_compiler_appends_separate_legible_print_for_each_physical_line(tmp_path,monkeypatch,prove_one):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa,vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import answer,block
+    lines=['The garden grows green.','The clear sample remains readable.']
+    printed=' '.join(lines)
+    with pymupdf.open()as drawn,pymupdf.open()as scan:
+        pg=drawn.new_page(width=350,height=180)
+        for y,line in zip((60,90),lines):pg.insert_text((30,y),line,fontsize=16)
+        words=[dict(text=w[4],bbox=list(w[:4]),confidence=95)for w in pg.get_text('words')]
+        pg=scan.new_page(width=350,height=180);pg.insert_image(pg.rect,pixmap=drawn[0].get_pixmap())
+        monkeypatch.setattr(pa,'read_crop',lambda *a,**kw:pa.CropWitness(words))
+        original=pa.adjudicate
+        def unsettled(*a,**kw):
+            result=original(*a,**kw);result['adjudication']=[]
+            result['marked']=set(range(len(result['tokens'])))
+            result['word_notes']={i:dict(source=[word],model=[word],chosen=[word],
+                status='UNRESOLVED',method='pixel_read_inconclusive',source_bbox=words[i]['bbox'])
+                for i,word in enumerate(result['tokens'])}
+            if prove_one:result['word_notes'][2].update(status='RESOLVED',method='independent_upright_crop')
+            return result
+        monkeypatch.setattr(pa,'adjudicate',unsettled)
+        class Package:
+            def __init__(self):self.data={}
+            def image(self,name,data):self.data[name]=data
+        package=Package();images={}
+        page,record=vp.compile_page(answer(block(printed)),words,SourceDisplay(scan,0),0,
+            package,images,pixel_words=words,regions={'b1':[[25,40,310,100]]},body_owners={},
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    expected=[word for i,word in enumerate(printed.split())if not(prove_one and i==2)]
+    root,flags=assert_flagged_print(''.join(page['body']),expected)
+    def visible(node):
+        if 'source-disclosure-ref' in node.get('class','').split():return ''
+        return (node.text or '')+''.join(visible(child)+(child.tail or '') for child in node)
+    assert visible(root).split()==printed.split(),'A proved neighbor cannot hide a plausible word'
+    assert len(flags)>=2,'Two printed rows cannot be shrunk into one inline image'
+    for flag in flags:
+        reading=''.join(flag.find('span').itertext()).split()
+        assert any(all(word in line.split() for word in reading)for line in lines)
+        image=flag.find('.//img');metadata=images[image.get('src')]
+        assert metadata['kind']=='inline_print_preview'
+        assert metadata['xheight']<16,'The body letter height must not include the line gap'
+        assert metadata['height_em']>=1

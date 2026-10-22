@@ -51,6 +51,11 @@ def preview(display, word_box):
     peak=max(rows,default=0)
     dense=[i for i,n in enumerate(rows) if peak and n>=peak*.5]
     if not dense:return None
+    # A gap between dense ink bands identifies separate printed rows. Their
+    # combined height is not a font x-height; keep the complete inspection
+    # asset rather than shrink several lines into one inline word.
+    if any(b-a>max(2,round(2.5*sy)) for a,b in zip(dense,dense[1:])):
+        return None
     xheight=max(4,dense[-1]-dense[0]+1)/sy
     baseline=line.y0+(dense[-1]+1)/sy
     # Disjoint printed rows need individual previews; a broad block rectangle

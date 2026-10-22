@@ -1034,6 +1034,10 @@ def _coalesce_inline_source_images(pieces,display,pno,bid,package,images):
     pattern=re.compile(r'<a\b[^>]*class="source-word-image"[^>]*>\s*<img\b[^>]*src="([^"]+)"[^>]*/>\s*</a>')
     groups=[]
     for index,piece in enumerate(pieces):
+        # Appended print accompanies live words and may share a broad receipt
+        # with another run. It is not a repeated print-only word to coalesce.
+        if 'class="reflow-flagged-reading"' in piece:
+            groups.append([]);continue
         match=pattern.search(piece)
         image=images.get(match[1])if match else None
         if not image or not image.get('bbox')or image.get('source_parts'):
@@ -3473,6 +3477,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 resolved_local={i for i,d in (result.get('word_notes') or {}).items() if d['status']=='RESOLVED'} if local_ocr else set()
                 image_words={i for i,d in (result.get('word_notes') or {}).items() if d.get('source_image_only')}
                 if ((local_ocr or not result.get('adjudication')) and groups and index==groups[-1][-1]+1
+                        and (index in flagged_readings)==(groups[-1][-1] in flagged_readings)
                         and index not in literal and groups[-1][-1] not in literal
                         and index not in individual_receipts and groups[-1][-1] not in individual_receipts
                         and index not in resolved_local and groups[-1][-1] not in resolved_local
@@ -3495,6 +3500,41 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 merged.append(list(group))
             groups=merged
             endings={g[-1]:g for g in groups}
+            print_groups=reading_tiers.bound_print_runs(groups,flagged_readings,evidence_boxes)
+            print_endings={g[-1]:g for g in print_groups if all(i in flagged_readings for i in g)}
+            print_owners={i:g[-1] for g in groups for i in g}
+            emission_groups={**endings,**print_endings}
+
+            def flagged_piece(indices, ident, inspection_src, reading_html=None):
+                # Presentation runs may be shorter than the original warning.
+                # Every run links to that same complete, source-owned receipt;
+                # only the final run needs its dagger and return origin.
+                own=[evidence_boxes[i] for i in indices if i in evidence_boxes]
+                crop=vision_reading.union(own) if len(own)==len(indices) else box
+                decision={}
+                if len(indices)==1:
+                    decision=result.get('word_notes',{}).get(indices[0],{})
+                    if decision.get('source_bbox') and decision.get('source_image_only_before_publication'):
+                        crop=decision['source_bbox']
+                from . import inline_print
+                inline_src=inspection_src;style='height:1.4em;vertical-align:-0.25em;width:auto'
+                preview=inline_print.preview(display,crop) if len(territories)==1 and not decision.get('source_parts') else None
+                suffix='' if indices==endings[print_owners[indices[-1]]] else '-run-'+str(indices[-1])
+                if preview is not None and hasattr(package,'image'):
+                    data,metrics=preview;inline_src=f'images/{ident}{suffix}-inline.png'
+                    package.image(inline_src,data)
+                    image_records[inline_src]=dict(page=pno,kind='inline_print_preview',coverage_eligible=False,
+                        inspection_image=inspection_src,**metrics)
+                    style=metrics['style']
+                elif suffix:
+                    inline_src=f'images/{ident}{suffix}.jpg'
+                    clip=(extract.pymupdf.Rect(crop)+(-2,-2,2,2)) & display.rect
+                    _word_disclosure_image(package,inline_src,display,clip)
+                    image_records[inline_src]=dict(page=pno,bbox=list(clip),kind='vision_disclosure',
+                        coverage_eligible=False,inspection_image=inspection_src)
+                reading=''.join(('' if j==0 or i in wraps else ' ')+result['tokens'][i]
+                    for j,i in enumerate(indices))
+                return reading_tiers.flagged_html(reading,inline_src,ident,style,reading_html=reading_html)
             # Reject each chosen span before emitting markers or source images.
             # Keep the rendering-time check as a defensive publication boundary.
             for group in groups:
@@ -3587,7 +3627,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             marker_record.update(unit,unit_kind='note_marker',status='DEGRADED_SOURCE_CONTEXT')
                             marker_disclosures.append(marker_record)
                     pieces.append(piece);continue
-                if index in flagged_readings and not any(index==group[-1] for group in groups):
+                if index in flagged_readings and index not in print_endings:
                     pieces.append('');continue
                 piece=escape(token)
                 if index in literal:
@@ -3597,6 +3637,10 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         parts.append(escape(token[start:a])+f'<a id="{ref}" class="noteref" epub:type="noteref" href="#{note_context["catalogue"][owner]["target"]}"><sup>{escape(label)}</sup></a>')
                         note_context['refs'].setdefault(owner,[]).append(ref);start=b
                     piece=''.join(parts)+escape(token[start:])
+                if index in print_endings and index not in endings:
+                    ident=f'v4-d-{pno}-{bid}-{print_owners[index]}'
+                    piece=flagged_piece(print_endings[index],ident,f'images/{ident}.jpg',
+                        reading_html=piece if index in literal else None)
                 if index in endings:
                     chosen_reading=''.join((''if j==0 or i in wraps else' ')+result['tokens'][i]
                         for j,i in enumerate(endings[index]))
@@ -3662,7 +3706,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         label='Unverified local OCR reading'if local_ocr else'Unresolved source reading'
                         explanation='Plausible reading; it has not been independently proved. Compare the adjacent original print. '+explanation
                     extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>{label}: {explanation}</p><img src="{src}" alt="Original printed reading"/><a href="#{ref}">Return</a></aside>')
-                    if index in flagged_readings or decision and decision.get('source_image_only'):
+                    if index in flagged_readings:
+                        piece=flagged_piece(print_endings[index],ident,src,reading_html=piece if index in literal else None)
+                    elif decision and decision.get('source_image_only'):
                         from . import inline_print
                         inline_src=src;inline_style='height:1.4em;vertical-align:-0.25em;width:auto'
                         preview=(inline_print.preview(display,crop)
@@ -3674,11 +3720,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                             image_records[inline_src]=dict(page=pno,kind='inline_print_preview',coverage_eligible=False,
                                 inspection_image=src,**metrics)
                             inline_style=metrics['style']
-                        if index in flagged_readings:
-                            piece=reading_tiers.flagged_html(chosen_reading,inline_src,ident,inline_style,reading_html=piece if index in literal else None)
-                        else:
-                            piece=(f'<a class="source-word-image" href="#{ident}"><img src="{inline_src}" '
-                                f'alt="Unresolved printed word; inspect original" style="{inline_style}"/></a>')
+                        piece=(f'<a class="source-word-image" href="#{ident}"><img src="{inline_src}" '
+                            f'alt="Unresolved printed word; inspect original" style="{inline_style}"/></a>')
                     piece+=f'<a id="{ref}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'
                 if local_ocr and index in result['marked']:
                     piece='<span class="uncertain" title="Unverified local OCR reading">'+piece+'</span>'
@@ -3721,7 +3764,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 marked+=1
                 for row in missing:row.update(disposition='print',image=unit['image'],
                     source_reference=target,method='unplaced_occurrence_original_print')
-            text=''.join(('' if (endings.get(i,[i])[0]==0 or endings.get(i,[i])[0] in wraps) else ' ')+piece
+            text=''.join(('' if (emission_groups.get(i,[i])[0]==0 or emission_groups.get(i,[i])[0] in wraps) else ' ')+piece
                          for i,piece in enumerate(pieces) if piece)
             # The marker is typographic punctuation, not a standalone sentence block.
             text=re.sub(r'\s+(<a[^>]*class="noteref".*?</a>)',r'\1',text)

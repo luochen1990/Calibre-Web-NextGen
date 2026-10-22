@@ -28,3 +28,14 @@ def test_inline_word_uses_printed_line_scale_instead_of_paper_box(scanned):
     assert metric['height_em']>1
     assert len(set(image.tobytes()))>2,'Anti-aliased strokes must not be thresholded away'
     assert metric['bbox'][1]<metric['baseline']<metric['bbox'][3]
+
+
+def test_multiline_source_box_cannot_supply_single_line_preview_metrics():
+    with pymupdf.open() as doc:
+        page=doc.new_page(width=350,height=180)
+        page.insert_text((30,60),'The garden grows green.',fontsize=16)
+        page.insert_text((30,90),'The clear sample remains readable.',fontsize=16)
+        words=page.get_text('words')
+        box=[min(w[0] for w in words),min(w[1] for w in words),
+             max(w[2] for w in words),max(w[3] for w in words)]
+        assert inline_print.preview(SourceDisplay(doc,0),box) is None

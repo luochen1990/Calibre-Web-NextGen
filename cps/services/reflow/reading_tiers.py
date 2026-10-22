@@ -291,3 +291,32 @@ def settle_repeated_word_shapes(result,display):
                 reading=proof['reading'],method=proof['method']))
         notes[i]=resolved
         result.setdefault('adjudication',[]).append(resolved)
+
+
+def bound_print_runs(groups, flagged, boxes):
+    """Each appended print run follows one row at a readable inline width.
+
+    A block-level OCR warning can cover several lines. It is not one large
+    glyph: preserve all of its reading and split only its presentation.
+    Missing geometric evidence prevents joining, rather than borrowing a row.
+    """
+    output=[]
+    for group in groups:
+        if not all(i in flagged for i in group):
+            output.append(group);continue
+        current=[]
+        for index in group:
+            candidate=current+[index]
+            own=[boxes[i] for i in candidate if i in boxes]
+            join=len(own)==len(candidate) and len(candidate)<=8
+            if join and len(own)>1:
+                heights=[b[3]-b[1] for b in own]
+                join=min(heights)>0 and max(b[2] for b in own)-min(b[0] for b in own)<=10*min(heights)
+                for a,b in zip(own,own[1:]):
+                    join=join and (min(a[3],b[3])-max(a[1],b[1])>=.5*min(a[3]-a[1],b[3]-b[1])
+                        and -.5<=b[0]-a[2]<=1.5*max(a[3]-a[1],b[3]-b[1]))
+            if current and not join:
+                output.append(current);current=[]
+            current.append(index)
+        if current:output.append(current)
+    return output
