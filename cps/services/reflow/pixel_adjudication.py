@@ -1080,14 +1080,14 @@ def _without_fragment_aliases(model,source,witness):
     """One printed word cannot acquire an extra live fragment over its ink.
 
     Require a unique complete source word repeated by the first reader and a
-    strong independent pixel occurrence. A separate short word, a distant match
+    strong independent pixel occurrence. A separate word, a distant match
     or a model omission supplies no alias proof.
     """
     literals={_key(t).strip('.,;:!?')for t in model}
     result=[]
     for index,word in enumerate(source):
         text=_key(word['text']).strip('.,;:!?');a=word['bbox'];owners=[]
-        if text.isascii()and text.isalpha()and len(text)<=3 and text not in literals:
+        if text.isascii()and text.isalpha()and text not in literals:
             for j,other in enumerate(source):
                 full=_key(other['text']).strip('.,;:!?');b=other['bbox']
                 if j==index or len(full)<=len(text)or text not in full or full not in literals:continue
