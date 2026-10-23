@@ -1031,6 +1031,42 @@ def _remove_foreign_word_runs(result,bid,answer,optical,regions):
     result.setdefault('guard',[]).append(dict(kind='foreign_owned_run_published_once',runs=runs))
 
 
+def _present_print_only_images(text,display,pno,bid,territories,package,images,extras):
+    """A declined picture-only word preview becomes a shared block, not tiny ink.
+
+    The original per-occurrence inspection assets still own their exact source
+    parts. This unmasked unit preview is display context only; it earns no new
+    occurrence coverage and makes no transcription claim.
+    """
+    flags=[m.span()for m in re.finditer(r'<span class="reflow-flagged-reading">.*?</a></span>',text,re.S)]
+    pattern=re.compile(r'<a class="source-word-image"[^>]*href="#([^"]+)"[^>]*><img src="([^"]+)"[^>]*/></a>'
+        r'(<a id="([^"]+)" class="source-disclosure-ref" epub:type="noteref" href="#\1"><sup>†</sup></a>)')
+    candidates=[m for m in pattern.finditer(text)if not any(a<=m.start()<b for a,b in flags)]
+    selected=[m for m in candidates if images.get(m[2],{}).get('kind')!='inline_print_preview']
+    offsets={m.start()for m in selected};compact={m.start()for m in candidates}-offsets
+    text=pattern.sub(lambda m:''if m.start()in offsets else
+        '<span class="reflow-print-control">'+m[0]+'</span>'if m.start()in compact else m[0],text)
+    if not selected:return text,''
+    boxes=[]
+    for match in selected:
+        asset=images.get(match[2],{})
+        inspection=images.get(asset.get('inspection_image',match[2]),asset)
+        if inspection.get('bbox'):boxes.append(inspection['bbox'])
+    bounds=list(extract.pymupdf.Rect(vision_reading.union(boxes or territories))&display.rect)
+    ident=f'v4-d-unit-ink-{pno}-{bid}';origin='r-'+ident;src=f'images/{ident}.jpg'
+    _word_disclosure_image(package,src,display,bounds)
+    images[src]=dict(page=pno,block=bid,bbox=bounds,kind='print_only_unit_preview',
+        coverage_eligible=False,reason='refused_picture_only_preview',printed_runs=len(selected))
+    details=''.join('<li><a href="#'+m[1]+'">Inspect printed span</a></li>'for m in selected)
+    extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>Unresolved words are retained in this original print.</p><img src="{src}" alt="Original printed reading"/><ul>{details}</ul><a href="#{origin}">Return</a></aside>')
+    # Preserve every existing inspection return destination, now at the shared
+    # print. Only its one visible control is a disclosure marker.
+    anchors=''.join('<a id="'+m[4]+'" href="#'+m[1]+'"></a>'for m in selected)
+    supplement=(f'<div class="reflow-unit-print">{anchors}<a class="source-word-image" href="#{ident}">'
+        f'<img src="{src}" alt=""/></a><a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a></div>')
+    return text,supplement
+
+
 def _present_flagged_prints(text,display,pno,bid,territories,package,images,extras):
     """Declined word previews and dense assistance use one legible unit print.
 
@@ -1038,10 +1074,11 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
     never supplies inline word metrics. The live hypotheses remain underlined;
     their shared print follows the paragraph, without duplicating every phrase.
     """
+    text,print_only_html=_present_print_only_images(text,display,pno,bid,territories,package,images,extras)
     pattern=re.compile(r'<span class="reflow-flagged-reading"><span class="reflow-plausible">(.*?)</span>'
         r'<a class="source-word-image"(?: title="Inspect original print")? href="#([^"]+)"><img src="([^"]+)"[^>]*?/></a></span>',re.S)
     matches=list(pattern.finditer(text))
-    if not matches:return text,''
+    if not matches:return text,print_only_html
     refused=any(images.get(m[3],{}).get('kind')!='inline_print_preview'for m in matches)
     flagged=sum(len(re.sub(r'<[^>]+>',' ',m[1]).split())for m in matches)
     total=len(re.sub(r'<[^>]+>',' ',text).split())
@@ -1049,7 +1086,7 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
     # Only the compact evidence control is atomic, not the live reading.
     control=re.compile(r'(<a class="source-word-image"(?: title="Inspect original print")? href="#[^"]+"><img [^>]+/></a>)(</span>)(<a id="[^"]+" class="source-disclosure-ref" epub:type="noteref" href="#[^"]+"><sup>†</sup></a>)')
     if not(refused or dense):
-        return control.sub(r'<span class="reflow-print-control">\1\3</span>\2',text),''
+        return control.sub(r'<span class="reflow-print-control">\1\3</span>\2',text),print_only_html
     refused_targets={m[2]for m in matches if images.get(m[3],{}).get('kind')!='inline_print_preview'}
     selected=[m for m in matches if dense or m[2]in refused_targets]
     targets={m[2]for m in selected}
@@ -1085,7 +1122,7 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
     supplement=(f'<div class="reflow-unit-print"><a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}">'
         f'<img src="{src}" alt=""/><sup>†</sup></a></div>')
     text=control.sub(r'<span class="reflow-print-control">\1\3</span>\2',text)
-    return text,supplement
+    return text,print_only_html+supplement
 
 
 def _coalesce_inline_source_images(pieces,display,pno,bid,package,images):

@@ -204,3 +204,51 @@ def test_live_text_projection_keeps_named_reading_links_and_anchor_tails():
     from tests.unit.test_round4_defects import plain
     node=ET.fromstring('<p xmlns="http://www.w3.org/1999/xhtml">The <span class="reflow-plausible"><a title="Compare this reading with original print" href="#detail">garden</a></span><a href="#detail"><sup>†</sup></a> grows.</p>')
     assert plain(node)=='The garden grows.'
+
+
+@pytest.mark.parametrize('count',[1,2])
+def test_refused_picture_only_words_publish_legible_unit_print_not_inline_inspection(tmp_path,monkeypatch,count):
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from tests.unit.test_reflow_vision_pilot import answer,block
+    from lxml import etree
+    printed='The clear garden grows beside the quiet green path in summer.'
+    with pymupdf.open()as drawn,pymupdf.open()as scan:
+        source=drawn.new_page(width=420,height=160)
+        source.insert_text((20,60),printed,fontsize=12)
+        words=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in source.get_text('words')]
+        page=scan.new_page(width=420,height=160);page.insert_image(page.rect,pixmap=source.get_pixmap())
+        monkeypatch.setattr(pa,'read_crop',lambda *a,**k:pa.CropWitness(words))
+        original=pa.adjudicate
+        def uncertain(*a,**kw):
+            result=original(*a,**kw)
+            for i in [2,4][:count]:
+                result['marked'].add(i)
+                result.setdefault('word_notes',{})[i]=dict(status='UNRESOLVED',
+                    source=[result['tokens'][i]],model=[result['tokens'][i]],chosen=[result['tokens'][i]],
+                    source_image_only=True,source_bbox=words[i]['bbox'],
+                    method='unproved_complete_word_scope',source_range=[i,i+1],model_range=[i,i+1])
+            return result
+        monkeypatch.setattr(pa,'adjudicate',uncertain)
+        monkeypatch.setattr(inline_print,'preview',lambda *a:None)
+        class Package:
+            def __init__(self):self.images={}
+            def image(self,name,data):self.images[name]=data
+        package=Package();assets={}
+        compiled,receipt=vp.compile_page(answer(block(printed)),words,SourceDisplay(scan,0),0,
+            package,assets,pixel_words=words,regions={'b1':[[15,40,410,75]]},body_owners={},
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    root=etree.fromstring(('<div xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(compiled['body'])+'</div>').encode())
+    assert not root.xpath('.//p//a[@class="source-word-image"]/img'), 'A declined one-line print must never fall back to a tiny full inspection image'
+    prints=root.xpath('.//div[@class="reflow-unit-print"]')
+    assert len(prints)==1,'Picture-only evidence is shared once after the unit'
+    assert len(prints[0].xpath('.//img'))==1
+    assert 'height:1.4em'not in prints[0].xpath('.//img')[0].get('style','')
+    assert len(root.xpath('.//sup[text()="†"]'))==1
+    complete=etree.fromstring(('<div xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(compiled['body']+compiled['asides'])+'</div>').encode())
+    for image in complete.xpath('.//img'):
+        assert image.get('src')in package.images
+    for control in complete.xpath('.//a[starts-with(@href,"#")]'):
+        assert len(complete.xpath('//*[@id=$target]',target=control.get('href')[1:]))==1
+    assert receipt['blocks'][0]['published_tokens']==printed.split()
+    assert len(receipt['blocks'][0]['source_image_words'])==count
+    assert not root.xpath('.//span[@class="reflow-flagged-reading"]')
