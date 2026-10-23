@@ -224,9 +224,21 @@ def join_fragmented_readings(result, witness):
         source=decision.get('source',[]);model=decision.get('model',[])
         if (decision.get('status')!='UNRESOLVED'
                 or decision.get('method')!='unproved_source_transcription_change'
-                or not 2<=len(source)<=6 or len(model)!=1
-                or not all(t.isalpha()for t in source+model)
-                or SequenceMatcher(None,''.join(source).casefold(),model[0].casefold()).ratio()<.65):continue
+                or not 2<=len(source)<=6 or len(model)!=1):continue
+        letters=(all(t.isalpha()for t in source+model)
+            and SequenceMatcher(None,''.join(source).casefold(),model[0].casefold()).ratio()>=.65)
+        # A complete first-reader ordinal is another whole-word hypothesis.
+        # Optical pieces may call an old-style numeral I/l or omit its tiny
+        # raised stroke. Rank that existing typed reading only after the same
+        # geometric and measured-ink boundary checks below; never certify it.
+        ordinal=False
+        if (re.fullmatch(r'\d{1,3}(?:st|nd|rd|th)',model[0],re.I)
+                and all(t.isascii() and t.isalnum()for t in source)):
+            optical=''.join(source).translate(str.maketrans({'I':'1','i':'1','l':'1','O':'0','o':'0'})).casefold()
+            edits=sum(max(b-a,d-c)for op,a,b,c,d in
+                SequenceMatcher(None,optical,model[0].casefold(),autojunk=False).get_opcodes()if op!='equal')
+            ordinal=edits<=1
+        if not(letters or ordinal):continue
         positions=[i for i in range(len(tokens)-len(source)+1)
             if tokens[i:i+len(source)]==source and all(
                 j in result['marked'] and j in result['boxes']

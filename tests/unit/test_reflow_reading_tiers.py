@@ -248,14 +248,15 @@ def test_dictionary_ranker_cannot_erase_a_reader_diacritic_or_possessive(first, 
     assert choice['reading'] == first
 
 
+@pytest.mark.parametrize('whole,pieces',[('carefully',['care','fuily']),('11th',['I','Ith'])])
 @pytest.mark.parametrize('split_source_ranges',[False,True])
 @pytest.mark.parametrize('boundary',[True,False,None])
-def test_real_compiler_assigns_a_tier_to_the_whole_word_not_its_optical_fragments(tmp_path,monkeypatch,boundary,split_source_ranges):
+def test_real_compiler_assigns_a_tier_to_the_whole_word_not_its_optical_fragments(tmp_path,monkeypatch,boundary,split_source_ranges,whole,pieces):
     import pymupdf
     from cps.services.reflow import pixel_adjudication as pa,vision_pipeline as vp
     from cps.services.reflow.source_display import SourceDisplay
     from tests.unit.test_reflow_vision_pilot import answer,block
-    printed='The clear garden grows carefully today.'
+    printed=f'The clear garden grows {whole} today.'
     with pymupdf.open()as drawn,pymupdf.open()as scan:
         pg=drawn.new_page(width=400,height=160);pg.insert_text((20,60),printed,fontsize=12)
         words=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in pg.get_text('words')]
@@ -265,12 +266,12 @@ def test_real_compiler_assigns_a_tier_to_the_whole_word_not_its_optical_fragment
         old=pa.adjudicate
         def fragmented(*a,**kw):
             result=old(*a,**kw);box=words[4]['bbox'];middle=(box[0]+box[2])/2
-            note=dict(source=['care','fuily'],model=['carefully'],chosen=['care','fuily'],
+            note=dict(source=pieces[:],model=[whole],chosen=pieces[:],
                 status='UNRESOLVED',method='unproved_source_transcription_change',source_range=[4,6],model_range=[4,5])
-            result.update(tokens=printed.split()[:4]+['care','fuily','today.'],marked={4,5},
+            result.update(tokens=printed.split()[:4]+pieces+['today.'],marked={4,5},
                 boxes={**{i:w['bbox']for i,w in enumerate(words[:4])},4:[box[0],box[1],middle-.1,box[3]],
                        5:[middle+.1,box[1],box[2],box[3]],6:words[5]['bbox']},
-                decisions=[note],word_notes={i:dict(note,chosen=[t],mapping='unplaced_within_span')for i,t in[(4,'care'),(5,'fuily')]})
+                decisions=[note],word_notes={i:dict(note,chosen=[t],mapping='unplaced_within_span')for i,t in zip((4,5),pieces)})
             if split_source_ranges:
                 for i in (4,5):result['word_notes'][i]['source_range']=[i,i+1]
             return result
@@ -283,12 +284,12 @@ def test_real_compiler_assigns_a_tier_to_the_whole_word_not_its_optical_fragment
     record=receipt['blocks'][0]
     if boundary is True:
         assert record['published_tokens']==printed.split()
-        assert [v['reading']for v in record['flagged_readings'].values()]==['carefully']
-        root,flags=assert_flagged_print(''.join(page['body']),['carefully'])
+        assert [v['reading']for v in record['flagged_readings'].values()]==[whole]
+        root,flags=assert_flagged_print(''.join(page['body']),[whole])
         assert len(flags)==1
         assert not any(d['status']=='RESOLVED'for d in record['adjudication'])
     else:
-        assert record['published_tokens'][4:6]==['care','fuily'],'An unproved boundary cannot silently fuse printed words'
+        assert record['published_tokens'][4:6]==pieces,'An unproved boundary cannot silently fuse printed words'
 
 
 @pytest.mark.parametrize('ink',['leaders','letters','uneven','no_folio'])
@@ -402,3 +403,27 @@ def test_real_compiler_does_not_publish_a_fused_optical_nonword_as_assistance(tm
     assert record['blocks'][0]['flagged_readings']['0']['tier']=='flagged'
     assert record['blocks'][0]['adjudication'][0]['status']=='UNRESOLVED'
     assert root.find('.//img').get('src') in package.data
+
+
+@pytest.mark.parametrize('source,first',[(['l','llh'],'11th'),(['I','Ith'],'11th'),(['7','st'],'1st')])
+@pytest.mark.parametrize('boundary',[True,False,None])
+def test_typed_ordinal_fragments_get_one_flagged_whole_word_only_with_printed_boundary(source,first,boundary):
+    from cps.services.reflow import pixel_adjudication as pa
+    note=dict(source=source,model=[first],chosen=source,status='UNRESOLVED',
+        method='unproved_source_transcription_change',source_range=[0,2],model_range=[0,1])
+    result=dict(tokens=source[:],marked={0,1},boxes={0:[20,20,25,32],1:[25.2,20,40,32]},
+        word_notes={i:dict(note,source=[token],chosen=[token],model=[],source_range=[i,i+1])for i,token in enumerate(source)},
+        adjudication=[note],guard=[])
+    witness=pa.CropWitness();witness.fragment_boundary=lambda word:boundary
+    tiers.join_fragmented_readings(result,witness)
+    tiers.prepare(result)
+    if boundary is True:
+        assert result['tokens']==[first]
+        assert result['marked']=={0}
+        assert result['word_notes'][0]['status']=='UNRESOLVED'
+        assert result['word_notes'][0]['source']==source
+        assert result['flagged_readings'][0]['reading']==first
+        assert result['boxes'][0]==[20,20,40,32]
+    else:
+        assert result['tokens']==source
+        assert result['marked']=={0,1}
