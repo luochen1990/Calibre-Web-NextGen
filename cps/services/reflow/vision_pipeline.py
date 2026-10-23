@@ -1081,6 +1081,27 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
     from html import unescape
     plain=lambda value:unescape(re.sub(r'<[^>]+>',' ',value))
     lex=lambda value:re.findall(r"[^\W_]+(?:['’\-][^\W_]+)*",plain(value),re.UNICODE)
+    def record_presentation(src,record):
+        # Encoded whole-page evidence is shared by its physical owner. A new
+        # presentation of those bytes must not replace the admitted source
+        # receipt's kind or coverage with optional-preview metadata.
+        canonical=getattr(package,'aliases',{}).get(src,src)
+        if canonical!=src and canonical in images:
+            images[canonical].setdefault('presentation_uses',[]).append(record)
+        else:images[src]=record
+    def context_image(src,bounds,record):
+        for existing,admitted in images.items():
+            box=admitted.get('bbox',[])
+            if (admitted.get('page')==pno and len(box)==4 and
+                    all(abs(a-b)<.01 for a,b in zip(box,bounds)) and
+                    admitted.get('kind')in ('vision_disclosure','unit_source_reference',
+                        'located_inspection_context','flagged_unit_preview') and
+                    not admitted.get('source_parts')):
+                admitted.setdefault('presentation_uses',[]).append(record)
+                return existing
+        _word_disclosure_image(package,src,display,bounds)
+        record_presentation(src,record)
+        return src
     placed=inline_print.locate_context(plain(text),evidence_words or [],display.rect)
     replacements=[]
     inspections={};scopes={}
@@ -1112,10 +1133,10 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
                 all(abs(a-b)<=3 for a,b in zip(previous,inspection_bounds)))
             inspection=original_src if same else f'images/{match[2]}-located-context.jpg'
             if not same:
-                _word_disclosure_image(package,inspection,display,inspection_bounds)
-                images[inspection]=dict(page=pno,block=bid,bbox=inspection_bounds,
-                    kind='located_inspection_context',coverage_eligible=False,
-                    placement_method=placed['method'],unplaced_context=not inspection_placed)
+                inspection=context_image(inspection,inspection_bounds,dict(page=pno,block=bid,bbox=inspection_bounds,
+                    kind='located_inspection_context'if inspection_placed else'flagged_unit_preview',
+                    presentation_role='located_inspection_context',coverage_eligible=False,
+                    placement_method=placed['method'],unplaced_context=not inspection_placed))
             inspections[match[2]]=inspection
             for index,aside in enumerate(extras):
                 # A factory fragment can contain several sibling notes. Scope
@@ -1130,8 +1151,16 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
                         # allowed to erase the other's printed occurrence.
                         inner=found[2]
                         if not same:
-                            at=inner.find('<img')
-                            inner=inner[:at]+'<p>Located reading context:</p><img src="'+inspection+'" alt="Located original reading"/><p>Original context for the adjoining reference:</p>'+inner[at:]
+                            context='<p>Located reading context:</p><img src="'+inspection+'" alt="Located original reading"/>'
+                            if inspection_placed:
+                                at=inner.find('<img')
+                                inner=inner[:at]+context+'<p>Original context for the adjoining reference:</p>'+inner[at:]
+                            else:
+                                # Unplaced whole-page context is supplemental;
+                                # keep the admitted reference receipt first.
+                                at=inner.rfind('<a ')
+                                if at<0:at=len(inner)
+                                inner=inner[:at]+context+inner[at:]
                     else:
                         inner=re.sub(r'(<img\b[^>]*\bsrc=")[^"]+("[^>]*>)',
                             lambda m:m[1]+inspection+m[2],found[2])
@@ -1184,10 +1213,9 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
     ident=f'v4-d-unit-print-{pno}-{bid}';origin='r-'+ident
     bounds=placed['bbox']
     src=f'images/{ident}.jpg'
-    _word_disclosure_image(package,src,display,bounds)
-    images[src]=dict(page=pno,block=bid,bbox=bounds,kind='flagged_unit_preview',coverage_eligible=False,
+    src=context_image(src,bounds,dict(page=pno,block=bid,bbox=bounds,kind='flagged_unit_preview',coverage_eligible=False,
         reason='dense_flagged_reading'if dense else'refused_word_preview',flagged_runs=len(selected),
-        placement_method=placed['method'],unplaced_context=not bool(placed['word_boxes']))
+        placement_method=placed['method'],unplaced_context=not bool(placed['word_boxes'])))
     details=[]
     for target in sorted(targets):
         # Show the highlighted words, not a second copy of each detailed
@@ -3686,53 +3714,16 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             print_endings={g[-1]:g for g in print_groups if all(i in flagged_readings for i in g)}
             print_owners={i:g[-1] for g in groups for i in g}
             emission_groups={**endings,**print_endings}
-            dense_assistance=(len(print_endings)>=2 and len(flagged_readings)>=max(8,.25*len(result['tokens'])))
 
             def flagged_piece(indices, ident, inspection_src, reading_html=None):
                 # Presentation runs may be shorter than the original warning.
                 # Every run links to that same complete, source-owned receipt;
                 # only the final run needs its dagger and return origin.
-                own=[evidence_boxes[i] for i in indices if i in evidence_boxes]
-                crop=vision_reading.union(own) if len(own)==len(indices) else box
-                bounded_gap=False
-                if len(indices)==1 and not own:
-                    index=indices[0]
-                    before=evidence_boxes.get(index-1);after=evidence_boxes.get(index+1)
-                    if before and after:
-                        height=min(before[3]-before[1],after[3]-after[1])
-                        overlap=min(before[3],after[3])-max(before[1],after[1])
-                        gap=after[0]-before[2]
-                        if height>0 and overlap>=.6*height and 1<gap<12*height:
-                            # The two grounded neighbours locate original ink,
-                            # not its spelling. Keep this display-only scope out
-                            # of identity, annotation and occurrence accounting.
-                            crop=[before[2],min(before[1],after[1]),after[0],max(before[3],after[3])]
-                            bounded_gap=True
-                decision={}
-                if len(indices)==1:
-                    decision=result.get('word_notes',{}).get(indices[0],{})
-                    if decision.get('source_bbox') and decision.get('source_image_only_before_publication'):
-                        crop=decision['source_bbox']
-                from . import inline_print
-                inline_src=inspection_src;style='height:1.4em;vertical-align:-0.25em;width:auto'
-                # A paragraph's several ownership strips say nothing about
-                # whether this particular word occupies one physical line.
-                # Its own complete bounds and the preview's ink test decide.
-                preview=(inline_print.preview(display,crop) if not dense_assistance
-                    and (len(own)==len(indices) or bounded_gap) and not decision.get('source_parts') else None)
-                suffix='' if indices==endings[print_owners[indices[-1]]] else '-run-'+str(indices[-1])
-                if preview is not None and hasattr(package,'image'):
-                    data,metrics=preview;inline_src=f'images/{ident}{suffix}-inline.png'
-                    package.image(inline_src,data)
-                    image_records[inline_src]=dict(page=pno,kind='inline_print_preview',coverage_eligible=False,
-                        inspection_image=inspection_src,display_scope='between_grounded_neighbours'if bounded_gap else'own_word_bounds',**metrics)
-                    style=metrics['style']
-                elif suffix and not dense_assistance:
-                    inline_src=f'images/{ident}{suffix}.jpg'
-                    clip=(extract.pymupdf.Rect(crop)+(-2,-2,2,2)) & display.rect
-                    _word_disclosure_image(package,inline_src,display,clip)
-                    image_records[inline_src]=dict(page=pno,bbox=list(clip),kind='vision_disclosure',
-                        coverage_eligible=False,inspection_image=inspection_src)
+                # Placement and ink validation happen once after the complete
+                # published sequence exists. Rendering a guessed preview here
+                # would leave an unused raster when that placement is refused.
+                inline_src=inspection_src
+                style='height:1.1em;vertical-align:-0.15em;width:auto'
                 reading=''.join(('' if j==0 or i in wraps else ' ')+result['tokens'][i]
                     for j,i in enumerate(indices))
                 return reading_tiers.flagged_html(reading,inline_src,ident,style,reading_html=reading_html)

@@ -201,3 +201,27 @@ def test_compiler_preserves_the_admitted_marker_image_when_relocating_its_neighb
     admitted=root.xpath('//*[@id=$target]//img',target=shared[0]['source_reference'])
     assert any(image.get('src')==shared[0]['source_image']for image in admitted)
     assert any(image.get('src')!=shared[0]['source_image']for image in admitted)
+
+
+def test_shared_page_preview_cannot_relabel_an_admitted_source_receipt(monkeypatch):
+    class SharedPackage(Package):
+        def __init__(self):super().__init__();self.aliases={}
+        def disclosure_image(self,name,display,bounds):
+            assert list(bounds)==list(display.rect)
+            self.aliases[name]='images/admitted.jpg'
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=400,height=230)
+        page.insert_text((25,55),'blue garden',fontsize=12)
+        page.insert_text((25,155),'blue garden',fontsize=12)
+        words=[dict(text=w[4],bbox=list(w[:4]))for w in page.get_text('words')]
+        images={'images/admitted.jpg':dict(page=0,bbox=list(page.rect),kind='vision_disclosure')}
+        text=reading_tiers.flagged_html('garden','images/admitted.jpg','shared-detail')
+        extras=['<aside id="shared-detail"><img src="images/admitted.jpg"/></aside>']
+        vp._present_flagged_prints(text,SourceDisplay(doc,0),0,'sample',[list(page.rect)],
+            SharedPackage(),images,extras,evidence_words=words,protected_inspections={'shared-detail'})
+    assert list(images)==['images/admitted.jpg']
+    assert images['images/admitted.jpg']['kind']=='vision_disclosure'
+    uses=images['images/admitted.jpg']['presentation_uses']
+    assert len(uses)==2
+    assert uses[0]['presentation_role']=='located_inspection_context'
+    assert uses[1]['kind']=='flagged_unit_preview'
