@@ -260,19 +260,33 @@ def assert_links_resolve(docs):
 
 
 def assert_live_assistance_images(node, *, require_flags=False):
-    """An appended preview accompanies live flagged text and its own source link."""
+    """Flagged words reach their own print, inline or through the unit's link."""
     flags=[e for e in node.iter()if e.get('class')=='reflow-flagged-reading']
     if require_flags:assert flags
-    for flag in flags:
-        links=[e for e in flag if e.get('class')=='source-word-image']
-        assert len(links)==1 and len(links[0])==1 and links[0][0].tag.rsplit('}',1)[-1]=='img'
     parents={c:p for p in node.iter()for c in p}
+    for flag in flags:
+        links=[e for e in flag.iter()if e.get('class')=='source-word-image']
+        if links:
+            assert len(links)==1 and len(links[0])==1 and links[0][0].tag.rsplit('}',1)[-1]=='img'
+            assert links[0].get('href') and links[0][0].get('alt')==''
+        else:
+            plausible=next(e for e in flag if e.get('class')=='reflow-plausible')
+            links=[e for e in plausible.iter()if e.tag.rsplit('}',1)[-1]=='a']
+            assert len(links)==1 and links[0].get('href','').startswith('#v4-d-')
+            assert links[0].get('title')=='Compare this reading with original print'
+            assert ''.join(links[0].itertext()).strip()
     for image in (e for e in node.iter()if e.tag.rsplit('}',1)[-1]=='img'):
-        link=parents[image];flag=parents[link]
-        assert link.get('class')=='source-word-image' and link.get('href')
-        assert flag.get('class')=='reflow-flagged-reading'
-        reading=next(e for e in flag if e.get('class')=='reflow-plausible')
-        assert ''.join(reading.itertext()).strip() and image.get('alt')==''
+        link=parents[image];owner=parents[link]
+        while owner is not node and owner.get('class')not in ('reflow-flagged-reading','reflow-unit-print'):
+            owner=parents[owner]
+        if owner.get('class')=='reflow-unit-print':
+            assert link.get('class')=='source-disclosure-ref' and link.get('href','').startswith('#v4-d-unit-print-')
+        else:
+            assert link.get('class')=='source-word-image' and link.get('href')
+            assert owner.get('class')=='reflow-flagged-reading'
+            reading=next(e for e in owner if e.get('class')=='reflow-plausible')
+            assert ''.join(reading.itertext()).strip()
+        assert image.get('alt')==''
 
 
 def assistance_live_text(node):
@@ -469,7 +483,12 @@ def test_contiguous_disagreement_has_one_resolving_disclosure_for_all_words(tmp_
         assert_live_assistance_images(first)
         flags=[e for e in first.iter()if e.get('class')=='reflow-flagged-reading']
         assert flags and ' '.join(''.join(f.find('span').itertext())for f in flags)=='narrow path'
-        assert {f.find('a').get('href')for f in flags}=={refs[0].get('href')}
+        reading_links=[a for f in flags for a in f.iter('a')]
+        targets={a.get('href') for a in reading_links}
+        assert targets=={'#v4-d-0-b1-2'}
+        assert any(a.get('href')in targets for a in note.iter('a')), 'Shared evidence retains the original detailed word receipt'
+        detail=next(n for n in root.iter()if '#'+str(n.get('id'))in targets)
+        assert any(a.get('href')=='#r-v4-d-0-b1-2'for a in detail.iter('a'))
         assert assistance_live_text(first)==reading
     finally:
         pkg.abandon()
@@ -1239,10 +1258,11 @@ def test_model_continued_hyphen_keeps_literal_hyphen_without_space_or_broken_dis
     assert len(body) == 1
     assert reading_flow.projection(body[0], {}).strip() == 'The quiet bridge-side leads into the meadow.', 'literal hyphen must survive without introducing a word-seam space'
     assert all('source-reading-annotation' not in ET.tostring(root, encoding='unicode') and 'reading-return-reading-' not in ET.tostring(root, encoding='unicode') for root in docs.values()), 'temporary source-control carriers must not leak into publication'
-    refs = body[0].findall('.//x:a[@class="source-disclosure-ref"]', NS)
+    units=chapter.findall('.//x:div[@class="reflow-unit-print"]',NS)
+    refs = body[0].findall('.//x:a[@class="source-disclosure-ref"]', NS)+[a for unit in units for a in unit.findall('.//x:a[@class="source-disclosure-ref"]',NS)]
     assert len(refs) == int(disclosure_affix)
     assert_live_assistance_images(body[0])
-    assert bool(body[0].findall('.//x:img',NS)) is disclosure_affix
+    assert bool(body[0].findall('.//x:img',NS) or units) is disclosure_affix
     if disclosure_affix:
         assert refs[0].get('href') and any('Return' == ''.join(a.itertext()) for root in docs.values() for a in root.findall('.//x:a', NS))
 

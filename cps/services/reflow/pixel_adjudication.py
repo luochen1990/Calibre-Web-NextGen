@@ -2184,10 +2184,10 @@ def _horizontal_dash_shape(display,word):
 def _fragment_word_boundary(display,word):
     """Prove absence of an internal word space without supplying any letters.
 
-    This is only used when the source and certain first reader conserve every
-    character, and separate word networks locate the complete same occurrence.
-    Closely spaced ink runs establish one boundary; touching, missing or widely
-    spaced ink cannot prove a spelling and is never used as a replacement.
+    Closely spaced ink runs establish one boundary; they supply no letters.
+    Callers that group competing fragment readings keep their letter identity
+    explicitly uncertain. Touching, missing or widely spaced ink cannot prove
+    a spelling and is never used as a replacement.
     """
     from . import extract,vision_pixels
     a=word['bbox'];height=a[3]-a[1]

@@ -45,6 +45,13 @@ def choose(token, decision, *, rank_lexical=True):
     if method in PRINT_ONLY or decision.get('unplaced_prefix'):
         return dict(tier='print', reading=None, method='no_complete_reading')
     source, model = decision.get('source', []), decision.get('model', [])
+    if method=='optical_map_confusable_nonword' and rank_lexical:
+        # The optical-map check supplies one stroke-confusable dictionary
+        # hypothesis, preserving case and punctuation. Rank that assistance
+        # without turning a lexical preference into a pixel certificate.
+        candidates=decision.get('alternative',[])
+        if len(candidates)==1:
+            return dict(tier='flagged',reading=candidates[0],method='lexical_confusable_hypothesis')
     if method == 'unproved_mathematical_symbol_identity':
         # A Unicode symbol is a plausible reading. Alphabetic guesses made by
         # both general readers are not evidence of a symbolic font's identity.
@@ -122,6 +129,7 @@ def flagged_html(reading, image, target, style='', *, reading_html=None):
 def stylesheet():
     return '''\n.reflow-plausible { border-bottom:1px solid currentColor; }
 .reflow-flagged-reading { font-style:inherit; }
+.reflow-plausible a { color:inherit; text-decoration:none; }
 .reflow-print-control { white-space:nowrap; }
 .reflow-unit-print { text-indent:0; margin:.4em 0; white-space:nowrap; }
 .reflow-unit-print img { max-width:95%; width:auto; height:auto; vertical-align:baseline; }

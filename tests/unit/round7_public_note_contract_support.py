@@ -153,8 +153,14 @@ def local_ocr_visible(path, report, printed_phrases, *, non_local_pages=(), no_n
                     origin = (name, 'r-' + ident)
                     assert origin in indexed and indexed[origin] in list(owner.iter())
                     control = indexed[origin]
-                    assert 'source-disclosure-ref' in (control.get('class') or '').split()
-                    target = destination(name, control.get('href'))
+                    if control.get('title')=='Compare this reading with original print':
+                        assert control.tag.endswith('}a')
+                        assert control.get('href')=='#'+ident
+                        assert ''.join(control.itertext()).strip(), 'The origin is the live reading itself'
+                        target=destination(name,control.get('href'))
+                    else:
+                        assert 'source-disclosure-ref' in (control.get('class') or '').split()
+                        target = destination(name, control.get('href'))
                     assert target in indexed and target[1] == ident
                     aside = indexed[target]
                     assert aside.tag.endswith('}aside') and 'vision-disclosure' in (aside.get('class') or '').split()

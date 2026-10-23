@@ -139,6 +139,9 @@ def plain(node):
     for parent in node.iter():
         for child in list(parent):
             if child.tag.endswith('}a'):
+                # This named link is authored reading text, unlike navigation
+                # controls. Preserve its actual characters in the projection.
+                if child.get('title')=='Compare this reading with original print':continue
                 tail = child.tail or ''
                 siblings = list(parent)
                 at = siblings.index(child)

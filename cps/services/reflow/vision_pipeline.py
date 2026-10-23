@@ -1051,9 +1051,15 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
         control=re.compile(r'(<a class="source-word-image"(?: title="Inspect original print")? href="#[^"]+"><img [^>]+/></a>)(</span>)(<a id="[^"]+" class="source-disclosure-ref" epub:type="noteref" href="#[^"]+"><sup>†</sup></a>)')
         return control.sub(r'<span class="reflow-print-control">\1\3</span>\2',text),''
     targets={m[2]for m in matches}
-    text=pattern.sub(lambda m:'<span class="reflow-flagged-reading"><span class="reflow-plausible">'+m[1]+'</span></span>',text)
+    last_for_target={m[2]:m.start()for m in matches}
+    def reading_link(match):
+        identity=' id="r-'+match[2]+'"'if match.start()==last_for_target[match[2]]else''
+        return ('<span class="reflow-flagged-reading"><span class="reflow-plausible"><a'+identity
+            +' title="Compare this reading with original print" href="#'+match[2]+'">'
+            +match[1]+'</a></span></span>')
+    text=pattern.sub(reading_link,text)
     action=re.compile(r'<a id="([^"]+)" class="source-disclosure-ref" epub:type="noteref" href="#([^"]+)"><sup>†</sup></a>')
-    text=action.sub(lambda m:'<span id="'+m[1]+'"></span>'if m[2]in targets else m[0],text)
+    text=action.sub(lambda m:''if m[2]in targets else m[0],text)
     ident=f'v4-d-unit-print-{pno}-{bid}';origin='r-'+ident
     boxes=list(territories)
     for match in matches:
@@ -1063,9 +1069,16 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
     bounds=list(extract.pymupdf.Rect(vision_reading.union(boxes)) & display.rect)
     src=f'images/{ident}.jpg'
     _word_disclosure_image(package,src,display,bounds)
-    images[src]=dict(page=pno,bbox=bounds,kind='flagged_unit_preview',coverage_eligible=False,
+    images[src]=dict(page=pno,block=bid,bbox=bounds,kind='flagged_unit_preview',coverage_eligible=False,
         reason='dense_flagged_reading'if dense else'refused_word_preview',flagged_runs=len(matches))
-    extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>Underlined readings are plausible, not independently proved. This original print is shared by the unit.</p><img src="{src}" alt="Original printed reading"/><a href="#{origin}">Return</a></aside>')
+    details=[]
+    for target in sorted(targets):
+        note=next((item for item in extras if 'id="'+target+'"' in item),None)
+        paragraph=re.search(r'<p[^>]*>(.*?)</p>',note or '',re.S)
+        label=re.sub(r'<[^>]+>',' ',paragraph[1]).strip()if paragraph else'Compare the original reading'
+        details.append('<li><a href="#'+target+'">'+label+'</a></li>')
+    detail_links='<ul>'+''.join(details)+'</ul>'
+    extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>Underlined readings are plausible, not independently proved. This original print is shared by the unit.</p><img src="{src}" alt="Original printed reading"/>{detail_links}<a href="#{origin}">Return</a></aside>')
     supplement=(f'<div class="reflow-unit-print"><a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}">'
         f'<img src="{src}" alt=""/><sup>†</sup></a></div>')
     return text,supplement
@@ -3581,7 +3594,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     image_records[inline_src]=dict(page=pno,kind='inline_print_preview',coverage_eligible=False,
                         inspection_image=inspection_src,**metrics)
                     style=metrics['style']
-                elif suffix:
+                elif suffix and not dense_assistance:
                     inline_src=f'images/{ident}{suffix}.jpg'
                     clip=(extract.pymupdf.Rect(crop)+(-2,-2,2,2)) & display.rect
                     _word_disclosure_image(package,inline_src,display,clip)
@@ -6292,6 +6305,7 @@ def _leading_art_continuation(previous,current,before,after,tail,blocks):
 
 def _join_scanned_regions(page,blocks,words=(),compounds=()):
     """Join adjacent body fragments only across an observed column/leaf edge."""
+    unit_prints=_defer_unit_prints([page])
     emitted=[b for b in blocks if b['role'] not in ('running_head','folio','footnote')]
     # In-flow notes are structural barriers; footer geometry distinguishes notes
     # that are outside a paragraph continuing onto the next scanned leaf.
@@ -6393,6 +6407,7 @@ def _join_scanned_regions(page,blocks,words=(),compounds=()):
             if not join and not floating:last_body_index=len(result)-1
         previous=block
     page['body']=result
+    _restore_unit_prints([page],unit_prints)
 
 
 def _proved_recovery_columns(words):
@@ -6928,6 +6943,36 @@ def cover_missing_lines(answer,optical,source_words,display,regions=None,body_ow
     return answer,set(recovered)
 
 
+def _defer_unit_prints(pages):
+    """Keep generated block prints outside lexical paragraph merging.
+
+    A print following a source fragment is not a sentence boundary. Remove
+    only the exact generated supplement while page/column seams are decided;
+    after merging, its source attributes locate the completed paragraph.
+    """
+    saved=[]
+    pattern=re.compile(r'<div class="reflow-unit-print">.*?</div>$',re.S)
+    for page in pages:
+        for i,fragment in enumerate(page['body']):
+            match=pattern.search(fragment)
+            if match is None:continue
+            owners=re.findall(r'data-source-page="(\d+)" data-source-block="([^"]+)"',fragment[:match.start()])
+            if not owners:continue
+            saved.append((owners[-1],match[0]))
+            page['body'][i]=fragment[:match.start()]
+    return saved
+
+
+def _restore_unit_prints(pages,saved):
+    """A unit's shared print follows the paragraph containing its final words."""
+    for (number,block),html in saved:
+        owner=f'data-source-page="{number}" data-source-block="{block}"'
+        locations=[(page,i)for page in pages for i,fragment in enumerate(page['body'])if owner in fragment]
+        if not locations:raise ValueError('Published unit print lost its source paragraph')
+        page,index=locations[-1]
+        page['body'][index]+=html
+
+
 def _join_control_carriers(pages):
     """Use the native joiner's generated-copy offset carrier for our controls.
 
@@ -6939,7 +6984,7 @@ def _join_control_carriers(pages):
     carriers={}
     def carrier_for(anchor):
         identity=hashlib.sha256(anchor.encode()).hexdigest()
-        carrier='<span class="source-reading-annotation" id="reading-return-reading-'+identity+'">'+anchor+'</span>'
+        carrier='<span class="source-reading-annotation" id="reading-return-reading-'+identity+'"></span>'
         carriers[carrier]=anchor
         return carrier
     def wrap(match):
@@ -6950,9 +6995,11 @@ def _join_control_carriers(pages):
     flagged=re.compile(r'(<span class="reflow-flagged-reading"><span class="reflow-plausible">.*?</span>)(<a class="source-word-image"(?: title="Inspect original print")? href="[^"]+"><img [^>]+/></a>)(</span>)')
     def assist(match):
         return match.group(1)+carrier_for(match.group(2))+match.group(3)
+    compact=re.compile(r'<span class="reflow-print-control">.*?</span>',re.S)
+    origins=re.compile(r'<a id="r-v4-d-[^"]+" class="reflow-reading-origin"></a>')
     for page in pages:
         with unit_recovery.guard(page['pno'],'seam_control_carriers'):
-            page['body']=[pattern.sub(wrap,flagged.sub(assist,fragment)) for fragment in page['body']]
+            page['body']=[pattern.sub(wrap,flagged.sub(assist,origins.sub(wrap,compact.sub(wrap,fragment)))) for fragment in page['body']]
     return carriers
 
 
@@ -7854,6 +7901,7 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         quality_sweep=_compiled_text_quality(pages,records,numbers,'publication_text_quality')
         for n,quality in quality_sweep['pages'].items():records[n]['text_quality']=quality
         _finish_notes(pages,owners,catalogue,note_context['refs'])
+        unit_prints=_defer_unit_prints(pages)
         carriers=_join_control_carriers(pages)
         scan_words,scan_compounds=_scan_wrap_vocabulary(scans)
         for page in pages:
@@ -7926,6 +7974,7 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         for page in pages:
             for carrier,anchor in carriers.items():
                 page['body']=[fragment.replace(carrier,anchor) for fragment in page['body']]
+        _restore_unit_prints(pages,unit_prints)
         # Removing a printed line-end hyphen can form a newly damaged word.
         # Validate the actual joined text, not only its earlier page fragments.
         quality_sweep=_compiled_text_quality(pages,records,numbers)

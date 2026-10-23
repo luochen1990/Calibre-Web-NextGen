@@ -48,7 +48,8 @@ def test_optically_recovered_clause_keeps_unproved_reference_as_its_own_print(tm
     assert unit['flagged_readings']['5']['tier']=='flagged'
     assert any(d['status']=='UNRESOLVED'for d in unit['adjudication'])
     assert unit['published_tokens'][:5]==text.split()[:5]
-    assert 'source-word-image'in ''.join(page['body'])
+    assert root.findall('.//div[@class="reflow-unit-print"]//img'), 'The uncertain printed reference keeps visible original ink'
+    assert root.findall('.//span[@class="reflow-plausible"]//a[@title="Compare this reading with original print"]')
 
 
 @pytest.mark.parametrize('proved',[True,False])

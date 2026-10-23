@@ -89,6 +89,16 @@ def test_page_publication_uses_a_unit_print_instead_of_a_shrunken_inspection_ass
         image=unit[0].xpath('.//img')[0]
         assert 'height:1.4em'not in image.get('style','')
         assert image.get('src')in package.images
+        complete=etree.fromstring(('<div xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(compiled['body']+compiled['asides'])+'</div>').encode())
+        for flag in flags:
+            links=flag.xpath('.//span[@class="reflow-plausible"]/a')
+            assert len(links)==1 and links[0].get('title')=='Compare this reading with original print'
+            target=links[0].get('href')[1:]
+            detail=complete.xpath('//*[@id=$target]',target=target)
+            assert len(detail)==1 and detail[0].xpath('.//img')
+            origins=complete.xpath('//*[@id=$origin]',origin='r-'+target)
+            assert len(origins)==1 and origins[0].get('href')=='#'+target
+            assert detail[0].xpath('.//a[@href=$origin]',origin='#r-'+target)
         if case=='dense':assert not any(v.get('kind')=='inline_print_preview'for v in assets.values()), 'Unused word previews must not fill the archive after choosing a unit print'
     else:
         assert not root.xpath('.//div[@class="reflow-unit-print"]')
@@ -125,3 +135,45 @@ def test_faded_print_has_near_black_stroke_cores_without_erasing_gray_edges():
     ink=sorted(v for v in image.tobytes()if v<200)
     assert ink and ink[len(ink)//5]<60,'Faded core strokes need contrast that survives monochrome dithering'
     assert len(set(image.tobytes()))>2,'Gray edge samples remain instead of a binary redraw'
+
+
+def test_shared_unit_print_waits_until_the_source_sentence_is_complete(tmp_path,monkeypatch):
+    """Generated evidence must not split an independently proved page turn."""
+    from tests.unit import test_round2_assembly as fixture
+    from tests.unit.test_reflow_vision_pilot import assistance_live_text
+    from cps.services.reflow import vision_pipeline as vp,vision_pixels
+    from xml.etree import ElementTree as ET
+    import zipfile
+    left='The clear garden has a stone-'
+    right='border beside the quiet stream.'
+    pixels=[fixture.optical(left,20,280),fixture.optical(right,20,30)]
+    layers=[[dict(w)for w in words]for words in pixels]
+    layers[0][-1]=dict(layers[0][-1],text='damaged-source-token')
+    monkeypatch.setattr(vision_pixels,'words',lambda display,cache:pixels[display.page.number])
+    monkeypatch.setattr(vp,'layer_words',lambda doc,n,display:layers[n])
+    from cps.services.reflow import inline_print
+    monkeypatch.setattr(inline_print,'preview',lambda *args,**kwargs:None)
+    reader=fixture.Reader([fixture.answer(fixture.block(left,next=True)),
+                           fixture.answer(fixture.block(right,bbox=(20,50,480,350),previous=True))])
+    path=tmp_path/'continuation.epub'
+    with fixture.source(pixels)as doc:vp.convert(doc,path,reader)
+    with zipfile.ZipFile(path)as archive:
+        roots=[ET.fromstring(archive.read(n))for n in archive.namelist()if n.startswith('OEBPS/ch')and n.endswith('.xhtml')]
+    paragraphs=[p for root in roots for p in root.iter()if p.tag.endswith('}p')and any(
+        child.get('data-source-block')for child in p.iter())]
+    assert [assistance_live_text(p)for p in paragraphs]==[left+right]
+    prints=[node for root in roots for node in root.iter()if node.get('class')=='reflow-unit-print']
+    assert prints,'The doubtful reading keeps its original printed evidence'
+    for root in roots:
+        parents={child:parent for parent in root.iter()for child in parent}
+        for image in [n for n in root.iter()if n.get('class')=='reflow-unit-print']:
+            parent=parents[image];position=list(parent).index(image)
+            assert position>0 and parents.get(image)not in paragraphs
+            assert list(parent)[position-1]in paragraphs,'The unit print follows the completed live paragraph'
+
+
+def test_live_text_projection_keeps_named_reading_links_and_anchor_tails():
+    from xml.etree import ElementTree as ET
+    from tests.unit.test_round4_defects import plain
+    node=ET.fromstring('<p xmlns="http://www.w3.org/1999/xhtml">The <span class="reflow-plausible"><a title="Compare this reading with original print" href="#detail">garden</a></span><a href="#detail"><sup>†</sup></a> grows.</p>')
+    assert plain(node)=='The garden grows.'

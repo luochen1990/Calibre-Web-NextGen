@@ -333,3 +333,14 @@ def test_typed_ordinal_assistance_prefers_a_complete_reader_over_opaque_letter_g
     choice=tiers.choose(source,decision)
     assert choice['tier']=='flagged'and choice['reading']==expected
     assert decision['status']=='UNRESOLVED'and decision['chosen']==[source]
+
+
+@pytest.mark.parametrize('token,expected', [('Surnmer','Summer'),('SURNMER','SUMMER'),('surnmer','summer')])
+def test_optical_map_candidate_can_rank_an_explicitly_flagged_heading(monkeypatch,token,expected):
+    from cps.services.reflow import pixel_adjudication as pa,text_quality
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:{'summer','garden'})
+    decision=pa.optical_map_doubts([token])[0]
+    assert decision['status']=='UNRESOLVED'
+    choice=tiers.choose(token,decision)
+    assert choice['tier']=='flagged' and choice['reading']==expected
+    assert decision['chosen']==[token], 'Ranking assistance must not overwrite the optical receipt'
