@@ -169,7 +169,7 @@ def test_native_assistance_keeps_its_first_reading_without_lexical_overrule():
 
 
 @pytest.mark.parametrize('prove_one',[False,True])
-def test_compiler_appends_separate_legible_print_for_each_physical_line(tmp_path,monkeypatch,prove_one):
+def test_compiler_shares_one_legible_print_for_a_dense_multiline_reading(tmp_path,monkeypatch,prove_one):
     import pymupdf
     from cps.services.reflow import pixel_adjudication as pa,vision_pipeline as vp
     from cps.services.reflow.source_display import SourceDisplay
@@ -200,19 +200,23 @@ def test_compiler_appends_separate_legible_print_for_each_physical_line(tmp_path
             package,images,pixel_words=words,regions={'b1':[[25,40,310,100]]},body_owners={},
             note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
     expected=[word for i,word in enumerate(printed.split())if not(prove_one and i==2)]
-    root,flags=assert_flagged_print(''.join(page['body']),expected)
+    root=ET.fromstring('<root xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(page['body'])+'</root>')
+    flags=[n for n in root.iter()if n.get('class')=='reflow-flagged-reading']
+    assert ' '.join(''.join(n.find('span').itertext())for n in flags).split()==expected
     def visible(node):
         if 'source-disclosure-ref' in node.get('class','').split():return ''
         return (node.text or '')+''.join(visible(child)+(child.tail or '') for child in node)
     assert visible(root).split()==printed.split(),'A proved neighbor cannot hide a plausible word'
-    assert len(flags)>=2,'Two printed rows cannot be shrunk into one inline image'
-    for flag in flags:
-        reading=''.join(flag.find('span').itertext()).split()
-        assert any(all(word in line.split() for word in reading)for line in lines)
-        image=flag.find('.//img');metadata=images[image.get('src')]
-        assert metadata['kind']=='inline_print_preview'
-        assert metadata['xheight']<16,'The body letter height must not include the line gap'
-        assert metadata['height_em']>=1
+    assert all(flag.find('.//img')is None for flag in flags)
+    unit=root.find('.//div[@class="reflow-unit-print"]')
+    assert unit is not None and len(list(root.iter('sup')))==1+int(prove_one)
+    image=unit.find('.//img');metadata=images[image.get('src')]
+    assert metadata['kind']=='flagged_unit_preview'
+    assert metadata['reason']=='dense_flagged_reading'
+    assert metadata['bbox'][1]<=words[0]['bbox'][1]
+    assert metadata['bbox'][3]>=words[-1]['bbox'][3]
+    assert image.get('style')is None
+    assert '.reflow-unit-print img { max-width:95%; width:auto; height:auto;' in tiers.stylesheet(), 'Several printed lines retain their readable aspect ratio'
 
 
 def test_appended_print_has_named_evidence_link_without_repeating_the_reading():

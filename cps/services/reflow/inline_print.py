@@ -61,8 +61,8 @@ def preview(display, word_box):
     # Disjoint printed rows need individual previews; a broad block rectangle
     # cannot supply credible inline metrics.
     if not .15*box.height <= xheight <= 1.3*box.height:return None
-    region=pymupdf.Rect(box.x0-3,baseline-2.4*xheight,
-                         box.x1+3,baseline+1.2*xheight) & display.rect
+    region=pymupdf.Rect(box.x0-3,min(box.y0-3,baseline-2.4*xheight),
+                         box.x1+3,max(box.y1+3,baseline+1.2*xheight)) & display.rect
     scale=min(6,math.sqrt(MAX_PIXELS/max(1,region.get_area())))
     pix=display.pixmap(region,scale=scale,gray=True,max_pixels=MAX_PIXELS)
     im=Image.frombytes('L',(pix.width,pix.height),pix.samples)
@@ -73,7 +73,11 @@ def preview(display, word_box):
         xs=[q%w for q in component];ys=[q//w for q in component]
         left,right=min(xs),max(xs)+1;top,bottom=min(ys),max(ys)+1
         cx=region.x0+(left+right)/2/sx;cy=region.y0+(top+bottom)/2/sy
-        if not(box.x0-.5<=cx<=box.x1+.5 and baseline-1.7*xheight<=cy<=baseline+.45*xheight):continue
+        # A disconnected capital crossbar or accent can sit above the dense
+        # lowercase band. The source word's complete vertical box owns that
+        # ink too; line metrics set display size, not a glyph clipping mask.
+        if not(box.x0-.5<=cx<=box.x1+.5 and
+               min(box.y0-1,baseline-1.7*xheight)<=cy<=max(box.y1+1,baseline+.45*xheight)):continue
         # Touching the work boundary can mean a clipped component: decline the
         # optional preview rather than certifying the surviving tail as whole.
         if min(left,top)<=0 or right>=w or bottom>=h:return None

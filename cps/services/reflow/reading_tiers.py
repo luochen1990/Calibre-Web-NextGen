@@ -116,6 +116,9 @@ def flagged_html(reading, image, target, style='', *, reading_html=None):
 def stylesheet():
     return '''\n.reflow-plausible { border-bottom:1px solid currentColor; }
 .reflow-flagged-reading { font-style:inherit; }
+.reflow-print-control { white-space:nowrap; }
+.reflow-unit-print { text-indent:0; margin:.4em 0; white-space:nowrap; }
+.reflow-unit-print img { max-width:95%; width:auto; height:auto; vertical-align:baseline; }
 .reflow-flagged-reading > a.source-word-image { margin-left:.15em; }
 a.source-word-image, a.source-disclosure-ref { text-decoration:none; color:inherit; }
 a.source-word-image img { max-width:none; width:auto; }

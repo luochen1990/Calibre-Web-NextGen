@@ -1023,6 +1023,46 @@ def _remove_foreign_word_runs(result,bid,answer,optical,regions):
     result.setdefault('guard',[]).append(dict(kind='foreign_owned_run_published_once',runs=runs))
 
 
+def _present_flagged_prints(text,display,pno,bid,territories,package,images,extras):
+    """Declined word previews and dense assistance use one legible unit print.
+
+    An inspection asset may be a complete page or several physical rows. It
+    never supplies inline word metrics. The live hypotheses remain underlined;
+    their shared print follows the paragraph, without duplicating every phrase.
+    """
+    pattern=re.compile(r'<span class="reflow-flagged-reading"><span class="reflow-plausible">(.*?)</span>'
+        r'<a class="source-word-image"(?: title="Inspect original print")? href="#([^"]+)"><img src="([^"]+)"[^>]*?/></a></span>',re.S)
+    matches=list(pattern.finditer(text))
+    if not matches:return text,''
+    refused=any(images.get(m[3],{}).get('kind')!='inline_print_preview'for m in matches)
+    flagged=sum(len(re.sub(r'<[^>]+>',' ',m[1]).split())for m in matches)
+    total=len(re.sub(r'<[^>]+>',' ',text).split())
+    dense=len(matches)>=2 and flagged>=max(8,.25*total)
+    if not(refused or dense):
+        # Only the compact evidence control is atomic, not the live reading.
+        control=re.compile(r'(<a class="source-word-image"(?: title="Inspect original print")? href="#[^"]+"><img [^>]+/></a>)(</span>)(<a id="[^"]+" class="source-disclosure-ref" epub:type="noteref" href="#[^"]+"><sup>†</sup></a>)')
+        return control.sub(r'<span class="reflow-print-control">\1\3</span>\2',text),''
+    targets={m[2]for m in matches}
+    text=pattern.sub(lambda m:'<span class="reflow-flagged-reading"><span class="reflow-plausible">'+m[1]+'</span></span>',text)
+    action=re.compile(r'<a id="([^"]+)" class="source-disclosure-ref" epub:type="noteref" href="#([^"]+)"><sup>†</sup></a>')
+    text=action.sub(lambda m:'<span id="'+m[1]+'"></span>'if m[2]in targets else m[0],text)
+    ident=f'v4-d-unit-print-{pno}-{bid}';origin='r-'+ident
+    boxes=list(territories)
+    for match in matches:
+        asset=images.get(match[3],{})
+        inspection=images.get(asset.get('inspection_image',match[3]),asset)
+        if inspection.get('bbox'):boxes.append(inspection['bbox'])
+    bounds=list(extract.pymupdf.Rect(vision_reading.union(boxes)) & display.rect)
+    src=f'images/{ident}.jpg'
+    _word_disclosure_image(package,src,display,bounds)
+    images[src]=dict(page=pno,bbox=bounds,kind='flagged_unit_preview',coverage_eligible=False,
+        reason='refused_word_preview'if refused else'dense_flagged_reading',flagged_runs=len(matches))
+    extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>Underlined readings are plausible, not independently proved. This original print is shared by the unit.</p><img src="{src}" alt="Original printed reading"/><a href="#{origin}">Return</a></aside>')
+    supplement=(f'<div class="reflow-unit-print"><a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}">'
+        f'<img src="{src}" alt=""/><sup>†</sup></a></div>')
+    return text,supplement
+
+
 def _coalesce_inline_source_images(pieces,display,pno,bid,package,images):
     """Publish overlapping adjacent ink once, with all inspection links intact.
 
@@ -3766,12 +3806,14 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     source_reference=target,method='unplaced_occurrence_original_print')
             text=''.join(('' if (emission_groups.get(i,[i])[0]==0 or emission_groups.get(i,[i])[0] in wraps) else ' ')+piece
                          for i,piece in enumerate(pieces) if piece)
+            text,unit_print_html=_present_flagged_prints(text,display,pno,bid,territories,
+                package,image_records,extras)
             # The marker is typographic punctuation, not a standalone sentence block.
             text=re.sub(r'\s+(<a[^>]*class="noteref".*?</a>)',r'\1',text)
             text=(f'<span data-source-page="{pno}" data-source-block="{escape(bid,quote=True)}" '
                   f'data-source-regions="{escape(json.dumps(territories),quote=True)}">{text}</span>')
             tag='h2' if role=='heading' else 'p'
-            html=f'<{tag}>{text}</{tag}>'
+            html=f'<{tag}>{text}</{tag}>'+unit_print_html
             if role=='footnote':
                 label_html=escape(block['marker'])
                 if opening_proof and opening_proof['identity_status']=='UNPROVED':
@@ -3810,8 +3852,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         marker_disclosures.append(dict(unit,page=pno,block=bid,unit_kind='note_marker',
                             status='DEGRADED_SOURCE_CONTEXT',opening_identity='UNPROVED'))
                         marked+=1
-                asides.append((bid,f'<aside id="v4-note-{pno}-{bid}" class="footnote" epub:type="footnote"><p>{label_html} {text}</p>'))
-            elif role=='caption':body.append(f'<p class="caption">{text}</p>')
+                asides.append((bid,f'<aside id="v4-note-{pno}-{bid}" class="footnote" epub:type="footnote"><p>{label_html} {text}</p>'+unit_print_html))
+            elif role=='caption':body.append(f'<p class="caption">{text}</p>'+unit_print_html)
             else:body.append(html)
             geometry_words=native_geometry if native_geometry is not None else optical_local
             geometry_rows=_pixel_row_ids(geometry_words) if native_geometry is not None else pixel_rows
@@ -5998,7 +6040,9 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 edits.append((at,at,f'<a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a>'))
                 tokens[index]=chosen
             for a,z,value in sorted(edits,reverse=True):fragment=fragment[:a]+value+fragment[z:]
-            page['body'][position]=fragment
+            fragment,unit_print_html=_present_flagged_prints(fragment,display,page['pno'],record['id'],
+                record.get('source_regions') or [record['bbox']],package,images,page['asides'])
+            page['body'][position]=fragment+unit_print_html
             record['marked']=sorted(set(record.get('marked',[]))|set(conflicts))
             record['source_image_words']=sorted(set(record.get('source_image_words',[]))|
                 {i for i,d in conflicts.items()if d.get('source_image_only')})
