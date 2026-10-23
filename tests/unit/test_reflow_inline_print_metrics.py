@@ -241,9 +241,26 @@ def test_refused_picture_only_words_publish_legible_unit_print_not_inline_inspec
     assert not root.xpath('.//p//a[@class="source-word-image"]/img'), 'A declined one-line print must never fall back to a tiny full inspection image'
     prints=root.xpath('.//div[@class="reflow-unit-print"]')
     assert len(prints)==1,'Picture-only evidence is shared once after the unit'
-    assert len(prints[0].xpath('.//img'))==1
+    assert len(prints[0].xpath('.//img'))==count, 'Each unresolved occurrence keeps its own original evidence'
     assert 'height:1.4em'not in prints[0].xpath('.//img')[0].get('style','')
-    assert len(root.xpath('.//sup[text()="†"]'))==1
+    assert len(root.xpath('.//sup[text()="†"]'))==count
+    # Match the actual combined EPUB stylesheet against this published DOM.
+    # Moving a picture out of a paragraph does not defeat a more specific
+    # inherited one-em word-image rule by itself.
+    import tinycss2,cssselect2
+    from cps.services.reflow import build_epub
+    matcher=cssselect2.Matcher()
+    for rule in tinycss2.parse_stylesheet(build_epub.STYLESHEET,skip_comments=True,skip_whitespace=True):
+        if rule.type!='qualified-rule':continue
+        values={d.lower_name:tinycss2.serialize(d.value).strip()for d in tinycss2.parse_declaration_list(rule.content)if d.type=='declaration'}
+        for selector in cssselect2.compile_selector_list(tinycss2.serialize(rule.prelude)):
+            matcher.add_selector(selector,values)
+    image=prints[0].xpath('.//img')[0]
+    wrapped=next(w for w in cssselect2.ElementWrapper.from_xml_root(root).iter_subtree()if w.etree_element is image)
+    cascade={}
+    for specificity,order,pseudo,values in matcher.match(wrapped):cascade.update(values)
+    assert cascade.get('height')=='auto','Shared original print must escape inline word-height CSS'
+    assert cascade.get('max-width')=='95%','The block print must stay inside the reading column'
     complete=etree.fromstring(('<div xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(compiled['body']+compiled['asides'])+'</div>').encode())
     for image in complete.xpath('.//img'):
         assert image.get('src')in package.images
@@ -252,3 +269,4 @@ def test_refused_picture_only_words_publish_legible_unit_print_not_inline_inspec
     assert receipt['blocks'][0]['published_tokens']==printed.split()
     assert len(receipt['blocks'][0]['source_image_words'])==count
     assert not root.xpath('.//span[@class="reflow-flagged-reading"]')
+    assert len(compiled['asides'])==count,'Moving a print adds no redundant source disclosure'

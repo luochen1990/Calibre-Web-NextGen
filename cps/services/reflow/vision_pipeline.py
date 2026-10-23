@@ -1032,39 +1032,28 @@ def _remove_foreign_word_runs(result,bid,answer,optical,regions):
 
 
 def _present_print_only_images(text,display,pno,bid,territories,package,images,extras):
-    """A declined picture-only word preview becomes a shared block, not tiny ink.
+    """Declined word previews keep their own print at block scale.
 
-    The original per-occurrence inspection assets still own their exact source
-    parts. This unmasked unit preview is display context only; it earns no new
-    occurrence coverage and makes no transcription claim.
+    Move existing images and their reciprocal controls only. Combining their
+    rectangles would blur independent occurrence ownership, add a duplicate
+    disclosure, and could reintroduce unrelated ink between the source parts.
     """
     flags=[m.span()for m in re.finditer(r'<span class="reflow-flagged-reading">.*?</a></span>',text,re.S)]
     pattern=re.compile(r'<a class="source-word-image"[^>]*href="#([^"]+)"[^>]*><img src="([^"]+)"[^>]*/></a>'
-        r'(<a id="([^"]+)" class="source-disclosure-ref" epub:type="noteref" href="#\1"><sup>†</sup></a>)')
+        r'(?:\s*<a id="[^"]+" class="source-disclosure-ref" epub:type="noteref" href="#[^"]+"><sup>†</sup></a>)+')
     candidates=[m for m in pattern.finditer(text)if not any(a<=m.start()<b for a,b in flags)]
     selected=[m for m in candidates if images.get(m[2],{}).get('kind')!='inline_print_preview']
     offsets={m.start()for m in selected};compact={m.start()for m in candidates}-offsets
     text=pattern.sub(lambda m:''if m.start()in offsets else
         '<span class="reflow-print-control">'+m[0]+'</span>'if m.start()in compact else m[0],text)
     if not selected:return text,''
-    boxes=[]
+    prints=[]
     for match in selected:
-        asset=images.get(match[2],{})
-        inspection=images.get(asset.get('inspection_image',match[2]),asset)
-        if inspection.get('bbox'):boxes.append(inspection['bbox'])
-    bounds=list(extract.pymupdf.Rect(vision_reading.union(boxes or territories))&display.rect)
-    ident=f'v4-d-unit-ink-{pno}-{bid}';origin='r-'+ident;src=f'images/{ident}.jpg'
-    _word_disclosure_image(package,src,display,bounds)
-    images[src]=dict(page=pno,block=bid,bbox=bounds,kind='print_only_unit_preview',
-        coverage_eligible=False,reason='refused_picture_only_preview',printed_runs=len(selected))
-    details=''.join('<li><a href="#'+m[1]+'">Inspect printed span</a></li>'for m in selected)
-    extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>Unresolved words are retained in this original print.</p><img src="{src}" alt="Original printed reading"/><ul>{details}</ul><a href="#{origin}">Return</a></aside>')
-    # Preserve every existing inspection return destination, now at the shared
-    # print. Only its one visible control is a disclosure marker.
-    anchors=''.join('<a id="'+m[4]+'" href="#'+m[1]+'"></a>'for m in selected)
-    supplement=(f'<div class="reflow-unit-print">{anchors}<a class="source-word-image" href="#{ident}">'
-        f'<img src="{src}" alt=""/></a><a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}"><sup>†</sup></a></div>')
-    return text,supplement
+        # A multirow inspection has no credible one-line em metrics. Its
+        # original resource and masked source parts stay untouched.
+        original=re.sub(r' style="[^"]*"','',match[0])
+        prints.append('<span class="reflow-print-control">'+original+'</span>')
+    return text,'<div class="reflow-unit-print">'+'<br/>'.join(prints)+'</div>'
 
 
 def _present_flagged_prints(text,display,pno,bid,territories,package,images,extras):

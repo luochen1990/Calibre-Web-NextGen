@@ -149,6 +149,7 @@ def stylesheet():
 .reflow-print-control { white-space:nowrap; margin-left:.15em; }
 .reflow-unit-print { text-indent:0; margin:.4em 0; white-space:nowrap; }
 .reflow-unit-print img { max-width:95%; width:auto; height:auto; vertical-align:baseline; }
+.reflow-unit-print a.source-word-image img { max-width:95%; width:auto; height:auto; vertical-align:baseline; }
 .reflow-flagged-reading > a.source-word-image { margin-left:.15em; }
 a.source-word-image, a.source-disclosure-ref { text-decoration:none; color:inherit; }
 a.source-word-image img { max-width:none; width:auto; }
