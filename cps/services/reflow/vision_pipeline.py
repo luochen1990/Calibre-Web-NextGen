@@ -1046,13 +1046,16 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
     flagged=sum(len(re.sub(r'<[^>]+>',' ',m[1]).split())for m in matches)
     total=len(re.sub(r'<[^>]+>',' ',text).split())
     dense=len(matches)>=2 and flagged>=max(8,.25*total)
+    # Only the compact evidence control is atomic, not the live reading.
+    control=re.compile(r'(<a class="source-word-image"(?: title="Inspect original print")? href="#[^"]+"><img [^>]+/></a>)(</span>)(<a id="[^"]+" class="source-disclosure-ref" epub:type="noteref" href="#[^"]+"><sup>†</sup></a>)')
     if not(refused or dense):
-        # Only the compact evidence control is atomic, not the live reading.
-        control=re.compile(r'(<a class="source-word-image"(?: title="Inspect original print")? href="#[^"]+"><img [^>]+/></a>)(</span>)(<a id="[^"]+" class="source-disclosure-ref" epub:type="noteref" href="#[^"]+"><sup>†</sup></a>)')
         return control.sub(r'<span class="reflow-print-control">\1\3</span>\2',text),''
-    targets={m[2]for m in matches}
-    last_for_target={m[2]:m.start()for m in matches}
+    refused_targets={m[2]for m in matches if images.get(m[3],{}).get('kind')!='inline_print_preview'}
+    selected=[m for m in matches if dense or m[2]in refused_targets]
+    targets={m[2]for m in selected}
+    last_for_target={m[2]:m.start()for m in selected}
     def reading_link(match):
+        if match[2]not in targets:return match[0]
         identity=' id="r-'+match[2]+'"'if match.start()==last_for_target[match[2]]else''
         return ('<span class="reflow-flagged-reading"><span class="reflow-plausible"><a'+identity
             +' title="Compare this reading with original print" href="#'+match[2]+'">'
@@ -1061,26 +1064,27 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
     action=re.compile(r'<a id="([^"]+)" class="source-disclosure-ref" epub:type="noteref" href="#([^"]+)"><sup>†</sup></a>')
     text=action.sub(lambda m:''if m[2]in targets else m[0],text)
     ident=f'v4-d-unit-print-{pno}-{bid}';origin='r-'+ident
-    boxes=list(territories)
-    for match in matches:
+    boxes=[]
+    for match in selected:
         asset=images.get(match[3],{})
         inspection=images.get(asset.get('inspection_image',match[3]),asset)
         if inspection.get('bbox'):boxes.append(inspection['bbox'])
-    bounds=list(extract.pymupdf.Rect(vision_reading.union(boxes)) & display.rect)
+    bounds=list(extract.pymupdf.Rect(vision_reading.union(boxes or territories)) & display.rect)
     src=f'images/{ident}.jpg'
     _word_disclosure_image(package,src,display,bounds)
     images[src]=dict(page=pno,block=bid,bbox=bounds,kind='flagged_unit_preview',coverage_eligible=False,
-        reason='dense_flagged_reading'if dense else'refused_word_preview',flagged_runs=len(matches))
+        reason='dense_flagged_reading'if dense else'refused_word_preview',flagged_runs=len(selected))
     details=[]
     for target in sorted(targets):
-        note=next((item for item in extras if 'id="'+target+'"' in item),None)
-        paragraph=re.search(r'<p[^>]*>(.*?)</p>',note or '',re.S)
-        label=re.sub(r'<[^>]+>',' ',paragraph[1]).strip()if paragraph else'Compare the original reading'
+        # Show the highlighted words, not a second copy of each detailed
+        # explanation. Their individual source receipts remain one click away.
+        label=' '.join(re.sub(r'<[^>]+>',' ',m[1]).strip()for m in selected if m[2]==target)
         details.append('<li><a href="#'+target+'">'+label+'</a></li>')
     detail_links='<ul>'+''.join(details)+'</ul>'
     extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>Underlined readings are plausible, not independently proved. This original print is shared by the unit.</p><img src="{src}" alt="Original printed reading"/>{detail_links}<a href="#{origin}">Return</a></aside>')
     supplement=(f'<div class="reflow-unit-print"><a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}">'
         f'<img src="{src}" alt=""/><sup>†</sup></a></div>')
+    text=control.sub(r'<span class="reflow-print-control">\1\3</span>\2',text)
     return text,supplement
 
 
@@ -3575,6 +3579,20 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 # only the final run needs its dagger and return origin.
                 own=[evidence_boxes[i] for i in indices if i in evidence_boxes]
                 crop=vision_reading.union(own) if len(own)==len(indices) else box
+                bounded_gap=False
+                if len(indices)==1 and not own:
+                    index=indices[0]
+                    before=evidence_boxes.get(index-1);after=evidence_boxes.get(index+1)
+                    if before and after:
+                        height=min(before[3]-before[1],after[3]-after[1])
+                        overlap=min(before[3],after[3])-max(before[1],after[1])
+                        gap=after[0]-before[2]
+                        if height>0 and overlap>=.6*height and 1<gap<12*height:
+                            # The two grounded neighbours locate original ink,
+                            # not its spelling. Keep this display-only scope out
+                            # of identity, annotation and occurrence accounting.
+                            crop=[before[2],min(before[1],after[1]),after[0],max(before[3],after[3])]
+                            bounded_gap=True
                 decision={}
                 if len(indices)==1:
                     decision=result.get('word_notes',{}).get(indices[0],{})
@@ -3586,13 +3604,13 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                 # whether this particular word occupies one physical line.
                 # Its own complete bounds and the preview's ink test decide.
                 preview=(inline_print.preview(display,crop) if not dense_assistance
-                    and len(own)==len(indices) and not decision.get('source_parts') else None)
+                    and (len(own)==len(indices) or bounded_gap) and not decision.get('source_parts') else None)
                 suffix='' if indices==endings[print_owners[indices[-1]]] else '-run-'+str(indices[-1])
                 if preview is not None and hasattr(package,'image'):
                     data,metrics=preview;inline_src=f'images/{ident}{suffix}-inline.png'
                     package.image(inline_src,data)
                     image_records[inline_src]=dict(page=pno,kind='inline_print_preview',coverage_eligible=False,
-                        inspection_image=inspection_src,**metrics)
+                        inspection_image=inspection_src,display_scope='between_grounded_neighbours'if bounded_gap else'own_word_bounds',**metrics)
                     style=metrics['style']
                 elif suffix and not dense_assistance:
                     inline_src=f'images/{ident}{suffix}.jpg'

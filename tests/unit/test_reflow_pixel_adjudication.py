@@ -253,6 +253,7 @@ def test_native_conflict_next_to_inline_ordinal_keeps_live_text_and_style(tmp_pa
     authored=re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',authored)
     authored=re.sub(r'<span class="reflow-flagged-reading"><span class="reflow-plausible">(.*?)</span>.*?</span>',r'\1',authored)
     authored=re.sub(r'<span id="r-v4-[^"]+"></span>','',authored)
+    authored=re.sub(r'<a[^>]*title="Compare this reading with original print"[^>]*>(.*?)</a>',r'\1',authored)
     assert authored==fragment,'Only generated controls and appended print are excluded; the source word and ordinal style stay exact'
     assert sum('Unresolved source reading: remalns.'in aside for aside in page['asides'])==1
     assert records[0]['marked']==[4]

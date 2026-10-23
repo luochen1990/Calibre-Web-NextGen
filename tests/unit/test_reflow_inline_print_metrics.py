@@ -41,7 +41,7 @@ def test_multiline_source_box_cannot_supply_single_line_preview_metrics():
         assert inline_print.preview(SourceDisplay(doc,0),box) is None
 
 
-@pytest.mark.parametrize('case',['refused','dense','sparse','sparse_split_territories'])
+@pytest.mark.parametrize('case',['refused','dense','sparse','sparse_split_territories','sparse_unplaced','mixed'])
 def test_page_publication_uses_a_unit_print_instead_of_a_shrunken_inspection_asset(tmp_path,monkeypatch,case):
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
     from tests.unit.test_reflow_vision_pilot import answer,block
@@ -55,15 +55,23 @@ def test_page_publication_uses_a_unit_print_instead_of_a_shrunken_inspection_ass
         original=pa.adjudicate
         def uncertain(*a,**kw):
             result=original(*a,**kw)
-            indices=range(len(result['tokens']))if case=='dense'else[2]
+            indices=range(len(result['tokens']))if case=='dense'else[2,4]if case=='mixed'else[2]
             for i in indices:
                 result['marked'].add(i)
                 result.setdefault('word_notes',{})[i]=dict(status='UNRESOLVED',
                     source=[result['tokens'][i]],model=[result['tokens'][i]],chosen=[result['tokens'][i]],
                     method='unproved_example',source_range=[i,i+1],model_range=[i,i+1])
+            if case=='sparse_unplaced':
+                result['boxes'].pop(2,None)
+                result['word_notes'][2].update(source=[],method='pixel_read_inconclusive')
             return result
         monkeypatch.setattr(pa,'adjudicate',uncertain)
         if case=='refused':monkeypatch.setattr(inline_print,'preview',lambda *a:None)
+        if case=='mixed':
+            normal=inline_print.preview
+            def refuse_one(display,crop):
+                return None if crop[0]<=words[2]['bbox'][0] and crop[2]>=words[2]['bbox'][2] else normal(display,crop)
+            monkeypatch.setattr(inline_print,'preview',refuse_one)
         class Package:
             def __init__(self):self.images={}
             def image(self,name,data):self.images[name]=data
@@ -80,7 +88,12 @@ def test_page_publication_uses_a_unit_print_instead_of_a_shrunken_inspection_ass
     flags=root.xpath('.//span[@class="reflow-flagged-reading"]')
     assert flags,'The plausible reading must stay visibly flagged'
     assert receipt['blocks'][0]['published_tokens']==printed.split()
-    if case in ('refused','dense'):
+    if case=='mixed':
+        assert len(root.xpath('.//span[@class="reflow-flagged-reading"]//img'))==1, 'A refused word may not remove another word’s clean preview'
+        assert len(root.xpath('.//span[@class="reflow-plausible"]/a'))==1
+        assert len(root.xpath('.//div[@class="reflow-unit-print"]'))==1
+        assert len(root.xpath('.//sup[text()="†"]'))==2
+    elif case in ('refused','dense'):
         assert not root.xpath('.//span[@class="reflow-flagged-reading"]//img'), 'No broad inspection image may impersonate an inline word'
         unit=root.xpath('.//div[@class="reflow-unit-print"]')
         assert len(unit)==1,'Uncertain unit evidence is displayed once after the paragraph'
