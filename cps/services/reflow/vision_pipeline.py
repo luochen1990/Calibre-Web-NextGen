@@ -1065,7 +1065,7 @@ def _present_print_only_images(text,display,pno,bid,territories,package,images,e
     return text,'<div class="reflow-unit-print">'+'<br/>'.join(prints)+'</div>'
 
 
-def _present_flagged_prints(text,display,pno,bid,territories,package,images,extras,*,evidence_words=None,heading=False):
+def _present_flagged_prints(text,display,pno,bid,territories,package,images,extras,*,evidence_words=None,heading=False,protected_inspections=()):
     """Declined word previews and dense assistance use one legible unit print.
 
     An inspection asset may be a complete page or several physical rows. It
@@ -1123,8 +1123,18 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
                 # the fragment would detach another note's source receipt.
                 scoped=re.compile(r'(<aside\b[^>]*\bid="'+re.escape(match[2])+r'"[^>]*>)(.*?)(</aside>)',re.S)
                 def replace_inspection(found):
-                    inner=re.sub(r'(<img\b[^>]*\bsrc=")[^"]+("[^>]*>)',
-                        lambda m:m[1]+inspection+m[2],found[2])
+                    if match[2]in protected_inspections:
+                        # A neighboring typed reference may share the complete
+                        # original span. Keep its admitted image and add the
+                        # separately located word context; neither proof is
+                        # allowed to erase the other's printed occurrence.
+                        inner=found[2]
+                        if not same:
+                            at=inner.find('<img')
+                            inner=inner[:at]+'<p>Located reading context:</p><img src="'+inspection+'" alt="Located original reading"/><p>Original context for the adjoining reference:</p>'+inner[at:]
+                    else:
+                        inner=re.sub(r'(<img\b[^>]*\bsrc=")[^"]+("[^>]*>)',
+                            lambda m:m[1]+inspection+m[2],found[2])
                     if not inspection_placed:
                         inner=inner.replace('<p>','<p>Word placement is not proved; compare the complete source context. ',1)
                     return found[1]+inner+found[3]
@@ -3965,7 +3975,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             text=''.join(('' if (emission_groups.get(i,[i])[0]==0 or emission_groups.get(i,[i])[0] in wraps) else ' ')+piece
                          for i,piece in enumerate(pieces) if piece)
             text,unit_print_html=_present_flagged_prints(text,display,pno,bid,territories,
-                package,image_records,extras,evidence_words=pixel_words or local,heading=role=='heading')
+                package,image_records,extras,evidence_words=pixel_words or local,heading=role=='heading',
+                protected_inspections={item['source_reference']for item in marker_disclosures})
             # The marker is typographic punctuation, not a standalone sentence block.
             text=re.sub(r'\s+(<a[^>]*class="noteref".*?</a>)',r'\1',text)
             text=(f'<span data-source-page="{pno}" data-source-block="{escape(bid,quote=True)}" '

@@ -139,3 +139,65 @@ def test_relocated_inspection_does_not_rewrite_a_sibling_note_in_the_same_fragme
     root=etree.fromstring('<div>'+extras[0]+'</div>')
     assert root.xpath('.//aside[@id="test-print"]/img')[0].get('src')!='images/old.png'
     assert root.xpath('.//aside[@id="other-source"]/img')[0].get('src')=='images/other.jpg'
+
+
+def test_word_relocation_preserves_the_complete_inspection_shared_by_a_typed_reference():
+    with pymupdf.open()as doc:
+        p=doc.new_page(width=400,height=230)
+        reading='The blue garden stays green beside the quiet path.'
+        p.insert_text((25,55),reading,fontsize=12)
+        words=[dict(text=w[4],bbox=list(w[:4]))for w in p.get_text('words')]
+        images={'images/old.png':dict(kind='inline_print_preview',bbox=[20,140,60,160])}
+        extras=['<aside id="test-print"><p>Shared original detail</p><img src="images/old.png"/></aside>']
+        text=reading.replace('garden',reading_tiers.flagged_html('garden','images/old.png','test-print','height:9em'))
+        vp._present_flagged_prints(text,SourceDisplay(doc,0),0,'sample',[[20,140,340,160]],Package(),images,extras,
+            evidence_words=words,protected_inspections={'test-print'})
+    root=etree.fromstring('<div>'+extras[0]+'</div>')
+    shown=root.xpath('.//aside[@id="test-print"]/img')
+    assert len(shown)==2
+    assert images[shown[0].get('src')]['bbox'][3]<80
+    assert shown[1].get('src')=='images/old.png'
+
+
+def test_compiler_preserves_the_admitted_marker_image_when_relocating_its_neighbor(tmp_path,monkeypatch):
+    from cps.services.reflow import pixel_adjudication as pa
+    from tests.unit.test_reflow_vision_pilot import block
+    body='The blue garden <n:n1> stays beside the quiet path.'
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=400,height=300)
+        page.insert_text((20,60),body.replace(' <n:n1>',''),fontsize=12)
+        body_words=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        garden=body_words[2]['bbox'];marker=[garden[2]+.2,garden[1],garden[2]+4,garden[1]+6]
+        page.insert_text((marker[0],marker[3]),'1',fontsize=6)
+        page.insert_text((20,170),'1 A short note stays readable.',fontsize=10)
+        notes=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')if w[1]>120]
+        words=body_words+notes
+        monkeypatch.setattr(pa,'read_crop',lambda *a,**k:pa.CropWitness(words))
+        original=pa.adjudicate
+        def unsettled(*a,**kw):
+            result=original(*a,**kw)
+            if 'garden'in result['tokens']:
+                i=result['tokens'].index('garden');result['marked'].add(i)
+                result['boxes'][i]=[15,40,390,80]
+                result.setdefault('word_notes',{})[i]=dict(status='UNRESOLVED',
+                    source=['garden'],model=['garden'],chosen=['garden'],method='synthetic_uncertain_word')
+            return result
+        monkeypatch.setattr(pa,'adjudicate',unsettled)
+        monkeypatch.setattr(vp,'_literal_note_refs',lambda *a,**kw:{})
+        def proof(tokens,*a,**kw):
+            return ({tokens.index('<n:n1>'):dict(status='UNPROVED',source_bbox=marker,
+                reason='synthetic_ambiguous_reference')}if '<n:n1>'in tokens else{})
+        monkeypatch.setattr(vp,'_placeholder_display_evidence',proof)
+        context=dict(cache=tmp_path/'cache',labels={'1':[(0,'n1')]},owners={},
+            catalogue={(0,'n1'):{'target':'v4-note-0-n1','label':'1'}},refs={})
+        package=Package();assets={}
+        compiled,receipt=vp.compile_page({'blocks':[
+            block(body,bbox=(0,0,1000,330)),
+            block('A short note stays readable.',ident='n1',role='footnote',marker='1',bbox=(0,400,1000,1000))]},
+            words,SourceDisplay(doc,0),0,package,assets,pixel_words=words,note_context=context)
+    shared=[r for r in receipt['note_marker_disclosures']if r.get('shared_existing_source_disclosure')]
+    assert len(shared)==1
+    root=etree.fromstring('<div xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(compiled['body']+compiled['asides'])+'</div>')
+    admitted=root.xpath('//*[@id=$target]//img',target=shared[0]['source_reference'])
+    assert any(image.get('src')==shared[0]['source_image']for image in admitted)
+    assert any(image.get('src')!=shared[0]['source_image']for image in admitted)
