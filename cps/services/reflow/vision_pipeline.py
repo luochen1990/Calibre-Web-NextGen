@@ -6660,6 +6660,31 @@ def cover_missing_lines(answer,optical,source_words,display,regions=None,body_ow
         sm=SequenceMatcher(None,optical_text,source_text,autojunk=False)
         score=sum(size for _,_,size in sm.get_matching_blocks())/max(1,len(run))
         chosen=local if score>=.75 else run
+        # A clipped ownership strip can omit a tail which the reader already
+        # placed in the right paragraph. Exact consecutive source occurrences
+        # settle its owner before a new recovery unit can steal that tail.
+        # This grants geometry, never a new transcription or a lexical guess.
+        ordered_run=_pixel_line_order(run)
+        run_tokens=[vision_reading.normalized(w['text'])for w in ordered_run]
+        tail_owners=[]
+        if regions is not None and len(run_tokens)>=2 and run_tokens==[
+                vision_reading.normalized(w['text'])for w in chosen]:
+            for candidate in blocks:
+                tokens=[vision_reading.normalized(t)for t in candidate['text'].split()]
+                if (candidate['role']!='body' or len(tokens)<len(run_tokens)+2
+                        or tokens[-len(run_tokens):]!=run_tokens):continue
+                ink=_owned_block_words(candidate,answer,optical,display,regions,body_owners,ordered=True)
+                if (len(ink)<2 or tokens[-len(run_tokens)-2:-len(run_tokens)]!=[
+                        vision_reading.normalized(w['text'])for w in ink[-2:]]):continue
+                if (_source_instance(ink[-1]),_source_instance(ordered_run[0]))not in row_pairs:continue
+                if any(regions['_instances'].get(_source_instance(w),candidate['id'])!=candidate['id']
+                       for w in run+chosen):continue
+                tail_owners.append(candidate)
+        if len(tail_owners)==1:
+            owner=tail_owners[0]['id']
+            regions.setdefault(owner,[]).append(bbox)
+            regions['_instances'].update((_source_instance(w),owner)for w in run+chosen)
+            continue
         # Geometry, rather than the current omission list's index, owns a
         # recovered ID. Removing a failed neighbour cannot rename another unit.
         ident='recovered-'+hashlib.sha256(repr(tuple(round(v, 3) for v in bbox)).encode()).hexdigest()[:16]
