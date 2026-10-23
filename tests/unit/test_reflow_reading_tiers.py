@@ -142,7 +142,7 @@ def test_assistance_ranks_observed_lexical_candidates_without_certifying_them(so
 
 
 def assert_flagged_print(markup, readings=None):
-    """Every plausible run keeps live words and a linked decorative print copy."""
+    """Every plausible run keeps live words and linked inline or shared print."""
     root = ET.fromstring('<root xmlns:epub="http://www.idpf.org/2007/ops">'+markup+'</root>')
     flags = [n for n in root.iter() if n.get('class') == 'reflow-flagged-reading']
     assert flags
@@ -151,9 +151,19 @@ def assert_flagged_print(markup, readings=None):
         live = next(n for n in flag if n.get('class') == 'reflow-plausible')
         reading = ''.join(live.itertext())
         assert reading.strip()
-        link = next(n for n in flag if n.get('class') == 'source-word-image')
+        links = [n for n in flag.iter() if n.get('class') == 'source-word-image']
+        if links:
+            assert len(links) == 1
+            link = links[0]
+        else:
+            # Dense or refused inline evidence has one explicit unit print.
+            units = [n for n in root.iter() if n.get('class') == 'reflow-unit-print']
+            assert len(units) == 1
+            link = units[0][0]
+            assert link.get('class') == 'source-disclosure-ref'
+            assert len(link) == 2 and link[1].tag == 'sup' and link[1].text == '†'
         assert link.get('href', '').startswith('#v4-')
-        assert len(link) == 1 and link[0].tag == 'img'
+        assert link[0].tag == 'img'
         assert link[0].get('src', '').startswith('images/') and link[0].get('alt') == ''
         actual.append(reading)
     if readings is not None:

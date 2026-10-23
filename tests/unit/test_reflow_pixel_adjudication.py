@@ -247,12 +247,14 @@ def test_native_conflict_next_to_inline_ordinal_keeps_live_text_and_style(tmp_pa
         vp._audit_native_pixels(doc,page,records,tmp_path,Package(),{})
     assert '1<sup>st</sup>'in page['body'][0]
     assert page['body'][0].count('class="source-disclosure-ref"')==1
-    authored=re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',page['body'][0])
     from tests.unit.test_reflow_reading_tiers import assert_flagged_print
-    assert_flagged_print(authored,['remalns'])
-    authored=re.sub(r'<span class="reflow-flagged-reading"><span class="reflow-plausible">(.*?)</span><a class="source-word-image".*?</a></span>',r'\1',authored)
+    assert_flagged_print(page['body'][0],['remalns'])
+    authored=re.sub(r'<div class="reflow-unit-print">.*?</div>','',page['body'][0])
+    authored=re.sub(r'<a[^>]*class="source-disclosure-ref"[^>]*>.*?</a>','',authored)
+    authored=re.sub(r'<span class="reflow-flagged-reading"><span class="reflow-plausible">(.*?)</span>.*?</span>',r'\1',authored)
+    authored=re.sub(r'<span id="r-v4-[^"]+"></span>','',authored)
     assert authored==fragment,'Only generated controls and appended print are excluded; the source word and ordinal style stay exact'
-    assert len(page['asides'])==1 and 'Unresolved source reading: remalns.'in page['asides'][0]
+    assert sum('Unresolved source reading: remalns.'in aside for aside in page['asides'])==1
     assert records[0]['marked']==[4]
 
 
@@ -520,7 +522,7 @@ def test_unplaced_multiword_edit_has_bounded_word_notes_not_repeated_paragraphs(
     notes=[aside for aside in page['asides'] if 'Unresolved source reading' in aside]
     assert len(notes)==1,'One original occurrence owns this unproved multiword rewrite'
     assert all('small wooden sample and open' not in aside for aside in notes)
-    assert any('source-word-image' in aside for aside in page['asides'])
+    assert any('class="reflow-unit-print"'in aside and '<img 'in aside for aside in page['asides'])
 
 
 @pytest.mark.parametrize('kind',['word','label','label-punctuation','glyphs'])
@@ -1546,8 +1548,10 @@ def test_fallback_extra_ink_survives_the_real_publication_as_its_own_image(tmp_p
     text=' '.join(ink.body_texts(docs))
     assert 'Before lunch'in text and 'a tray outside today.'in text
     assert 'carried'not in text, 'The image contains that word once; do not repeat it as live text'
-    images=[n for root in docs.values()for parent in root.iter()if parent.get('class')!='reflow-flagged-reading'
-            for n in parent if n.get('class')=='source-word-image']
+    appended={id(n)for root in docs.values()for flag in root.iter()
+              if flag.get('class')=='reflow-flagged-reading'for n in flag.iter()}
+    images=[n for root in docs.values()for n in root.iter()
+            if n.get('class')=='source-word-image'and id(n)not in appended]
     assert len(images)==1 and len(images[0])==1
     decision=next(d for d in record['adjudication']if d.get('method')=='unsettled_additional_pixel_ink')
     box=decision['source_bbox']
@@ -6147,3 +6151,67 @@ def test_a_first_line_indent_cannot_cut_an_internal_printed_row_opening(case):
         local=vp._owned_block_words(block,answer,pixels,display,widened,{},ordered=True)
         assert [v['text']for v in local]==tokens,'Added opening words stay on their own row, before its existing words'
     else:assert not added,'A clipped rectangle cannot take another owner, guess letters or jump a gap'
+
+
+@pytest.mark.parametrize('optical_document',[False,True])
+def test_optically_authored_native_map_cannot_certify_a_confusable_nonword(tmp_path,monkeypatch,optical_document):
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow import text_quality
+    printed='The surnmer garden stays green.'
+    monkeypatch.setattr(text_quality,'english_lexicon',lambda:{'the','summer','garden','stays','green'})
+    with pymupdf.open()as doc:
+        leaf=doc.new_page(width=360,height=150);leaf.insert_text((25,60),printed,fontsize=12)
+        if optical_document:doc.set_metadata({'producer':'Paper Capture Plug-in with ClearScan'})
+        words=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in leaf.get_text('words')]
+        # Identical recognition of an OCR-authored map is not independent
+        # evidence that its suspicious letter decoding is correct.
+        monkeypatch.setattr(pa,'read_crop',lambda *a,**k:pa.CropWitness(words))
+        page=dict(pno=0,body=['<p>'+printed+'</p>'],asides=[])
+        records=[dict(id='native-0',role='body',bbox=[20,40,340,75],source_regions=[[20,40,340,75]])]
+        class Package:
+            def image(self,*a,**k):pass
+        vp._audit_native_pixels(doc,page,records,tmp_path,Package(),{})
+    if optical_document:
+        assert records[0]['adjudication'][0]['method']=='optical_map_confusable_nonword'
+        assert records[0]['flagged_readings']['1']['tier']=='flagged'
+        assert 'reflow-flagged-reading'in page['body'][0]
+        assert 'source-word-image'in page['body'][0]or'reflow-unit-print'in page['body'][0]
+        assert records[0]['adjudication'][0]['status']=='UNRESOLVED'
+    else:
+        assert records[0]['pixel_adjudication_status']=='VISIBLE_NATIVE_PRINT'
+        assert page['body']==['<p>'+printed+'</p>']
+
+
+@pytest.mark.parametrize('source_prefix',['some-','other-'])
+def test_page_compilation_keeps_a_divided_word_complete_when_page_ocr_misreads_its_prefix(tmp_path,monkeypatch,source_prefix):
+    """Synthetic ink divides something; OCR's zero supplies geometry only."""
+    import pymupdf
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import block
+    printed=['Read this clear before some-','thing covers the open garden today.']
+    with pymupdf.open()as original,pymupdf.open()as scan:
+        page=original.new_page(width=400,height=180)
+        for y,line in zip([60,80],printed):page.insert_text((20,y),line,fontsize=12)
+        source=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in page.get_text('words')]
+        optical=[dict(w,text='s0me-'if w['text']=='some-'else w['text'])for w in source]
+        prefix=source[4];source[4]=dict(prefix,text=source_prefix)
+        copied=scan.new_page(width=400,height=180);copied.insert_image(copied.rect,pixmap=page.get_pixmap())
+        witness=pa.CropWitness([dict(w,text='some-'if w['text']==source_prefix else w['text'])for w in source])
+        monkeypatch.setattr(pa,'read_crop',lambda *a,**k:witness)
+        model='Read this clear before something covers the open garden today.'
+        b=block(model);regions={'b1':[[18,44,prefix['bbox'][0]-2,65],[18,65,360,85]],
+            '_instances':{vp._source_instance(w):'b1'for w in optical if w['text']!='s0me-'}}
+        class Package:
+            def image(self,*a):pass
+        compiled,receipt=vp.compile_page(dict(blocks=[b]),source,SourceDisplay(scan,0),0,
+            Package(),{},pixel_words=optical,regions=regions,body_owners={},
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    record=receipt['blocks'][0]
+    if source_prefix=='some-':
+        assert any(g['kind']=='complete_optical_row_territory'for g in record['guard'])
+        assert record['published_tokens']==model.split()
+        assert 'thing'not in record['published_tokens'],'A crop of a tail cannot certify the complete lexical word'
+    else:
+        assert not any(g['kind']=='complete_optical_row_territory'for g in record['guard'])

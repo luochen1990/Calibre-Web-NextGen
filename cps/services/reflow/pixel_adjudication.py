@@ -2689,6 +2689,40 @@ def audit_local_numeric_suffixes(result,boxes,witness):
         result['marked'].add(i);boxes[i]=bounds
 
 
+def optical_map_doubts(tokens):
+    """A unique stroke-confusable dictionary neighbor is doubt, not a repair.
+
+    An OCR-authored Unicode map and a reader exposed to it can repeat the same
+    error. Dictionary evidence may require a visible print disclosure even if
+    recognition agrees; it never proves the replacement letters or edits a
+    reliably authored native word.
+    """
+    from .text_quality import english_lexicon
+    vocabulary=english_lexicon();notes={}
+    groups=(('rn','m'),('ni','m'),('rn','u'),('rn','cu'),('cl','d'),('vv','w'))
+    pairs=groups+tuple((b,a)for a,b in groups)
+    for index,token in enumerate(tokens):
+        match=re.fullmatch(r'([\"“‘\'(\[]*)([A-Za-z]{5,})([.,;:!?\"”’\')\]]*)',token)
+        if not match:continue
+        word=match[2].casefold()
+        if word in vocabulary:continue
+        candidates=set()
+        for a,b in pairs:
+            start=word.find(a)
+            while start>=0:
+                value=word[:start]+b+word[start+len(a):]
+                if value in vocabulary:candidates.add(value)
+                start=word.find(a,start+1)
+        if len(candidates)!=1:continue
+        value=candidates.pop()
+        if match[2].isupper():value=value.upper()
+        elif match[2].istitle():value=value.capitalize()
+        notes[index]=dict(source=[token],model=[token],chosen=[token],
+            alternative=[match[1]+value+match[3]],status='UNRESOLVED',
+            method='optical_map_confusable_nonword')
+    return notes
+
+
 def audit_agreement(tokens, source, witness, boundary_proof=None, word_boxes=None,conserved_boundaries=None):
     """Flag pixel conflicts even where a layer and the first reading agree.
 

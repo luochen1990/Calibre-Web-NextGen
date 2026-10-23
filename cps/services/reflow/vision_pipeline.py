@@ -844,8 +844,16 @@ def _complete_optical_row_territory(block,answer,pixels,display,regions,body_own
                     or not .5*height<(next_box[1]+next_box[3])/2-middle<=2.5*height
                     or next_box[0]>=left[0] or len(selected)!=1):continue
             prefix=selected[0];box=prefix['bbox']
+            # Page OCR may misread a stroke in the divided prefix. A unique
+            # co-located source occurrence can still locate that same ink; the
+            # enlarged upright crop must subsequently prove its letters.
+            from .pixel_adjudication import _complete_word_occurrence
+            mapped_prefix=[w for w in source_words
+                if w['text'].rstrip().endswith(('-', '­', '‐'))
+                and key(w['text'])+source[a]==model[b]
+                and _complete_word_occurrence(w,prefix)]
             if (not prefix['text'].rstrip().endswith(('-', '­', '‐'))
-                    or key(prefix['text'])+source[a]!=model[b]
+                    or key(prefix['text'])+source[a]!=model[b] and len(mapped_prefix)!=1
                     or box[0]-left[2]>2*height):continue
             tail_middle=(next_box[1]+next_box[3])/2
             if any(next_box[0]-.5*height<=(w['bbox'][0]+w['bbox'][2])/2<=box[2]+.5*height
@@ -5828,10 +5836,17 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
             record['native_source_occurrences']=copy.deepcopy(source)
             tokens=_seam_text(page['body'][position]).split()
             record['published_tokens']=tokens
+            # A scan-to-vector producer authors its Unicode map by recognition.
+            # Repeating a suspicious OCR spelling is not independent letter
+            # identity, even though those visible vectors are original paint.
+            metadata=doc.metadata or {}
+            optical_map=bool(re.search(r'ClearScan|Paper Capture|ABBYY|OCRmyPDF',
+                str(metadata.get('producer',''))+' '+str(metadata.get('creator','')),re.I))
+            lexical_doubts=pixel_adjudication.optical_map_doubts(tokens)if optical_map else{}
             from .native_text import drawn_word_authority,drawn_word_authorities
             original=[dict(w,bbox=list(display.source_rect(w['bbox'])*display.page.derotation_matrix),
                 **({'native_parts':[dict(p,bbox=list(display.source_rect(p['bbox'])*display.page.derotation_matrix))for p in w['native_parts']]}if 'native_parts'in w else{}))for w in source]
-            if drawn_word_authority(doc[page['pno']],original):
+            if drawn_word_authority(doc[page['pno']],original) and not lexical_doubts:
                 literal=lambda values:''.join(vision_reading.normalized(t)for t in values)
                 native_view=_native_wrap_view(source,tokens)
                 from collections import Counter
@@ -5943,6 +5958,12 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 for i in legacy:
                     conflicts[i]=dict(source=[source[i]['text']],model=[source[i]['text']],
                         chosen=[source[i]['text']],status='UNRESOLVED',method='unproved_native_character_map')
+            # An independent complete repair can resolve the spelling. Equal
+            # suspect readings merely repeat the optically authored map.
+            for i,decision in lexical_doubts.items():
+                if not(conflicts.get(i,{}).get('status')=='RESOLVED' and
+                       conflicts[i].get('chosen')!=decision['chosen']):
+                    conflicts[i]=decision
             record['adjudication']=list(conflicts.values())
             if not conflicts:continue
             fragment=page['body'][position]
