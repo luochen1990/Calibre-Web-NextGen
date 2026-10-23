@@ -288,16 +288,34 @@ def discard_dot_leaders(result, display, neighbors):
     """
     import statistics
     from . import vision_pixels
-    heights=[w['bbox'][3]-w['bbox'][1]for w in neighbors
-        if sum(c.isalpha()for c in w['text'])>=3]
-    if not heights:return
-    normal_height=statistics.median(heights)
+    def dot_run(box, normal):
+        # OCR rectangles include whitespace and can span a whole contents row.
+        # Judge the physical components, keeping raster work bounded separately.
+        width,height=box[2]-box[0],box[3]-box[1]
+        picture,components=vision_pixels._word_ink_components(display.pixmap(
+            box,scale=8,gray=True,max_pixels=200_000))
+        if not 3<=len(components)<=100:return 0
+        sx=width/picture.width;sy=height/picture.height;pixels=picture.load();centers=[];diameters=[]
+        for x0,y0,x1,y1 in components:
+            cw,ch=(x1-x0)*sx,(y1-y0)*sy
+            if not(.4<=cw/max(.01,ch)<=2.5 and max(cw,ch)<normal*.35):return 0
+            dark=sum(pixels[x,y]<150 for y in range(y0,y1)for x in range(x0,x1))
+            if dark<.65*(x1-x0)*(y1-y0):return 0
+            centers.append(((x0+x1)*sx/2,(y0+y1)*sy/2));diameters.append(max(cw,ch))
+        centers.sort();diameter=statistics.median(diameters)
+        gaps=[b[0]-a[0]for a,b in zip(centers,centers[1:])];pitch=statistics.median(gaps)
+        if (max(y for x,y in centers)-min(y for x,y in centers)<=diameter*.6
+                and 1.5*diameter<=pitch<=8*diameter
+                and all(abs(g-pitch)<=pitch*.3 for g in gaps)):
+            return len(components)
+        return 0
+
     regions=[];removed=set()
     for index,token in enumerate(result['tokens']):
         box=result.get('boxes',{}).get(index)
         if not box or len(token)>10 or not any(c.isalnum()for c in token):continue
         width,height=box[2]-box[0],box[3]-box[1]
-        if not(0<height<min(20,normal_height*.4) and 0<width<=180):continue
+        if not(0<height<20 and width>0):continue
         middle=(box[1]+box[3])/2
         left=[w for w in neighbors if sum(c.isalpha()for c in w['text'])>=2
             and w['bbox'][2]<=box[0]+.1 and w['bbox'][1]<=middle<=w['bbox'][3]]
@@ -306,23 +324,13 @@ def discard_dot_leaders(result, display, neighbors):
         if not left or not right:continue
         a=max(left,key=lambda w:w['bbox'][2])['bbox'];b=min(right,key=lambda w:w['bbox'][0])['bbox']
         normal=min(a[3]-a[1],b[3]-b[1])
-        if normal<=0 or height>=normal*.4 or box[0]-a[2]>normal*12 or b[0]-box[2]>normal*12:continue
-        picture,components=vision_pixels._word_ink_components(display.pixmap(box,scale=8,gray=True,max_pixels=200_000))
-        if not 3<=len(components)<=100:continue
-        sx=width/picture.width;sy=height/picture.height;pixels=picture.load();centers=[];diameters=[]
-        for x0,y0,x1,y1 in components:
-            cw,ch=(x1-x0)*sx,(y1-y0)*sy
-            if not(.4<=cw/max(.01,ch)<=2.5 and max(cw,ch)<normal*.35):break
-            dark=sum(pixels[x,y]<150 for y in range(y0,y1)for x in range(x0,x1))
-            if dark<.65*(x1-x0)*(y1-y0):break
-            centers.append(((x0+x1)*sx/2,(y0+y1)*sy/2));diameters.append(max(cw,ch))
-        else:
-            centers.sort();diameter=statistics.median(diameters)
-            gaps=[b[0]-a[0]for a,b in zip(centers,centers[1:])];pitch=statistics.median(gaps)
-            if (max(y for x,y in centers)-min(y for x,y in centers)<=diameter*.6
-                    and 1.5*diameter<=pitch<=8*diameter
-                    and all(abs(g-pitch)<=pitch*.3 for g in gaps)):
-                removed.add(index);regions.append(list(box))
+        if normal<=0 or box[0]-a[2]>normal*12 or b[0]-box[2]>normal*12:continue
+        count=dot_run(box,normal)
+        if not count:continue
+        # Three dots alone also describe an ellipsis. A short OCR fragment may
+        # still belong to a longer leader, proved by the original row gap.
+        if count==3 and dot_run([a[2],box[1],b[0],box[3]],normal)<=3:continue
+        removed.add(index);regions.append(list(box))
     if not removed:return
     kept=[i for i in range(len(result['tokens']))if i not in removed];mapping={old:new for new,old in enumerate(kept)}
     result['tokens']=[result['tokens'][i]for i in kept]
