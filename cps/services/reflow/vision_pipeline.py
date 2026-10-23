@@ -3487,7 +3487,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             reading_tiers.conserve_punctuation_boundaries(result,baseline if adjudication else local,first_tokens if adjudication else proposed)
             _remove_foreign_word_runs(result,bid,answer,pixel_words or [],regions)
             reading_tiers.join_letter_spaced_readings(result,witness or [])
-            reading_tiers.join_fragmented_readings(result,witness or [])
+            reading_tiers.join_fragmented_readings(result,witness if witness is not None else [])
             reading_tiers.discard_dot_leaders(result,display,pixel_words or local)
             if any(g.get('kind')in('foreign_owned_run_published_once','letter_spaced_printed_words')
                    for g in result['guard']):

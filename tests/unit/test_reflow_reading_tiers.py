@@ -248,10 +248,11 @@ def test_dictionary_ranker_cannot_erase_a_reader_diacritic_or_possessive(first, 
     assert choice['reading'] == first
 
 
+@pytest.mark.parametrize('decoded_words',[True,False])
 @pytest.mark.parametrize('whole,pieces',[('carefully',['care','fuily']),('11th',['I','Ith'])])
 @pytest.mark.parametrize('split_source_ranges',[False,True])
 @pytest.mark.parametrize('boundary',[True,False,None])
-def test_real_compiler_assigns_a_tier_to_the_whole_word_not_its_optical_fragments(tmp_path,monkeypatch,boundary,split_source_ranges,whole,pieces):
+def test_real_compiler_assigns_a_tier_to_the_whole_word_not_its_optical_fragments(tmp_path,monkeypatch,boundary,split_source_ranges,whole,pieces,decoded_words):
     import pymupdf
     from cps.services.reflow import pixel_adjudication as pa,vision_pipeline as vp
     from cps.services.reflow.source_display import SourceDisplay
@@ -261,7 +262,9 @@ def test_real_compiler_assigns_a_tier_to_the_whole_word_not_its_optical_fragment
         pg=drawn.new_page(width=400,height=160);pg.insert_text((20,60),printed,fontsize=12)
         words=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in pg.get_text('words')]
         pg=scan.new_page(width=400,height=160);pg.insert_image(pg.rect,pixmap=drawn[0].get_pixmap())
-        witness=pa.CropWitness(words);witness.fragment_boundary=lambda word:boundary
+        witness=pa.CropWitness(words if decoded_words else [])
+        seen_context=[]
+        witness.fragment_boundary=lambda word:seen_context.append(dict(word)) or boundary
         monkeypatch.setattr(pa,'read_crop',lambda *a,**k:witness)
         old=pa.adjudicate
         def fragmented(*a,**kw):
@@ -287,6 +290,7 @@ def test_real_compiler_assigns_a_tier_to_the_whole_word_not_its_optical_fragment
         assert [v['reading']for v in record['flagged_readings'].values()]==[whole]
         root,flags=assert_flagged_print(''.join(page['body']),[whole])
         assert len(flags)==1
+        if whole[0].isdigit():assert any(c.get('ordinal_candidate')==whole for c in seen_context)
         assert not any(d['status']=='RESOLVED'for d in record['adjudication'])
     else:
         assert record['published_tokens'][4:6]==pieces,'An unproved boundary cannot silently fuse printed words'
@@ -427,3 +431,31 @@ def test_typed_ordinal_fragments_get_one_flagged_whole_word_only_with_printed_bo
     else:
         assert result['tokens']==source
         assert result['marked']=={0,1}
+
+
+@pytest.mark.parametrize('gap,clipped,count,expected',[(18,False,4,True),(26,False,4,False),(18,True,4,None),(18,False,3,None)])
+def test_ordinal_context_groups_ambiguous_sidebearings_without_certifying_letters(gap,clipped,count,expected,tmp_path,monkeypatch):
+    import pymupdf
+    from PIL import Image,ImageDraw
+    from cps.services.reflow import pixel_adjudication as pa
+    image=Image.new('RGB',(128,80),'white');draw=ImageDraw.Draw(image)
+    positions=[(0 if clipped else 4,19),(19+gap,34+gap),(70,85),(95,119)]
+    for left,right in positions[:count]:draw.rectangle((left,8,right-1,66),fill='black')
+    class Display:
+        rect=pymupdf.Rect(0,0,16,10)
+        def pixmap(self,*a,**kw):
+            import io
+            stream=io.BytesIO();image.save(stream,format='PNG');return pymupdf.Pixmap(stream.getvalue())
+    word=dict(bbox=[0,0,16,10])
+    ordinary=pa._fragment_word_boundary(Display(),word)
+    grouped=pa._fragment_word_boundary(Display(),dict(word,ordinal_candidate='11th'))
+    assert grouped is expected
+    monkeypatch.setattr(pa,'_read_crop',lambda *a,**kw:[])
+    witness=pa.read_crop(Display(),[word['bbox']],tmp_path/'cache')
+    assert len(witness)==0 and witness.fragment_boundary(word)is ordinary
+    assert witness.fragment_boundary(dict(word,ordinal_candidate='11th'))is expected
+    if expected is True:
+        assert ordinary is None,'Typed assistance does not change the stricter ordinary boundary proof'
+        note=dict(source=['I','Ith'],model=['11th'],chosen=['11th'],status='UNRESOLVED',
+            method='plausible_complete_word_over_optical_fragments')
+        assert tiers.choose('11th',note)['tier']=='flagged'

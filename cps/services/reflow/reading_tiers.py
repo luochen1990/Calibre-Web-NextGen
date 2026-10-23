@@ -253,7 +253,9 @@ def join_fragmented_readings(result, witness):
                 and min(a[3],b[3])-max(a[1],b[1])>=.6*min(a[3]-a[1],b[3]-b[1]))
                 for a,b in zip(parts,parts[1:])):continue
         box=[min(b[0]for b in parts),min(b[1]for b in parts),max(b[2]for b in parts),max(b[3]for b in parts)]
-        if boundary(dict(bbox=box))is not True:continue
+        context=dict(bbox=box)
+        if ordinal:context['ordinal_candidate']=model[0]
+        if boundary(context)is not True:continue
         if any(start<z and end>a for a,z,_,_,_ in groups):continue
         note=dict(decision,chosen=model,method='plausible_complete_word_over_optical_fragments',
             source_bbox=box,optical_fragment_boxes=[list(b)for b in parts],source_image_only=False)

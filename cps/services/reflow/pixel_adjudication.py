@@ -2154,10 +2154,10 @@ def read_crop(display, regions, cache):
                 return True
             except (RuntimeError,OSError,ValueError,KeyError):return None
         @lru_cache(maxsize=128)
-        def fragment_boundary(bounds):
-            try:return _fragment_word_boundary(display,dict(bbox=bounds))
+        def fragment_boundary(bounds,ordinal_candidate=None):
+            try:return _fragment_word_boundary(display,dict(bbox=bounds,ordinal_candidate=ordinal_candidate))
             except (RuntimeError,OSError,ValueError,KeyError):return None
-        result.fragment_boundary=lambda word:fragment_boundary(tuple(word['bbox']))
+        result.fragment_boundary=lambda word:fragment_boundary(tuple(word['bbox']),word.get('ordinal_candidate'))
         result.word_separation=lambda word,parts:word_separation(tuple(word['bbox']),tuple(parts))
         result.word_scope=lambda word:word_scope(tuple(word['bbox']))
         def word_end_dash(word,scope):
@@ -2211,6 +2211,18 @@ def _fragment_word_boundary(display,word):
           for left,right in zip(runs,runs[1:])]
     if max(gaps)<=.2:return True
     if max(gaps)>=.25:return False
+    ordinal=word.get('ordinal_candidate')
+    if (isinstance(ordinal,str) and re.fullmatch(r'\d{1,3}(?:st|nd|rd|th)',ordinal,re.I)
+            and len(runs)==len(ordinal) and len(components)==len(runs)
+            and all(c[0]>1 and c[1]>1 and c[2]<picture.width-1
+                    and c[3]<picture.height-1 for c in components)
+            and min(c[3]-c[1]for c in components)>=.5*max(c[3]-c[1]for c in components)):
+        # Slender numeral sidebearings can lie in the ambiguous gap band.
+        # A complete typed first reading and its uncut glyph-sized ink runs
+        # support ONE flagged hypothesis there, not a spelling certificate.
+        # Identity/conservation callers do not supply this publication-only
+        # context and retain their existing stricter None result.
+        return True
     return None
 
 
