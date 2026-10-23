@@ -154,16 +154,30 @@ def test_shared_unit_print_waits_until_the_source_sentence_is_complete(tmp_path,
     """Generated evidence must not split an independently proved page turn."""
     from tests.unit import test_round2_assembly as fixture
     from tests.unit.test_reflow_vision_pilot import assistance_live_text
-    from cps.services.reflow import vision_pipeline as vp,vision_pixels
+    from cps.services.reflow import vision_pipeline as vp,vision_pixels,pixel_adjudication as pa
     from xml.etree import ElementTree as ET
     import zipfile
     left='The clear garden has a stone-'
     right='border beside the quiet stream.'
     pixels=[fixture.optical(left,20,280),fixture.optical(right,20,30)]
     layers=[[dict(w)for w in words]for words in pixels]
-    layers[0][-1]=dict(layers[0][-1],text='damaged-source-token')
     monkeypatch.setattr(vision_pixels,'words',lambda display,cache:pixels[display.page.number])
     monkeypatch.setattr(vp,'layer_words',lambda doc,n,display:layers[n])
+    # This is a publication/seam test, so supply one explicitly unsettled
+    # word instead of depending on a recognizer version failing on the scan.
+    monkeypatch.setattr(pa,'read_crop',lambda display,*args,**kwargs:
+        pa.CropWitness([dict(w,confidence=99)for w in pixels[display.page.number]]))
+    adjudicate=pa.adjudicate
+    def one_unsettled_word(*args,**kwargs):
+        result=adjudicate(*args,**kwargs)
+        if 'garden'in result['tokens']:
+            i=result['tokens'].index('garden')
+            result['marked'].add(i)
+            result.setdefault('word_notes',{})[i]=dict(status='UNRESOLVED',
+                source=['garden'],model=['garden'],chosen=['garden'],
+                method='synthetic_unsettled_word',source_range=[i,i+1],model_range=[i,i+1])
+        return result
+    monkeypatch.setattr(pa,'adjudicate',one_unsettled_word)
     from cps.services.reflow import inline_print
     monkeypatch.setattr(inline_print,'preview',lambda *args,**kwargs:None)
     reader=fixture.Reader([fixture.answer(fixture.block(left,next=True)),
