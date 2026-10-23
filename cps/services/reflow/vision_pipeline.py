@@ -1040,18 +1040,27 @@ def _present_print_only_images(text,display,pno,bid,territories,package,images,e
     """
     flags=[m.span()for m in re.finditer(r'<span class="reflow-flagged-reading">.*?</a></span>',text,re.S)]
     pattern=re.compile(r'<a class="source-word-image"[^>]*href="#([^"]+)"[^>]*><img src="([^"]+)"[^>]*/></a>'
-        r'(?:\s*<a id="[^"]+" class="source-disclosure-ref" epub:type="noteref" href="#[^"]+"><sup>†</sup></a>)+')
+        r'(?P<retained>(?:<a\b[^>]*class="noteref"[^>]*>.*?</a>)?)'
+        r'(?P<closing>(?:\s*</(?:sup|sub|em|strong|i|b|span)>\s*)*)'
+        r'(?P<actions>(?:\s*<a id="[^"]+" class="source-disclosure-ref" epub:type="noteref" href="#[^"]+"><sup>†</sup></a>)+)')
     candidates=[m for m in pattern.finditer(text)if not any(a<=m.start()<b for a,b in flags)]
     selected=[m for m in candidates if images.get(m[2],{}).get('kind')!='inline_print_preview']
     offsets={m.start()for m in selected};compact={m.start()for m in candidates}-offsets
-    text=pattern.sub(lambda m:''if m.start()in offsets else
-        '<span class="reflow-print-control">'+m[0]+'</span>'if m.start()in compact else m[0],text)
+    def replace(match):
+        if match.start()in offsets:return match['retained']+match['closing']
+        if match.start()in compact:
+            core=match[0][:match.start('retained')-match.start()]
+            return ('<span class="reflow-print-control">'+core+match['retained']+match['actions']
+                +'</span>'+match['closing'])
+        return match[0]
+    text=pattern.sub(replace,text)
     if not selected:return text,''
     prints=[]
     for match in selected:
         # A multirow inspection has no credible one-line em metrics. Its
         # original resource and masked source parts stay untouched.
-        original=re.sub(r' style="[^"]*"','',match[0])
+        core=match[0][:match.start('retained')-match.start()]
+        original=re.sub(r' style="[^"]*"','',core)+match['actions']
         prints.append('<span class="reflow-print-control">'+original+'</span>')
     return text,'<div class="reflow-unit-print">'+'<br/>'.join(prints)+'</div>'
 

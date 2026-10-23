@@ -270,3 +270,32 @@ def test_refused_picture_only_words_publish_legible_unit_print_not_inline_inspec
     assert len(receipt['blocks'][0]['source_image_words'])==count
     assert not root.xpath('.//span[@class="reflow-flagged-reading"]')
     assert len(compiled['asides'])==count,'Moving a print adds no redundant source disclosure'
+
+
+@pytest.mark.parametrize('tag',['em','strong'])
+def test_formatted_opaque_word_cannot_hide_an_inline_inspection_fallback(tmp_path,monkeypatch,tag):
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
+    from lxml import etree
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=300,height=140)
+        page.insert_text((25,60),'Garden',fontsize=12)
+        page.insert_text((80,60),'w',fontname='cour',fontsize=12)
+        page.insert_text((105,60),'remains readable.',fontsize=12)
+        font=next(f[0]for f in page.get_fonts()if f[3]=='Courier')
+        doc.xref_set_key(font,'BaseFont','/CustomMarks');doc.reload_page(page)
+        monkeypatch.setattr(pa,'read_crop',lambda *a,**k:[])
+        class Package:
+            def __init__(self):self.images={}
+            def image(self,name,data):self.images[name]=data
+        package=Package();assets={}
+        output=dict(pno=0,body=[f'<p>Garden <{tag}>w</{tag}> remains readable.</p>'],asides=[])
+        records=[dict(id='native-0',role='body',source_regions=[[20,40,280,80]])]
+        vp._audit_native_pixels(doc,output,records,tmp_path,package,assets)
+    root=etree.fromstring(('<div xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(output['body']+output['asides'])+'</div>').encode())
+    assert not root.xpath('.//p//a[@class="source-word-image"]/img'), 'Closing word typography must not bypass refused-print presentation'
+    assert len(root.xpath('.//div[@class="reflow-unit-print"]//img'))==1
+    assert len(output['asides'])==1
+    assert ' '.join(''.join(root.xpath('.//p')[0].itertext()).split())=='Garden remains readable.'
+    assert ''.join(root.itertext()).count('†')==1
+    for link in root.xpath('.//a[starts-with(@href,"#")]'):
+        assert len(root.xpath('//*[@id=$target]',target=link.get('href')[1:]))==1
