@@ -123,3 +123,19 @@ def test_compiler_replaces_stale_flag_crop_at_its_own_occurrence(tmp_path,monkey
     assert inspected and assets[inspected[0].get('src')]['bbox'][3]<80
     assert all(image.get('src')in package.images for image in root.xpath('.//img'))
     assert receipt['blocks'][0]['published_tokens']==reading.split()
+
+
+def test_relocated_inspection_does_not_rewrite_a_sibling_note_in_the_same_fragment():
+    with pymupdf.open()as doc:
+        p=doc.new_page(width=400,height=230)
+        reading='The blue garden stays green beside the quiet path.'
+        p.insert_text((25,55),reading,fontsize=12)
+        words=[dict(text=w[4],bbox=list(w[:4]))for w in p.get_text('words')]
+        images={'images/old.png':dict(kind='inline_print_preview',bbox=[20,140,60,160])}
+        extras=['<aside id="test-print"><p>Own detail</p><img src="images/old.png"/></aside>'
+            '<aside id="other-source"><p>Separate source</p><img src="images/other.jpg"/></aside>']
+        text=reading.replace('garden',reading_tiers.flagged_html('garden','images/old.png','test-print','height:9em'))
+        vp._present_flagged_prints(text,SourceDisplay(doc,0),0,'sample',[[20,140,340,160]],Package(),images,extras,evidence_words=words)
+    root=etree.fromstring('<div>'+extras[0]+'</div>')
+    assert root.xpath('.//aside[@id="test-print"]/img')[0].get('src')!='images/old.png'
+    assert root.xpath('.//aside[@id="other-source"]/img')[0].get('src')=='images/other.jpg'

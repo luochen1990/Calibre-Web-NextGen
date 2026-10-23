@@ -1118,11 +1118,17 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
                     placement_method=placed['method'],unplaced_context=not inspection_placed)
             inspections[match[2]]=inspection
             for index,aside in enumerate(extras):
-                if re.search(r'\bid="'+re.escape(match[2])+r'"',aside):
-                    extras[index]=re.sub(r'(<img\b[^>]*\bsrc=")[^"]+("[^>]*>)',
-                        lambda m:m[1]+inspection+m[2],aside)
+                # A factory fragment can contain several sibling notes. Scope
+                # the replacement to this exact aside; changing every image in
+                # the fragment would detach another note's source receipt.
+                scoped=re.compile(r'(<aside\b[^>]*\bid="'+re.escape(match[2])+r'"[^>]*>)(.*?)(</aside>)',re.S)
+                def replace_inspection(found):
+                    inner=re.sub(r'(<img\b[^>]*\bsrc=")[^"]+("[^>]*>)',
+                        lambda m:m[1]+inspection+m[2],found[2])
                     if not inspection_placed:
-                        extras[index]=extras[index].replace('<p>','<p>Word placement is not proved; compare the complete source context. ',1)
+                        inner=inner.replace('<p>','<p>Word placement is not proved; compare the complete source context. ',1)
+                    return found[1]+inner+found[3]
+                extras[index]=scoped.sub(replace_inspection,aside)
         # A clean-looking crop is still unsafe when the occurrence was bound
         # from stale rectangles. Rebuild from the source sequence's own slot.
         if initial_dense:continue
