@@ -82,6 +82,7 @@ def classify(words,tokens,boxes,notes,images,pno):
 
 
 def summary(rows):
+    rows=[row for row in rows if row['disposition']!='excluded']
     return dict(inventory=len(rows),live=sum(r['disposition']=='live'for r in rows),
                 print=sum(r['disposition']=='print'for r in rows),
                 missing=sum(r['disposition']=='missing'for r in rows))
@@ -140,6 +141,7 @@ def final_publication(documents,records,frames,images,package,displays,homes):
     for pno,frame in frames.items():
         blocks=records[pno].get('blocks',[])+records[pno].get('native_note_adjudication',[]);claims=[];extras=[];exclusions=[]
         for block in blocks:
+            exclusions.extend((box,'measured_contents_dot_leader')for box in block.get('decorative_source_regions',[]))
             if block.get('role')in('running_head','folio'):
                 exclusions.extend((box,block['role'])for box in block.get('source_regions',[block.get('bbox')])if box)
                 continue

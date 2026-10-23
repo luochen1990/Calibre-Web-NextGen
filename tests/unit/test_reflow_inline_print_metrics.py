@@ -41,7 +41,7 @@ def test_multiline_source_box_cannot_supply_single_line_preview_metrics():
         assert inline_print.preview(SourceDisplay(doc,0),box) is None
 
 
-@pytest.mark.parametrize('case',['refused','dense','sparse'])
+@pytest.mark.parametrize('case',['refused','dense','sparse','sparse_split_territories'])
 def test_page_publication_uses_a_unit_print_instead_of_a_shrunken_inspection_asset(tmp_path,monkeypatch,case):
     from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa
     from tests.unit.test_reflow_vision_pilot import answer,block
@@ -68,8 +68,12 @@ def test_page_publication_uses_a_unit_print_instead_of_a_shrunken_inspection_ass
             def __init__(self):self.images={}
             def image(self,name,data):self.images[name]=data
         package=Package();assets={}
+        territories=[[15,40,410,75]]
+        if case=='sparse_split_territories':
+            split=(words[5]['bbox'][2]+words[6]['bbox'][0])/2
+            territories=[[15,40,split,75],[split,40,410,75]]
         compiled,receipt=vp.compile_page(answer(block(printed)),words,SourceDisplay(scan,0),0,
-            package,assets,pixel_words=words,regions={'b1':[[15,40,410,75]]},body_owners={},
+            package,assets,pixel_words=words,regions={'b1':territories},body_owners={},
             note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
     from lxml import etree
     root=etree.fromstring(('<div xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(compiled['body'])+'</div>').encode())
@@ -85,6 +89,7 @@ def test_page_publication_uses_a_unit_print_instead_of_a_shrunken_inspection_ass
         image=unit[0].xpath('.//img')[0]
         assert 'height:1.4em'not in image.get('style','')
         assert image.get('src')in package.images
+        if case=='dense':assert not any(v.get('kind')=='inline_print_preview'for v in assets.values()), 'Unused word previews must not fill the archive after choosing a unit print'
     else:
         assert not root.xpath('.//div[@class="reflow-unit-print"]')
         assert len(root.xpath('.//span[@class="reflow-flagged-reading"]//img'))==1
@@ -107,3 +112,16 @@ def test_disconnected_capital_crossbar_inside_word_box_survives_line_metrics():
     bounds=[(max(q%image.width for q in c)-min(q%image.width for q in c)+1,
              max(q//image.width for q in c)-min(q//image.width for q in c)+1)for c in components]
     assert any(width>=5*height for width,height in bounds), 'The disconnected printed crossbar must not be filtered away'
+
+
+def test_faded_print_has_near_black_stroke_cores_without_erasing_gray_edges():
+    with pymupdf.open()as doc:
+        pg=doc.new_page(width=300,height=150)
+        pg.insert_text((30,70),'The garden grows green.',fontsize=16,color=(.5,.5,.5))
+        word=next(w for w in pg.get_text('words')if w[4]=='garden')
+        value=inline_print.preview(SourceDisplay(doc,0),list(word[:4]))
+    assert value is not None
+    image=Image.open(io.BytesIO(value[0])).convert('L')
+    ink=sorted(v for v in image.tobytes()if v<200)
+    assert ink and ink[len(ink)//5]<60,'Faded core strokes need contrast that survives monochrome dithering'
+    assert len(set(image.tobytes()))>2,'Gray edge samples remain instead of a binary redraw'

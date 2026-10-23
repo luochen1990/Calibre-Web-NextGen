@@ -1064,7 +1064,7 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
     src=f'images/{ident}.jpg'
     _word_disclosure_image(package,src,display,bounds)
     images[src]=dict(page=pno,bbox=bounds,kind='flagged_unit_preview',coverage_eligible=False,
-        reason='refused_word_preview'if refused else'dense_flagged_reading',flagged_runs=len(matches))
+        reason='dense_flagged_reading'if dense else'refused_word_preview',flagged_runs=len(matches))
     extras.append(f'<aside id="{ident}" class="footnote vision-disclosure" data-reflow-owner-page="{pno}" data-reflow-owner-block="{escape(bid,quote=True)}" epub:type="footnote"><p>Underlined readings are plausible, not independently proved. This original print is shared by the unit.</p><img src="{src}" alt="Original printed reading"/><a href="#{origin}">Return</a></aside>')
     supplement=(f'<div class="reflow-unit-print"><a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}">'
         f'<img src="{src}" alt=""/><sup>†</sup></a></div>')
@@ -3470,6 +3470,8 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             reading_tiers.conserve_punctuation_boundaries(result,baseline if adjudication else local,first_tokens if adjudication else proposed)
             _remove_foreign_word_runs(result,bid,answer,pixel_words or [],regions)
             reading_tiers.join_letter_spaced_readings(result,witness or [])
+            reading_tiers.join_fragmented_readings(result,witness or [])
+            reading_tiers.discard_dot_leaders(result,display,pixel_words or local)
             if any(g.get('kind')in('foreign_owned_run_published_once','letter_spaced_printed_words')
                    for g in result['guard']):
                 wraps=_printed_wraps(result['tokens'],optical_local)
@@ -3552,6 +3554,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             print_endings={g[-1]:g for g in print_groups if all(i in flagged_readings for i in g)}
             print_owners={i:g[-1] for g in groups for i in g}
             emission_groups={**endings,**print_endings}
+            dense_assistance=(len(print_endings)>=2 and len(flagged_readings)>=max(8,.25*len(result['tokens'])))
 
             def flagged_piece(indices, ident, inspection_src, reading_html=None):
                 # Presentation runs may be shorter than the original warning.
@@ -3566,7 +3569,11 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         crop=decision['source_bbox']
                 from . import inline_print
                 inline_src=inspection_src;style='height:1.4em;vertical-align:-0.25em;width:auto'
-                preview=inline_print.preview(display,crop) if len(territories)==1 and not decision.get('source_parts') else None
+                # A paragraph's several ownership strips say nothing about
+                # whether this particular word occupies one physical line.
+                # Its own complete bounds and the preview's ink test decide.
+                preview=(inline_print.preview(display,crop) if not dense_assistance
+                    and len(own)==len(indices) and not decision.get('source_parts') else None)
                 suffix='' if indices==endings[print_owners[indices[-1]]] else '-run-'+str(indices[-1])
                 if preview is not None and hasattr(package,'image'):
                     data,metrics=preview;inline_src=f'images/{ident}{suffix}-inline.png'
@@ -3700,7 +3707,6 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     boxes=([word_decision['source_bbox']] if len(endings[index])==1 and word_decision.get('source_bbox') and (word_decision.get('source_image_only') or word_decision.get('source_image_only_before_publication')) else
                            [evidence_boxes[i] for i in endings[index] if i in evidence_boxes])
                     crop=(word_decision['source_bbox'] if len(endings[index])==1 and word_decision.get('source_bbox') and (word_decision.get('source_image_only') or word_decision.get('source_image_only_before_publication')) else
-                          list(display.rect) if len(territories)>1 else
                           vision_reading.union(boxes) if len(boxes)==len(endings[index]) else box)
                     # Tight evidence remains in final notes, never an inline word crop.
                     clip=extract.pymupdf.Rect(crop);clip.x0-=2;clip.y0-=2;clip.x1+=2;clip.y1+=2;clip &= display.rect
@@ -3760,7 +3766,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                         from . import inline_print
                         inline_src=src;inline_style='height:1.4em;vertical-align:-0.25em;width:auto'
                         preview=(inline_print.preview(display,crop)
-                                 if not word_decision.get('source_parts') and len(territories)==1 else None)
+                                 if not word_decision.get('source_parts') and len(boxes)==len(endings[index]) else None)
                         if preview is not None and hasattr(package,'image'):
                             data,metrics=preview
                             inline_src=f'images/{ident}-inline.png'
@@ -3779,6 +3785,9 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             inventory=(raw['words']if local_ocr and local_ocr_units is not None and raw else optical_local or local)
             coverage=occurrence_coverage.classify(inventory,result['tokens'],evidence_boxes,
                 result.get('word_notes',{}),image_records,pno)
+            for row in coverage:
+                if any(occurrence_coverage._contains(region,row['source_bbox'])for region in result.get('decorative_source_regions',[])):
+                    row.update(disposition='excluded',rule='measured_contents_dot_leader',published_indices=[])
             typed_occurrences=[dict(source_bbox=proof['source_bbox'],label=proof['label'],
                 target=f'v4-ref-{pno}-{bid}-{index}')for index,proof in placeholder_display.items()
                 if proof.get('status')=='PROVED'and proof.get('source_bbox')]
@@ -3928,6 +3937,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                     lexical_whitespace_token_index=j,source_bbox=optical_evidence[i]['bbox'])
                     for i,j in punctuation_proof],
                 occurrence_coverage=coverage,
+                decorative_source_regions=result.get('decorative_source_regions',[]),
                 published_word_boxes={str(i):list(box)for i,box in evidence_boxes.items()},
                 published_tokens=result['tokens'],
                 marked=sorted(result['marked']),fallback=result['fallback'],guard=result['guard'],

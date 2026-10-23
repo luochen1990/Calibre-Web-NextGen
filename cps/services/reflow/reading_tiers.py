@@ -54,7 +54,13 @@ def choose(token, decision, *, rank_lexical=True):
             return dict(tier='print', reading=None, method='unidentified_symbol')
         return dict(tier='flagged', reading=symbolic, method='reader_unicode_symbol')
     if len(source) == len(model) == 1:
+        from .text_quality import english_lexicon
         a, b = source[0], model[0]
+        if (re.fullmatch(r'\d{1,3}(?:st|nd|rd|th)[.,;:)]?', b, re.I)
+                and not re.fullmatch(r'\d{1,3}(?:st|nd|rd|th)[.,;:)]?', a, re.I)
+                and re.fullmatch(r'[Iil1|0OogBSs]+(?:st|nd|rd|t?h)?[.,;:)]?', a, re.I)
+                and (a[:1] in "Iil1|" or a.casefold() not in english_lexicon())):
+            return dict(tier='flagged',reading=b,method='complete_reader_typed_ordinal')
         if (any(c.isdigit() for c in a) and any(c.isalpha() for c in a)
                 and sum(c.isdigit() for c in a) > sum(c.isdigit() for c in b)
                 and len(a) == len(b) + 1
@@ -176,6 +182,117 @@ def join_letter_spaced_readings(result, witness):
     result.update(tokens=output,boxes=boxes,word_notes=notes,marked=marked,verified_unchanged=verified)
     result.setdefault('guard',[]).append(dict(kind='letter_spaced_printed_words',groups=[dict(
         original_indices=list(range(a,z)),reading=text,source_bbox=box)for a,z,text,box,note in groups]))
+
+
+def join_fragmented_readings(result, witness):
+    """A measured continuous word gets one plausible reading and one tier.
+
+    OCR can split italic strokes into several purported words. The first
+    reader's complete word is useful assistance only when original ink proves
+    there is no internal word space. This groups the hypothesis; it does not
+    certify its letters or discard the source alternatives.
+    """
+    boundary=getattr(witness,'fragment_boundary',None)
+    if boundary is None:return
+    from difflib import SequenceMatcher
+    tokens=result['tokens'];groups=[]
+    for decision in result.get('adjudication',[]):
+        source=decision.get('source',[]);model=decision.get('model',[])
+        if (decision.get('status')!='UNRESOLVED'
+                or decision.get('method')!='unproved_source_transcription_change'
+                or not 2<=len(source)<=6 or len(model)!=1
+                or not all(t.isalpha()for t in source+model)
+                or SequenceMatcher(None,''.join(source).casefold(),model[0].casefold()).ratio()<.65):continue
+        positions=[i for i in range(len(tokens)-len(source)+1)
+            if tokens[i:i+len(source)]==source and all(
+                j in result['marked'] and j in result['boxes']
+                and result.get('word_notes',{}).get(j,{}).get('source_range')
+                and decision['source_range'][0]<=result['word_notes'][j]['source_range'][0]
+                and result['word_notes'][j]['source_range'][1]<=decision['source_range'][1]
+                and result['word_notes'][j].get('model_range')==decision.get('model_range')
+                for j in range(i,i+len(source)))]
+        if len(positions)!=1:continue
+        start=positions[0];end=start+len(source);parts=[result['boxes'][i]for i in range(start,end)]
+        if any(not(-.5<=b[0]-a[2]<=.15*min(a[3]-a[1],b[3]-b[1])
+                and min(a[3],b[3])-max(a[1],b[1])>=.6*min(a[3]-a[1],b[3]-b[1]))
+                for a,b in zip(parts,parts[1:])):continue
+        box=[min(b[0]for b in parts),min(b[1]for b in parts),max(b[2]for b in parts),max(b[3]for b in parts)]
+        if boundary(dict(bbox=box))is not True:continue
+        if any(start<z and end>a for a,z,_,_,_ in groups):continue
+        note=dict(decision,chosen=model,method='plausible_complete_word_over_optical_fragments',
+            source_bbox=box,optical_fragment_boxes=[list(b)for b in parts],source_image_only=False)
+        groups.append((start,end,model[0],box,note))
+    if not groups:return
+    starts={a:(z,text,box,note)for a,z,text,box,note in groups}
+    output=[];boxes={};notes={};marked=set();verified=[];i=0
+    while i<len(tokens):
+        new=len(output)
+        if i in starts:
+            end,text,box,note=starts[i];output.append(text);boxes[new]=box;notes[new]=note;marked.add(new);i=end;continue
+        output.append(tokens[i])
+        if i in result['boxes']:boxes[new]=result['boxes'][i]
+        if i in result.get('word_notes',{}):notes[new]=result['word_notes'][i]
+        if i in result['marked']:marked.add(new)
+        if i in result.get('verified_unchanged',[]):verified.append(new)
+        i+=1
+    result.update(tokens=output,boxes=boxes,word_notes=notes,marked=marked,verified_unchanged=verified)
+    result.setdefault('guard',[]).append(dict(kind='whole_word_publication_tiers',groups=[dict(
+        original_indices=list(range(a,z)),reading=text,source_bbox=box)for a,z,text,box,note in groups]))
+
+
+def discard_dot_leaders(result, display, neighbors):
+    """Even solid dots between a title and folio are layout, not OCR words.
+
+    Measure the original components, their repeated spacing and the two row
+    anchors. Small real letters, uneven marks and unanchored punctuation keep
+    their normal reading. Store exact excluded regions for occurrence accounting.
+    """
+    import statistics
+    from . import vision_pixels
+    heights=[w['bbox'][3]-w['bbox'][1]for w in neighbors
+        if sum(c.isalpha()for c in w['text'])>=3]
+    if not heights:return
+    normal_height=statistics.median(heights)
+    regions=[];removed=set()
+    for index,token in enumerate(result['tokens']):
+        box=result.get('boxes',{}).get(index)
+        if not box or len(token)>10 or not any(c.isalnum()for c in token):continue
+        width,height=box[2]-box[0],box[3]-box[1]
+        if not(0<height<min(20,normal_height*.4) and 0<width<=180):continue
+        middle=(box[1]+box[3])/2
+        left=[w for w in neighbors if sum(c.isalpha()for c in w['text'])>=2
+            and w['bbox'][2]<=box[0]+.1 and w['bbox'][1]<=middle<=w['bbox'][3]]
+        right=[w for w in neighbors if re.fullmatch(r'\d{1,4}',w['text'])
+            and w['bbox'][0]>=box[2]-.1 and w['bbox'][1]<=middle<=w['bbox'][3]]
+        if not left or not right:continue
+        a=max(left,key=lambda w:w['bbox'][2])['bbox'];b=min(right,key=lambda w:w['bbox'][0])['bbox']
+        normal=min(a[3]-a[1],b[3]-b[1])
+        if normal<=0 or height>=normal*.4 or box[0]-a[2]>normal*12 or b[0]-box[2]>normal*12:continue
+        picture,components=vision_pixels._word_ink_components(display.pixmap(box,scale=8,gray=True,max_pixels=200_000))
+        if not 3<=len(components)<=100:continue
+        sx=width/picture.width;sy=height/picture.height;pixels=picture.load();centers=[];diameters=[]
+        for x0,y0,x1,y1 in components:
+            cw,ch=(x1-x0)*sx,(y1-y0)*sy
+            if not(.4<=cw/max(.01,ch)<=2.5 and max(cw,ch)<normal*.35):break
+            dark=sum(pixels[x,y]<150 for y in range(y0,y1)for x in range(x0,x1))
+            if dark<.65*(x1-x0)*(y1-y0):break
+            centers.append(((x0+x1)*sx/2,(y0+y1)*sy/2));diameters.append(max(cw,ch))
+        else:
+            centers.sort();diameter=statistics.median(diameters)
+            gaps=[b[0]-a[0]for a,b in zip(centers,centers[1:])];pitch=statistics.median(gaps)
+            if (max(y for x,y in centers)-min(y for x,y in centers)<=diameter*.6
+                    and 1.5*diameter<=pitch<=8*diameter
+                    and all(abs(g-pitch)<=pitch*.3 for g in gaps)):
+                removed.add(index);regions.append(list(box))
+    if not removed:return
+    kept=[i for i in range(len(result['tokens']))if i not in removed];mapping={old:new for new,old in enumerate(kept)}
+    result['tokens']=[result['tokens'][i]for i in kept]
+    for key in ('boxes','word_notes'):
+        result[key]={mapping[i]:v for i,v in result.get(key,{}).items()if i in mapping}
+    result['marked']={mapping[i]for i in result['marked']if i in mapping}
+    result['verified_unchanged']=[mapping[i]for i in result.get('verified_unchanged',[])if i in mapping]
+    result['decorative_source_regions']=regions
+    result.setdefault('guard',[]).append(dict(kind='measured_contents_dot_leaders',source_regions=regions))
 
 
 def conserve_punctuation_boundaries(result, source, model):

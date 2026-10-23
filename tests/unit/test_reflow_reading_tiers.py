@@ -246,3 +246,90 @@ def test_dictionary_ranker_cannot_erase_a_reader_diacritic_or_possessive(first, 
                                      source=[source], model=[first]))
     assert choice['tier'] == 'flagged'
     assert choice['reading'] == first
+
+
+@pytest.mark.parametrize('split_source_ranges',[False,True])
+@pytest.mark.parametrize('boundary',[True,False,None])
+def test_real_compiler_assigns_a_tier_to_the_whole_word_not_its_optical_fragments(tmp_path,monkeypatch,boundary,split_source_ranges):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa,vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import answer,block
+    printed='The clear garden grows carefully today.'
+    with pymupdf.open()as drawn,pymupdf.open()as scan:
+        pg=drawn.new_page(width=400,height=160);pg.insert_text((20,60),printed,fontsize=12)
+        words=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in pg.get_text('words')]
+        pg=scan.new_page(width=400,height=160);pg.insert_image(pg.rect,pixmap=drawn[0].get_pixmap())
+        witness=pa.CropWitness(words);witness.fragment_boundary=lambda word:boundary
+        monkeypatch.setattr(pa,'read_crop',lambda *a,**k:witness)
+        old=pa.adjudicate
+        def fragmented(*a,**kw):
+            result=old(*a,**kw);box=words[4]['bbox'];middle=(box[0]+box[2])/2
+            note=dict(source=['care','fuily'],model=['carefully'],chosen=['care','fuily'],
+                status='UNRESOLVED',method='unproved_source_transcription_change',source_range=[4,6],model_range=[4,5])
+            result.update(tokens=printed.split()[:4]+['care','fuily','today.'],marked={4,5},
+                boxes={**{i:w['bbox']for i,w in enumerate(words[:4])},4:[box[0],box[1],middle-.1,box[3]],
+                       5:[middle+.1,box[1],box[2],box[3]],6:words[5]['bbox']},
+                decisions=[note],word_notes={i:dict(note,chosen=[t],mapping='unplaced_within_span')for i,t in[(4,'care'),(5,'fuily')]})
+            if split_source_ranges:
+                for i in (4,5):result['word_notes'][i]['source_range']=[i,i+1]
+            return result
+        monkeypatch.setattr(pa,'adjudicate',fragmented)
+        class Package:
+            def image(self,*a):pass
+        page,receipt=vp.compile_page(answer(block(printed)),words,SourceDisplay(scan,0),0,
+            Package(),{},pixel_words=words,regions={'b1':[[18,40,380,75]]},body_owners={},
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    record=receipt['blocks'][0]
+    if boundary is True:
+        assert record['published_tokens']==printed.split()
+        assert [v['reading']for v in record['flagged_readings'].values()]==['carefully']
+        root,flags=assert_flagged_print(''.join(page['body']),['carefully'])
+        assert len(flags)==1
+        assert not any(d['status']=='RESOLVED'for d in record['adjudication'])
+    else:
+        assert record['published_tokens'][4:6]==['care','fuily'],'An unproved boundary cannot silently fuse printed words'
+
+
+@pytest.mark.parametrize('ink',['leaders','letters','uneven','no_folio'])
+def test_real_compiler_does_not_publish_contents_leader_dots_as_words(tmp_path,monkeypatch,ink):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa,vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import answer,block
+    with pymupdf.open()as drawn,pymupdf.open()as scan:
+        pg=drawn.new_page(width=300,height=150);pg.insert_text((20,60),'Garden',fontsize=12)
+        pg.insert_text((200,60),'12'if ink!='no_folio'else'now',fontsize=12)
+        if ink=='letters':
+            pg.insert_text((100,60),'eee',fontsize=12)
+            box=list(next(w for w in pg.get_text('words')if w[4]=='eee')[:4])
+        else:
+            centers=[100+i*4 for i in range(16)]
+            if ink=='uneven':centers=[100,103,111,117,118,122,130,131,143,155]
+            for x in centers:pg.draw_circle((x,59),.6,color=None,fill=(0,0,0))
+            box=[min(centers)-1,58,max(centers)+1,60]
+        words=[dict(text=w[4],bbox=list(w[:4]),confidence=99)for w in pg.get_text('words')if w[4]!='eee']
+        words.insert(1,dict(text='eee',bbox=box,confidence=99))
+        copied=scan.new_page(width=300,height=150);copied.insert_image(copied.rect,pixmap=pg.get_pixmap(matrix=pymupdf.Matrix(3,3)))
+        monkeypatch.setattr(pa,'read_crop',lambda *a,**k:pa.CropWitness(words))
+        class Package:
+            def image(self,*a):pass
+        compiled,receipt=vp.compile_page(answer(block('Garden eee '+('12'if ink!='no_folio'else'now'))),words,
+            SourceDisplay(scan,0),0,Package(),{},pixel_words=words,regions={'b1':[[15,40,240,70]]},body_owners={},
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    record=receipt['blocks'][0]
+    assert ('eee'in record['published_tokens'])is(ink!='leaders')
+    if ink=='leaders':
+        assert record['published_tokens']==['Garden','12']
+        assert len(record['decorative_source_regions'])==1
+        row=next(row for row in record['occurrence_coverage']if row['source_text']=='eee')
+        assert row['disposition']=='excluded'and row['rule']=='measured_contents_dot_leader'
+
+
+@pytest.mark.parametrize('source,model,expected',[('Ist','1st','1st'),('llh','11th','11th'),
+    ('both','8th','both'),('9th','8th','9th')])
+def test_typed_ordinal_assistance_prefers_a_complete_reader_over_opaque_letter_guesses(source,model,expected):
+    decision=dict(source=[source],model=[model],chosen=[source],status='UNRESOLVED',method='pixel_read_inconclusive')
+    choice=tiers.choose(source,decision)
+    assert choice['tier']=='flagged'and choice['reading']==expected
+    assert decision['status']=='UNRESOLVED'and decision['chosen']==[source]

@@ -85,6 +85,7 @@ def preview(display, word_box):
         bounds.append((left,top,right,bottom))
     if not bounds:return None
     top=min(b[1] for b in bounds);bottom=max(b[3] for b in bounds)
+    if (bottom-top)/sy>3.4*xheight:return None
     left=min(b[0] for b in bounds);right=max(b[2] for b in bounds)
     upper=min(baseline-1.75*xheight,region.y0+top/sy-.1*xheight)
     lower=max(baseline+.75*xheight,region.y0+bottom/sy+.1*xheight)
@@ -97,7 +98,13 @@ def preview(display, word_box):
     output.paste(clean,(round((region.x0-crop.x0)*sx),round((region.y0-crop.y0)*sy)))
     factor=30/(xheight*sy)
     output=output.resize((max(1,round(output.width*factor)),max(1,round(output.height*factor))),Image.Resampling.LANCZOS)
-    output=output.point(lambda v:round(min(1,v/255/.86)**1.15*255))
+    # The original dark core can be gray in a faded scan. Stretch only its
+    # measured tone range, retaining antialiasing and exact stroke positions.
+    # This creates near-black ink on white paper for monochrome dithering;
+    # it neither recognizes letters nor redraws their shapes.
+    ink=sorted(raw[i]for i,value in enumerate(keep)if value)
+    blackpoint=min(150,ink[len(ink)//5])
+    output=output.point(lambda v:round(max(0,min(1,(v-blackpoint)/(230-blackpoint)))**1.1*255))
     stream=io.BytesIO();output.save(stream,format='PNG',optimize=True)
     height=crop.height/xheight*X_HEIGHT_EM
     descent=(crop.y1-baseline)/xheight*X_HEIGHT_EM
