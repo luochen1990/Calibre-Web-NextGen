@@ -117,7 +117,52 @@ def _published_resource(name,package):
     return name if name in package.images else None
 
 
-def final_publication(documents,records,frames,images,package,displays,homes):
+def _furniture_exclusions(inventory,pno,frame,display):
+    """Carry exact assembled furniture ownership into the final reading frame.
+
+    Native capture uses unrotated PDF coordinates. Recovered capture explicitly
+    names its already normalized reading frame; it must match this display.
+    A whole source line, its unique owner and every current word must agree.
+    """
+    if not inventory:return []
+    from . import source_inventory
+    try:
+        source_inventory.validate(inventory)
+        if inventory['page']!=pno:return []
+        geometry=inventory['source_geometry']
+        if geometry:
+            if display is None or geometry!=dict(space='reading',orientation=display.angle,
+                    source_rotation=display.page.rotation,page_rect=list(display.page.rect)):
+                return []
+            transform=lambda box:list(box)
+        else:
+            transform=(lambda box:list(display.reading_rect(box)))if display is not None else lambda box:list(box)
+        lines={row['id']:row['source']for row in inventory['lines']}
+        owners={row['line_id']:row for row in inventory['ownership']}
+        result=[]
+        for region in inventory['regions']:
+            # Other furniture classifications do not grant a final exclusion.
+            if (region['suggested_kind']!='furniture' or region['geometry_status']!='valid'
+                    or region['reason'] not in ('folio','sequence_folio')):continue
+            for identifier in region['line_ids']:
+                owner=owners.get(identifier,{})
+                if owner.get('representation')!='text' or owner.get('owner_id')!=region['id']:continue
+                line=lines[identifier]
+                if not _print_contains(region['bbox'],line.bbox):continue
+                if any(not _print_contains(line.bbox,span.bbox)for span in line.spans):continue
+                box=transform(line.bbox)
+                words=[word for word in frame if _contains(box,word['bbox'])]
+                if not words or any(not _print_contains(box,word['bbox'])for word in words):continue
+                if not _key(line.text) or _key(' '.join(word['text']for word in words))!=_key(line.text):continue
+                result.append((box,'source_inventory_furniture'))
+        return result
+    except (ValueError,KeyError,TypeError,AttributeError):
+        # An invalid or stale inventory cannot grant an exclusion. Ordinary
+        # publication coverage will retain any unmatched occurrence as print.
+        return []
+
+
+def final_publication(documents,records,frames,images,package,displays,homes,*,source_inventory=None):
     """Audit the attributed source frame against the actual final documents.
 
     The frame is native PDF occurrences or the independently recognized original
@@ -140,6 +185,7 @@ def final_publication(documents,records,frames,images,package,displays,homes):
     pages={}
     for pno,frame in frames.items():
         blocks=records[pno].get('blocks',[])+records[pno].get('native_note_adjudication',[]);claims=[];extras=[];exclusions=[]
+        source_page=(source_inventory or {}).get(pno,(source_inventory or {}).get(str(pno)))
         for block in blocks:
             exclusions.extend((box,'measured_contents_dot_leader')for box in block.get('decorative_source_regions',[]))
             if block.get('role')in('running_head','folio'):
@@ -173,6 +219,7 @@ def final_publication(documents,records,frames,images,package,displays,homes):
                 claims.append(value)
                 if not any(_contains(w['bbox'],row['source_bbox'])for w in frame):
                     extras.append(dict(text=row['source_text'],bbox=row['source_bbox']))
+        exclusions.extend(_furniture_exclusions(source_page,pno,frame,displays.get(pno)))
         inventory=list(frame)
         for word in extras:
             if not any(_contains(w['bbox'],word['bbox'])for w in inventory):inventory.append(word)
@@ -180,11 +227,14 @@ def final_publication(documents,records,frames,images,package,displays,homes):
         for index,word in enumerate(inventory):
             if not _key(word['text']):continue
             box=word['bbox'];excluded=next((role for region,role in exclusions if _contains(region,box)),None)
-            if excluded:
+            if excluded and excluded!='source_inventory_furniture':
                 rows.append(dict(source_index=index,source_text=word['text'],source_bbox=box,
                     disposition='excluded',rule=excluded));continue
             matching=[r for r in claims if _key(r['source_text'])==_key(word['text'])
                 and (_contains(box,r['source_bbox'])or _contains(r['source_bbox'],box))]
+            if excluded and not matching:
+                rows.append(dict(source_index=index,source_text=word['text'],source_bbox=box,
+                    disposition='excluded',rule=excluded));continue
             live=[r for r in matching if r['disposition']=='live']
             row=dict(source_index=index,source_text=word['text'],source_bbox=box,disposition='missing')
             if live:row.update(disposition='live',blocks=sorted({r['block']for r in live}))

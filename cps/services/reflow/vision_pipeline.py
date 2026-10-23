@@ -8171,7 +8171,8 @@ def _convert_attempt(doc,out_path,reader,*,page_numbers=None,provenance=None,pro
         source_frames={n:scans[n]['optical']if n in scans else
             [dict(text=w[4],bbox=list(source_displays[n].reading_rect(w[:4])))
              for w in doc[n].get_text('words')]for n in numbers}
-        publication_coverage=final_publication(documents,records,source_frames,images,package,source_displays,homes)
+        publication_coverage=final_publication(documents,records,source_frames,images,package,source_displays,homes,
+            source_inventory=getattr(book,'source_inventory',{}))
         for index,src in enumerate(package.images):
             manifest.append({'id':f'im{index}','href':src,'type':package.media_types[src]})
         result={'converter':'vision-page-pilot','version':vision_reading.VERSION,'model':vision_reading.MODEL,
