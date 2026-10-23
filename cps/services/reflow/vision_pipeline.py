@@ -1065,7 +1065,7 @@ def _present_print_only_images(text,display,pno,bid,territories,package,images,e
     return text,'<div class="reflow-unit-print">'+'<br/>'.join(prints)+'</div>'
 
 
-def _present_flagged_prints(text,display,pno,bid,territories,package,images,extras):
+def _present_flagged_prints(text,display,pno,bid,territories,package,images,extras,*,evidence_words=None,heading=False):
     """Declined word previews and dense assistance use one legible unit print.
 
     An inspection asset may be a complete page or several physical rows. It
@@ -1077,6 +1077,73 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
         r'<a class="source-word-image"(?: title="Inspect original print")? href="#([^"]+)"><img src="([^"]+)"[^>]*?/></a></span>',re.S)
     matches=list(pattern.finditer(text))
     if not matches:return text,print_only_html
+    from . import inline_print
+    from html import unescape
+    plain=lambda value:unescape(re.sub(r'<[^>]+>',' ',value))
+    lex=lambda value:re.findall(r"[^\W_]+(?:['’\-][^\W_]+)*",plain(value),re.UNICODE)
+    placed=inline_print.locate_context(plain(text),evidence_words or [],display.rect)
+    replacements=[]
+    inspections={};scopes={}
+    for match in matches:
+        start=len(lex(text[:match.start()]));count=len(lex(match[1]))
+        own=[placed['word_boxes'].get(i)for i in range(start,start+count)]
+        scopes.setdefault(match[2],[]).append(vision_reading.union(own)if own and all(own)else None)
+    initial_flagged=sum(len(lex(m[1]))for m in matches)
+    initial_dense=len(matches)>=2 and initial_flagged>=max(8,.25*len(lex(text)))
+    for match in matches:
+        start=len(lex(text[:match.start()]));count=len(lex(match[1]))
+        boxes=[placed['word_boxes'].get(i)for i in range(start,start+count)]
+        own=bool(boxes)and all(boxes)
+        bounds=vision_reading.union(boxes)if own else None
+        asset=images.get(match[3],{})
+        # Tapping the evidence must not lead back to the stale crop which
+        # prompted this re-placement. Unplaced words retain complete context,
+        # explicitly identified as context rather than a word identification.
+        target_scopes=scopes[match[2]]
+        inspection_placed=all(target_scopes)
+        inspection_bounds=vision_reading.union(target_scopes)if inspection_placed else placed['bbox']
+        if match[2]not in inspections:
+            original_src=asset.get('inspection_image',match[3])
+            original=images.get(original_src,{})
+            previous=original.get('bbox',[])
+            # Existing correct padded inspections remain immutable and avoid
+            # duplicate encoded assets. Only a changed occurrence is re-cut.
+            same=(len(previous)==4 and inspection_placed and
+                all(abs(a-b)<=3 for a,b in zip(previous,inspection_bounds)))
+            inspection=original_src if same else f'images/{match[2]}-located-context.jpg'
+            if not same:
+                _word_disclosure_image(package,inspection,display,inspection_bounds)
+                images[inspection]=dict(page=pno,block=bid,bbox=inspection_bounds,
+                    kind='located_inspection_context',coverage_eligible=False,
+                    placement_method=placed['method'],unplaced_context=not inspection_placed)
+            inspections[match[2]]=inspection
+            for index,aside in enumerate(extras):
+                if re.search(r'\bid="'+re.escape(match[2])+r'"',aside):
+                    extras[index]=re.sub(r'(<img\b[^>]*\bsrc=")[^"]+("[^>]*>)',
+                        lambda m:m[1]+inspection+m[2],aside)
+                    if not inspection_placed:
+                        extras[index]=extras[index].replace('<p>','<p>Word placement is not proved; compare the complete source context. ',1)
+        # A clean-looking crop is still unsafe when the occurrence was bound
+        # from stale rectangles. Rebuild from the source sequence's own slot.
+        if initial_dense:continue
+        preview=(inline_print.preview(display,bounds)
+                 if own and not heading and count<=6 else None)
+        preview=inline_print.readable_preview(preview,plain(match[1]))
+        if preview is None:
+            if asset.get('kind')=='inline_print_preview':
+                images[match[3]]=dict(asset,kind='unplaced_word_preview')
+            continue
+        data,metrics=preview;src=match[3].rsplit('.',1)[0]+'-placed.png'
+        # Optional previews are never source-coverage proofs. The original
+        # inspection receipt remains separate and reciprocal.
+        if hasattr(package,'image'):
+            if src not in images:package.image(src,data)
+            images[src]=dict(asset,kind='inline_print_preview',coverage_eligible=False,**metrics,
+                placement_method=placed['method'])
+            replacement=re.sub(r' style="[^"]*"',' style="'+metrics['style']+'"',match[0].replace(match[3],src))
+            replacements.append((match.start(),match.end(),replacement))
+    for a,z,value in reversed(replacements):text=text[:a]+value+text[z:]
+    matches=list(pattern.finditer(text))
     refused=any(images.get(m[3],{}).get('kind')!='inline_print_preview'for m in matches)
     flagged=sum(len(re.sub(r'<[^>]+>',' ',m[1]).split())for m in matches)
     total=len(re.sub(r'<[^>]+>',' ',text).split())
@@ -1099,16 +1166,12 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
     action=re.compile(r'<a id="([^"]+)" class="source-disclosure-ref" epub:type="noteref" href="#([^"]+)"><sup>†</sup></a>')
     text=action.sub(lambda m:''if m[2]in targets else m[0],text)
     ident=f'v4-d-unit-print-{pno}-{bid}';origin='r-'+ident
-    boxes=[]
-    for match in selected:
-        asset=images.get(match[3],{})
-        inspection=images.get(asset.get('inspection_image',match[3]),asset)
-        if inspection.get('bbox'):boxes.append(inspection['bbox'])
-    bounds=list(extract.pymupdf.Rect(vision_reading.union(boxes or territories)) & display.rect)
+    bounds=placed['bbox']
     src=f'images/{ident}.jpg'
     _word_disclosure_image(package,src,display,bounds)
     images[src]=dict(page=pno,block=bid,bbox=bounds,kind='flagged_unit_preview',coverage_eligible=False,
-        reason='dense_flagged_reading'if dense else'refused_word_preview',flagged_runs=len(selected))
+        reason='dense_flagged_reading'if dense else'refused_word_preview',flagged_runs=len(selected),
+        placement_method=placed['method'],unplaced_context=not bool(placed['word_boxes']))
     details=[]
     for target in sorted(targets):
         # Show the highlighted words, not a second copy of each detailed
@@ -1120,7 +1183,7 @@ def _present_flagged_prints(text,display,pno,bid,territories,package,images,extr
     supplement=(f'<div class="reflow-unit-print"><a id="{origin}" class="source-disclosure-ref" epub:type="noteref" href="#{ident}">'
         f'<img src="{src}" alt=""/><sup>†</sup></a></div>')
     text=control.sub(r'<span class="reflow-print-control">\1\3</span>\2',text)
-    return text,print_only_html+supplement
+    return text,print_only_html+('' if heading else supplement)
 
 
 def _coalesce_inline_source_images(pieces,display,pno,bid,package,images):
@@ -3896,7 +3959,7 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
             text=''.join(('' if (emission_groups.get(i,[i])[0]==0 or emission_groups.get(i,[i])[0] in wraps) else ' ')+piece
                          for i,piece in enumerate(pieces) if piece)
             text,unit_print_html=_present_flagged_prints(text,display,pno,bid,territories,
-                package,image_records,extras)
+                package,image_records,extras,evidence_words=pixel_words or local,heading=role=='heading')
             # The marker is typographic punctuation, not a standalone sentence block.
             text=re.sub(r'\s+(<a[^>]*class="noteref".*?</a>)',r'\1',text)
             text=(f'<span data-source-page="{pno}" data-source-block="{escape(bid,quote=True)}" '
@@ -6072,6 +6135,8 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
             edits=[]
             for index,decision in conflicts.items():
                 a,z=ranges[index]
+                from . import reading_tiers
+                reading_tiers.qualify_resolution(decision)
                 formatted=None
                 if decision['status']=='RESOLVED' and '<' in fragment[a:z]:
                     formatted=pixel_adjudication.replace_formatted_word(fragment[a:z],decision['chosen'][0])
@@ -6135,6 +6200,9 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                         replacement=reading_tiers.flagged_html(chosen,inline_src,ident,style)
                         edits.append((a,z,replacement))
                         record.setdefault('flagged_readings',{})[str(index)]=choice
+                    elif choice['tier']=='print':
+                        edits.append((a,z,f'<a class="source-word-image" href="#{ident}"><img src="{src}" alt="Unresolved printed word; inspect original"/></a>'))
+                        decision['source_image_only']=True
                 elif chosen!=tokens[index]:edits.append((a,z,formatted if formatted is not None else escape(chosen)))
                 # Add the control after any enclosing inline action closes;
                 # never nest a new link inside a typed source reference.
@@ -6144,7 +6212,8 @@ def _audit_native_pixels(doc,page,records,cache,package,images):
                 tokens[index]=chosen
             for a,z,value in sorted(edits,reverse=True):fragment=fragment[:a]+value+fragment[z:]
             fragment,unit_print_html=_present_flagged_prints(fragment,display,page['pno'],record['id'],
-                record.get('source_regions') or [record['bbox']],package,images,page['asides'])
+                record.get('source_regions') or [record['bbox']],package,images,page['asides'],
+                evidence_words=optical or physical,heading=record.get('role')=='heading')
             page['body'][position]=fragment+unit_print_html
             record['marked']=sorted(set(record.get('marked',[]))|set(conflicts))
             record['source_image_words']=sorted(set(record.get('source_image_words',[]))|

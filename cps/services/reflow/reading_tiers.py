@@ -27,6 +27,30 @@ def equivalent(left, right):
     return typographic_key(left) == typographic_key(right)
 
 
+def qualify_resolution(decision):
+    """Correlated recognition cannot certify an unfamiliar new spelling.
+
+    A typed ordinal supplies competing evidence for a numeral-like stroke.
+    Two language passes can also repeat the same damaged italic strokes. Keep
+    those useful readings explicitly unproved instead of silently promoting
+    them into letter identity. Original observations remain in the receipt.
+    """
+    if decision.get('status')!='RESOLVED':return
+    source=decision.get('source',[]);chosen=decision.get('chosen',[])
+    if len(source)!=1 or len(chosen)!=1 or equivalent(source[0],chosen[0]):return
+    typed=re.fullmatch(r'\d{1,3}(?:st|nd|rd|th)[.,;:)]?',source[0],re.I)
+    normalized=chosen[0].translate(str.maketrans({'I':'1','l':'1','i':'1','|':'1'}))
+    if typed and normalized.casefold()==source[0].casefold():
+        decision.update(status='UNRESOLVED',alternative=source,
+            proposed_resolution=chosen,method='typed_ordinal_stroke_conflict')
+    elif decision.get('method')=='two_own_word_language_readings':
+        from .text_quality import english_lexicon
+        word=re.sub(r'^[^A-Za-z]+|[^A-Za-z]+$','',chosen[0]).casefold()
+        if len(word)>=4 and word.isascii() and word.isalpha() and word not in english_lexicon():
+            decision.update(status='UNRESOLVED',proposed_resolution=chosen,
+                method='unproved_new_lexical_reading')
+
+
 def choose(token, decision, *, rank_lexical=True):
     """Choose assistance from an existing reader, with an explicit provenance.
 
@@ -45,6 +69,8 @@ def choose(token, decision, *, rank_lexical=True):
     if method in PRINT_ONLY or decision.get('unplaced_prefix'):
         return dict(tier='print', reading=None, method='no_complete_reading')
     source, model = decision.get('source', []), decision.get('model', [])
+    if method=='typed_ordinal_stroke_conflict':
+        return dict(tier='flagged',reading=decision['alternative'][0],method='typed_ordinal_hypothesis')
     if method=='optical_map_confusable_nonword' and rank_lexical:
         # The optical-map check supplies one stroke-confusable dictionary
         # hypothesis, preserving case and punctuation. Rank that assistance
@@ -121,6 +147,7 @@ def prepare(result):
         old = result.get('word_notes', {}).get(index)
         decision = dict(old or dict(source=[], model=[result['tokens'][index]],
                                     chosen=[result['tokens'][index]], status='UNRESOLVED'))
+        qualify_resolution(decision)
         choice = choose(result['tokens'][index], decision)
         decision['publication'] = choice
         if choice['tier'] == 'flagged':
@@ -128,6 +155,11 @@ def prepare(result):
             result['tokens'][index] = choice['reading']
             decision['source_image_only_before_publication'] = decision.get('source_image_only', False)
             decision['source_image_only'] = False
+        elif choice['tier']=='print':
+            # The print tier is an emission decision, not merely metadata.
+            # A control-code fragment must never survive as live text beside
+            # a bare dagger because the earlier adjudicator left this unset.
+            decision['source_image_only']=True
         result.setdefault('word_notes', {})[index] = decision
     result['flagged_readings'] = flags
     return flags

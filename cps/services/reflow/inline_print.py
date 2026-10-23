@@ -30,7 +30,7 @@ def _components(mask, width, height):
         yield found
 
 
-def preview(display, word_box):
+def preview(display, word_box, *, reading=None):
     """Return PNG bytes, CSS metrics and actual crop geometry, or None.
 
     The bounded line strip estimates x-height/baseline from its dense rows. The
@@ -87,8 +87,12 @@ def preview(display, word_box):
     top=min(b[1] for b in bounds);bottom=max(b[3] for b in bounds)
     if (bottom-top)/sy>3.4*xheight:return None
     left=min(b[0] for b in bounds);right=max(b[2] for b in bounds)
-    upper=min(baseline-1.75*xheight,region.y0+top/sy-.1*xheight)
-    lower=max(baseline+.75*xheight,region.y0+bottom/sy+.1*xheight)
+    # Tight paper bounds keep both the day/night rectangle and its trailing
+    # control gap small. Preserve every selected connected component.
+    upper=region.y0+top/sy-.1*xheight
+    lower=region.y0+bottom/sy+.1*xheight
+    letters=sum(c.isalnum() for c in (reading or ''))
+    if letters and (right-left)/max(1,bottom-top)<.14*letters:return None
     crop=pymupdf.Rect(region.x0+left/sx-.12*xheight,upper,
                        region.x0+right/sx+.12*xheight,lower) & display.rect
     mask=Image.frombytes('L',(w,h),bytes(keep)).filter(ImageFilter.MaxFilter(3))
@@ -106,9 +110,68 @@ def preview(display, word_box):
     blackpoint=min(150,ink[len(ink)//5])
     output=output.point(lambda v:round(max(0,min(1,(v-blackpoint)/(230-blackpoint)))**1.1*255))
     stream=io.BytesIO();output.save(stream,format='PNG',optimize=True)
-    height=crop.height/xheight*X_HEIGHT_EM
-    descent=(crop.y1-baseline)/xheight*X_HEIGHT_EM
+    # One publication scale, including numerals and capitals. A tiny OCR
+    # x-height estimate must not magnify an ordinal into a heading.
+    height=1.1
+    descent=.15
     return stream.getvalue(),dict(bbox=list(crop),xheight=xheight,baseline=baseline,
         height_em=height,vertical_align_em=-descent,
         style=f'height:{height:.5f}em;vertical-align:{-descent:.5f}em;width:auto',
         method='gray_complete_components_and_printed_line_band')
+
+
+def locate_context(reading, words, page_rect):
+    """Place a reading by unique sequence anchors, never by its old crop hint.
+
+    This proves an occurrence interval, not the letters of a proposed reading.
+    Repeated/short/discontinuous readings without unique anchors retain honest
+    complete-page context. Unknown boundaries cannot produce a word preview.
+    """
+    import re,unicodedata
+    from difflib import SequenceMatcher
+    token=lambda s:re.findall(r"[^\W_]+(?:['’\-][^\W_]+)*",unicodedata.normalize('NFKC',s).casefold())
+    query=token(reading);items=[(t,w['bbox'])for w in words for t in token(w['text'])]
+    source=[t for t,b in items];n=len(query)
+    fallback=dict(bbox=list(page_rect),method='unplaced_complete_page_context',word_boxes={})
+    if not n or not source:return fallback
+    matches=[m for m in SequenceMatcher(None,query,source,autojunk=False).get_matching_blocks()if m.size]
+    if n<=2:
+        hits=[i for i in range(len(source)-n+1)if source[i:i+n]==query]
+        if len(hits)!=1:return fallback
+        start=hits[0];end=start+n;mapping={i:items[start+i][1]for i in range(n)}
+    else:
+        unique=any(m.size>=3 and any(sum(source[j:j+3]==query[k:k+3]for j in range(len(source)-2))==1
+            for k in range(m.a,m.a+m.size-2))for m in matches)
+        if (not unique or sum(m.size for m in matches)<.7*n or matches[0].a>1
+                or matches[-1].a+matches[-1].size<n-1):return fallback
+        start=matches[0].b;end=matches[-1].b+matches[-1].size
+        if end-start>1.7*n+6:return fallback
+        mapping={m.a+i:items[m.b+i][1]for m in matches for i in range(m.size)}
+        # A changed token earns its slot only between two exact neighboring
+        # words on each side, with equal source/reading interval lengths.
+        for a,b in zip(matches,matches[1:]):
+            q=a.a+a.size;s=a.b+a.size
+            if a.size>=2 and b.size>=2 and b.a-q==b.b-s==1:
+                mapping[q]=items[s][1]
+    chosen=[b for t,b in items[start:end]]
+    if not chosen:return fallback
+    height=sorted(b[3]-b[1]for b in chosen)[len(chosen)//2]
+    bbox=[max(page_rect[0],min(b[0]for b in chosen)-height*.3),
+          max(page_rect[1],min(b[1]for b in chosen)-height*.3),
+          min(page_rect[2],max(b[2]for b in chosen)+height*.3),
+          min(page_rect[3],max(b[3]for b in chosen)+height*.3)]
+    return dict(bbox=bbox,method='unique_sequence_source_context',word_boxes=mapping)
+
+
+def readable_preview(value, reading):
+    """Reject empty/sliver evidence without inventing letters from a guess."""
+    if value is None:return None
+    image=Image.open(io.BytesIO(value[0])).convert('L')
+    mask=image.point(lambda v:255 if v<160 else 0)
+    bounds=mask.getbbox()
+    if bounds is None:return None
+    width,height=bounds[2]-bounds[0],bounds[3]-bounds[1]
+    letters=sum(c.isalnum()for c in reading)
+    if letters<=1 or not .14*letters*height<=width<=3*letters*height:return None
+    if image.getextrema()[0]>100:return None
+    return value
