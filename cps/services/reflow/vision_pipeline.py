@@ -1162,7 +1162,8 @@ def _word_disclosure_image(package,name,display,clip,parts=None):
     original=Image.open(io.BytesIO(display.jpeg(clip,scale=3,quality=90))).convert('RGB')
     kept=Image.new('RGB',original.size,'white')
     for part in parts:
-        box=part['bbox'];sx=original.width/clip.width;sy=original.height/clip.height
+        box=part['bbox']if isinstance(part,dict)else part
+        sx=original.width/clip.width;sy=original.height/clip.height
         region=(max(0,math.floor((box[0]-clip.x0)*sx)),max(0,math.floor((box[1]-clip.y0)*sy)),
                 min(original.width,math.ceil((box[2]-clip.x0)*sx)),min(original.height,math.ceil((box[3]-clip.y0)*sy)))
         kept.paste(original.crop(region),region)
@@ -3739,6 +3740,11 @@ def compile_page(answer,words,display,pno,package,image_records,pixel_words=None
                            [evidence_boxes[i] for i in endings[index] if i in evidence_boxes])
                     crop=(word_decision['source_bbox'] if len(endings[index])==1 and word_decision.get('source_bbox') and (word_decision.get('source_image_only') or word_decision.get('source_image_only_before_publication')) else
                           vision_reading.union(boxes) if len(boxes)==len(endings[index]) else box)
+                    if word_decision.get('source_parts'):
+                        # A divided word owns both physical pieces, which can
+                        # span rows. Its tail box alone cannot enclose its print.
+                        crop=vision_reading.union([part['bbox']if isinstance(part,dict)else part
+                            for part in word_decision['source_parts']])
                     # Tight evidence remains in final notes, never an inline word crop.
                     clip=extract.pymupdf.Rect(crop);clip.x0-=2;clip.y0-=2;clip.x1+=2;clip.y1+=2;clip &= display.rect
                     _word_disclosure_image(package,src,display,clip,word_decision.get('source_parts'))
