@@ -6210,11 +6210,22 @@ def _audit_native_note_pixels(doc,book,page,cache,package,images):
                         native_exact_territories=True)
             _native_published_provenance(proxy,[record])
             _audit_native_pixels(doc,proxy,[record],cache,package,images)
+            # Presentation can append this note's generated print after its
+            # lexical paragraph. Keep that evidence inside the footnote while
+            # still rejecting any other change to the paragraph container.
+            supplements=_defer_unit_prints([proxy])
+            if any(owner!=(str(page['pno']),ident)for owner,_ in supplements):
+                raise ValueError('Native note print changed its source owner')
             inner=re.fullmatch(r'<p>(.*)</p>',proxy['body'][0],re.S)
             if inner is None:raise ValueError('Native note audit changed its lexical container')
             index,a,z=candidates[0]
             original=page['asides'][index]
-            page['asides'][index]=original[:a]+inner[1]+original[z:]
+            replacement=original[:a]+inner[1]+original[z:]
+            if supplements:
+                if not replacement.endswith('</aside>'):
+                    raise ValueError('Native note print lost its footnote container')
+                replacement=replacement[:-len('</aside>')]+''.join(html for _,html in supplements)+'</aside>'
+            page['asides'][index]=replacement
             record.update(role='footnote',lane='asides',source_aside_index=index,printed_label_occurrence=printed_label)
             records.append(record);additions.extend(proxy['asides'])
     page['asides'].extend(additions)
@@ -7010,7 +7021,7 @@ def _defer_unit_prints(pages):
     after merging, its source attributes locate the completed paragraph.
     """
     saved=[]
-    pattern=re.compile(r'<div class="reflow-unit-print">.*?</div>$',re.S)
+    pattern=re.compile(r'(?:<div class="reflow-unit-print">(?:(?!</?div\b).)*</div>)+$',re.S)
     for page in pages:
         for i,fragment in enumerate(page['body']):
             match=pattern.search(fragment)

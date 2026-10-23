@@ -299,3 +299,58 @@ def test_formatted_opaque_word_cannot_hide_an_inline_inspection_fallback(tmp_pat
     assert ''.join(root.itertext()).count('†')==1
     for link in root.xpath('.//a[starts-with(@href,"#")]'):
         assert len(root.xpath('//*[@id=$target]',target=link.get('href')[1:]))==1
+
+
+def _audit_opaque_native_note(tmp_path,monkeypatch,number,extra_container=False):
+    from cps.services.reflow import vision_pipeline as vp,pixel_adjudication as pa,assemble,build_epub
+    with pymupdf.open()as doc:
+        page=doc.new_page(width=300,height=140)
+        page.insert_text((25,60),'Garden',fontsize=12)
+        page.insert_text((80,60),'w',fontname='cour',fontsize=12)
+        page.insert_text((105,60),'remains readable.',fontsize=12)
+        font=next(f[0]for f in page.get_fonts()if f[3]=='Courier')
+        doc.xref_set_key(font,'BaseFont','/CustomMarks');page=doc.reload_page(page)
+        box=vp.vision_reading.union([w[:4]for w in page.get_text('words')])
+        note=assemble.Note(num=number,text='Garden w remains readable.',pno=0,bbox=box)
+        fragment=build_epub._scope_ids(build_epub._aside_html(note,{'1':'ref'}, {'1'}),0)
+        output=dict(pno=0,body=[],asides=[fragment]);assets={}
+        monkeypatch.setattr(pa,'read_crop',lambda *a,**k:[])
+        class Package:
+            def __init__(self):self.images={}
+            def image(self,name,data):self.images[name]=data
+        package=Package()
+        if extra_container:
+            audit=vp._audit_native_pixels
+            def inject(*a,**kw):
+                audit(*a,**kw)
+                a[1]['body'][0]+='<div>Unattributed extra prose.</div>'
+            monkeypatch.setattr(vp,'_audit_native_pixels',inject)
+        records=vp._audit_native_note_pixels(doc,assemble.Book(notes=[note]),output,tmp_path,package,assets)
+    return output,records,package
+
+
+@pytest.mark.parametrize('number',[None,1])
+def test_native_note_keeps_generated_print_inside_its_own_aside(tmp_path,monkeypatch,number):
+    from lxml import etree
+    output,records,package=_audit_opaque_native_note(tmp_path,monkeypatch,number)
+    root=etree.fromstring(('<div xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(output['asides'])+'</div>').encode())
+    note=root[0]
+    assert note.tag=='aside' and note.get('class')=='footnote'
+    assert len(note.xpath('./p'))==1
+    assert len(note.xpath('./div[@class="reflow-unit-print"]//img'))==1
+    assert not note.xpath('./p//img'),'Refused inline evidence belongs after the note text'
+    assert ' '.join(''.join(note.xpath('./p')[0].itertext()).split())==('1 'if number else '')+'Garden remains readable.'
+    assert len(records)==1 and records[0]['lane']=='asides' and records[0]['source_aside_index']==0
+    assert records[0]['published_tokens']==['Garden','w','remains','readable.']
+    assert len(records[0]['source_image_words'])==1
+    assert ''.join(root.itertext()).count('†')==1
+    for image in root.xpath('.//img'):assert image.get('src')in package.images
+    for link in root.xpath('.//a[starts-with(@href,"#")]'):
+        if link.get('class')=='note-return':
+            assert link.get('href')=='#ref' and link.get('aria-label')=='Return to note reference'
+        else:assert len(root.xpath('//*[@id=$target]',target=link.get('href')[1:]))==1
+
+
+def test_native_note_still_rejects_unowned_extra_lexical_container(tmp_path,monkeypatch):
+    with pytest.raises(ValueError,match='Native note audit changed its lexical container'):
+        _audit_opaque_native_note(tmp_path,monkeypatch,1,extra_container=True)
