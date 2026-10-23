@@ -272,7 +272,7 @@ function applyDocumentTheme(doc: Document, theme: ReaderTheme) {
     doc.head.appendChild(evidenceStyle);
   }
   const darkPrint = theme === 'dark' || theme === 'black';
-  evidenceStyle.textContent = 'a.source-word-image img, .reflow-unit-print img {'
+  evidenceStyle.textContent = 'a.source-word-image img, .reflow-unit-print img, aside.vision-disclosure img {'
     + `filter:${darkPrint ? 'invert(1)' : 'none'} !important;`
     + `mix-blend-mode:${darkPrint ? 'screen' : 'multiply'} !important;}`;
   doc.documentElement.style.setProperty('background', bg, 'important');
