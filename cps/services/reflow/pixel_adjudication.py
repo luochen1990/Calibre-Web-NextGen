@@ -761,10 +761,15 @@ def _symbol_identity_conflict(original,chosen):
     return a!=b and (not(left or right)or bool(a and b)or left!=right)
 
 
-def _divided_tail_parts(word,model,witness):
+def _divided_tail_parts(word,model,witness,*,joined=False):
     """Locate a unique divided prefix; recognition of its tail is incomplete."""
     import re
     parts=re.split(r'[-\u00ad\u2010\u2011]',model.strip('.,;:!?'))
+    inferred=joined and len(parts)==1
+    if inferred:
+        tail=_key(word['text']).strip('.,;:!?')
+        if not tail or not parts[0].endswith(tail) or len(parts[0])<=len(tail):return None
+        parts=[parts[0][:-len(tail)],tail]
     if len(parts)!=2 or not all(p.isalpha()for p in parts):return None
     if _key(word['text']).strip('.,;:!?')!=_key(parts[-1]):return None
     a=word['bbox'];height=max(1,a[3]-a[1]);matches=[]
@@ -776,6 +781,7 @@ def _divided_tail_parts(word,model,witness):
             matches.append(other)
     # An absent or ambiguous prefix remains unplaced. It is not permission to
     # expose the tail as the complete model word or certify a new tail spelling.
+    if inferred and not matches:return None
     return [list(matches[0]['bbox']),list(a)]if len(matches)==1 else []
 
 
@@ -1566,8 +1572,13 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
         partial_wrap=(z-a==y-b==1 and source_tokens[a].endswith(('-', '\u00ad'))
             and placement(proposed[b]).startswith(placement(source_tokens[a]))
             and len(placement(proposed[b]))>len(placement(source_tokens[a])))
+        many_model_suffix=(z-a==1 and y-b>1
+            and len(placement(proposed[y-1]))>len(placement(source_tokens[a]))>=2
+            and placement(proposed[y-1]).endswith(placement(source_tokens[a]))
+            and _letter_number_identity(source_tokens[a]).isalpha())
         divided_tail=(_divided_tail_parts(source[a],proposed[b],witness)
-            if z-a==y-b==1 else None)
+            if z-a==y-b==1 else _divided_tail_parts(source[a],proposed[y-1],witness,joined=True)
+            if many_model_suffix else None)
         if wrapped or partial_wrap or divided_tail is not None:supported=[];boundary=None
         # Letter noise resembling a number is not a verified replacement of a
         # well-formed ordinal. Inspect that exact original word with separate
@@ -1675,6 +1686,19 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             supported=[];boundary=None
         word_scope_conflict=False;word_scope=None
         scope_reader=getattr(witness,'word_scope',None)
+        if (many_model_suffix and divided_tail is None and len(supported)==1
+                and supported[0][1]==source_tokens[a:z]):
+            # A matching following sentence locates this cropped tail, not a
+            # complete replacement for the longer leading model span. Require
+            # measured whole ink and an independent own-word pair before a
+            # standalone source word can reject that opening. A positively
+            # located previous-row division was already kept print-only above.
+            word_scope=scope_reader(source[a])if scope_reader is not None else None
+            own=_own_word_choice(source[a],witness)
+            word_scope_conflict=(word_scope is None or own is None
+                or _key(own['text'])!=_key(source_tokens[a])
+                or not _owns_complete_ink([own],word_scope))
+            if word_scope_conflict:supported=[];boundary=None
         if (scope_reader is not None and z-a==y-b==1 and len(supported)==1
                 and len(supported[0][1])==1):
             first=_letter_number_identity(proposed[b]).casefold()
@@ -1856,7 +1880,7 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 fragment=_unproved_source_fragment(word,witness)
                 if word['text'] and (weak or counter or collision or unproved_multiword
                                      or fragment or ambiguous_numeric or uncertain_optical is not None):withheld.add(j)
-            if withheld and not symbol_conflict:
+            if withheld and not(symbol_conflict or word_scope_conflict or divided_tail is not None):
                 record['method']='unproved_source_transcription_change'
         if symbol_conflict and not resolved:withheld.update(range(z-a))
         decisions.append(record)
@@ -1872,7 +1896,12 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
             # Several source fragments can belong to this one positively
             # located word. Keep their transcription evidence on that word,
             # rather than report a fabricated positional or unplaced mapping.
-            word_record=record if single_ink_word else _word_note(record,j,len(decisions)-1)
+            # A single retained suffix owns its explicit completeness refusal
+            # and any uniquely located divided parts, even when its rejected
+            # model alternative contained an entire opening sentence.
+            owned_refusal=(z-a==len(literal)==1 and
+                (word_scope_conflict or divided_tail is not None))
+            word_record=record if single_ink_word or owned_refusal else _word_note(record,j,len(decisions)-1)
             retained_source=(not evidence and list(literal)==source_tokens[a:z])
             if retained_source:
                 # Conservation retains these exact source occurrences. Only
