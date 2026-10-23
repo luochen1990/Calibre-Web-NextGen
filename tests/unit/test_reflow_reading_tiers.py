@@ -344,3 +344,61 @@ def test_optical_map_candidate_can_rank_an_explicitly_flagged_heading(monkeypatc
     choice=tiers.choose(token,decision)
     assert choice['tier']=='flagged' and choice['reading']==expected
     assert decision['chosen']==[token], 'Ranking assistance must not overwrite the optical receipt'
+
+
+@pytest.mark.parametrize('optical,first', [('“Lgrow', ['“I', 'grow']),
+    ('itorains', ['it', 'rains']), ('nearugarden', ['near', 'a', 'garden'])])
+def test_fused_source_occurrence_keeps_complete_first_reader_assistance(optical, first):
+    from cps.services.reflow import pixel_adjudication as pa
+    source=[dict(text=t,bbox=[20+60*i,20,75+60*i,32],confidence=95)
+            for i,t in enumerate(['Read',optical,'today.'])]
+    witness=pa.CropWitness();witness.model_reading=True
+    result=pa.adjudicate(['Read',*first,'today.'],source,witness)
+    tiers.prepare(result)
+    assert result['tokens']==['Read',' '.join(first),'today.']
+    note=result['word_notes'][1]
+    assert note['model']==first and note['source']==[optical]
+    assert note['source_range']==[1,2] and note['model_range']==[1,1+len(first)]
+    assert note['status']=='UNRESOLVED'
+    assert note['publication']['tier']=='flagged'
+    assert note['source_bbox']==source[1]['bbox']
+    assert result['marked']=={1}
+
+
+def test_a_valid_source_word_is_not_split_by_lexical_assistance():
+    choice=tiers.choose('carpet',dict(source=['carpet'],model=['car','pet'],
+        status='UNRESOLVED',method='unproved_source_transcription_change'))
+    assert choice['reading']=='carpet' and choice['tier']=='flagged'
+
+
+def test_real_compiler_does_not_publish_a_fused_optical_nonword_as_assistance(tmp_path, monkeypatch):
+    import pymupdf
+    from cps.services.reflow import pixel_adjudication as pa, vision_pipeline as vp
+    from cps.services.reflow.source_display import SourceDisplay
+    from tests.unit.test_reflow_vision_pilot import answer, block
+    printed='I grow plants today.'
+    with pymupdf.open() as drawn,pymupdf.open() as scan:
+        page=drawn.new_page(width=350,height=140)
+        page.insert_text((25,60),printed,fontsize=12)
+        words=[dict(text=w[4],bbox=list(w[:4]),confidence=95)for w in page.get_text('words')]
+        fused=dict(text='Lgrow',bbox=[words[0]['bbox'][0],words[0]['bbox'][1],
+            words[1]['bbox'][2],words[1]['bbox'][3]],confidence=95)
+        optical=[fused,*words[2:]]
+        page=scan.new_page(width=350,height=140);page.insert_image(page.rect,pixmap=drawn[0].get_pixmap())
+        # A missing second crop read cannot certify the fused source token.
+        witness=pa.CropWitness();witness.model_reading=True
+        monkeypatch.setattr(pa,'read_crop',lambda *a,**kw:witness)
+        class Package:
+            def __init__(self):self.data={}
+            def image(self,name,data):self.data[name]=data
+        package=Package()
+        page,record=vp.compile_page(answer(block(printed)),optical,SourceDisplay(scan,0),0,
+            package,{},pixel_words=optical,regions={'b1':[[20,40,320,75]]},body_owners={},
+            note_context={'cache':tmp_path/'cache','labels':{},'catalogue':{},'refs':{}})
+    root=ET.fromstring('<root xmlns:epub="http://www.idpf.org/2007/ops">'+''.join(page['body'])+'</root>')
+    plausible=root.find('.//span[@class="reflow-plausible"]')
+    assert plausible is not None and ''.join(plausible.itertext())=='I grow'
+    assert 'Lgrow' not in ''.join(root.itertext())
+    assert record['blocks'][0]['flagged_readings']['0']['tier']=='flagged'
+    assert record['blocks'][0]['adjudication'][0]['status']=='UNRESOLVED'
+    assert root.find('.//img').get('src') in package.data

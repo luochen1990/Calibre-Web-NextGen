@@ -60,6 +60,22 @@ def choose(token, decision, *, rank_lexical=True):
         if symbolic is None:
             return dict(tier='print', reading=None, method='unidentified_symbol')
         return dict(tier='flagged', reading=symbolic, method='reader_unicode_symbol')
+    if (method=='unproved_source_transcription_change' and rank_lexical
+            and len(source)==1 and 2<=len(model)<=4):
+        # Rank an already observed complete reading over a fused nonword, not
+        # a newly invented segmentation. The aggregate retains its one source
+        # box and unresolved receipt, so the reader can inspect the boundary.
+        from .text_quality import english_lexicon
+        from difflib import SequenceMatcher
+        lexical=lambda s: re.sub(r'^[^A-Za-z]+|[^A-Za-z]+$', '',s).casefold()
+        original=lexical(source[0]);parts=[lexical(t) for t in model]
+        vocabulary=english_lexicon()
+        edits=sum(max(b-a,d-c) for op,a,b,c,d in
+            SequenceMatcher(None,original,''.join(parts),autojunk=False).get_opcodes() if op!='equal')
+        if (original.isascii() and original.isalpha() and original not in vocabulary
+                and all(p and p.isascii() and p.isalpha() and p in vocabulary for p in parts)
+                and len(original)>=5 and edits<=1):
+            return dict(tier='flagged',reading=' '.join(model),method='complete_reader_over_fused_nonword')
     if len(source) == len(model) == 1:
         from .text_quality import english_lexicon
         a, b = source[0], model[0]

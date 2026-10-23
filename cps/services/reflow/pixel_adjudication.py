@@ -1878,8 +1878,14 @@ def adjudicate(model, source, witness, uncertain=(), absence_proof=None, corrobo
                 # Conservation retains these exact source occurrences. Only
                 # their correspondence to the rejected model span is unknown;
                 # sharing its envelope would bind every word to every neighbor.
+                # A single optical occurrence can fuse several complete
+                # first-reader words. Their whole alternative belongs to this
+                # one occurrence; erasing it would force publication to rank
+                # only the fused source guess. Multi-source spans still have
+                # no unique per-word alternative and keep that ambiguity.
+                own_model=proposed[b:y] if z-a==1 and 2<=y-b<=4 else []
                 word_record=dict(word_record,source=[source[a+j]['text']],
-                    model=[],chosen=[token],source_range=[a+j,a+j+1])
+                    model=list(own_model),chosen=[token],source_range=[a+j,a+j+1])
                 word_record.pop('mapping',None)
             if j in withheld:
                 own=list(source[a+j]['bbox'])
