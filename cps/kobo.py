@@ -18,7 +18,7 @@ import uuid
 import zipfile
 from time import gmtime, monotonic, strftime
 import json
-from urllib.parse import unquote
+from urllib.parse import unquote, urlencode
 
 from flask import (
     Blueprint,
@@ -3861,11 +3861,18 @@ def get_download_url_for_book(book_id, book_format):
     from .services.kobo_post_download_restore import (
         DOWNLOAD_DEVICE_PARAM, download_url_device_tag,
     )
-    device_tag = None
-    try:
-        device_tag = download_url_device_tag(getattr(g, "annotation_origin_device_id", None))
-    except Exception:
-        log.debug("Could not name the Kobo in its download URL", exc_info=True)
+    # One sync builds a URL per book; the device is the same for all of them.
+    device_id = getattr(g, "annotation_origin_device_id", None)
+    cached = g.get("_kobo_download_device_tag")
+    if cached is not None and cached[0] == device_id:
+        device_tag = cached[1]
+    else:
+        device_tag = None
+        try:
+            device_tag = download_url_device_tag(device_id)
+        except Exception:
+            log.debug("Could not name the Kobo in its download URL", exc_info=True)
+        g._kobo_download_device_tag = (device_id, device_tag)
     device_query = {DOWNLOAD_DEVICE_PARAM: device_tag} if device_tag else {}
     endpoint_name = "kobo.download_book"
     endpoint_path = "download"
@@ -3887,7 +3894,7 @@ def get_download_url_for_book(book_id, book_format):
             endpoint_path=endpoint_path,
             book_id=book_id,
             book_format=book_format.lower()
-        ) + ("?{}={}".format(DOWNLOAD_DEVICE_PARAM, device_tag) if device_tag else "")
+        ) + ("?" + urlencode(device_query) if device_query else "")
     return url_for(
         endpoint_name,
         auth_token=kobo_auth.get_auth_token(),

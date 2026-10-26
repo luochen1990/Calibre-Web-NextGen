@@ -25,7 +25,7 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
-from flask import g, send_file
+from flask import Flask, g, send_file
 
 from cps import kobo as kobo_module
 from cps.services import kepub_alignment
@@ -71,17 +71,16 @@ def _bookmark(sw, device):
     return sw.get(device).get("CurrentBookmark") or {}
 
 
-def _url_from_sync(sw, device):
+def _url_from_sync(sw, device, *, proxied=False):
     """The download URL ``device``'s own library/sync hands it."""
-    with sw.app.test_request_context("/kobo/tok/v1/library/sync",
-                                     base_url="http://cwng.example:8083"):
+    app = Flask("kobo-urls")
+    app.register_blueprint(kobo_module.kobo)  # url_for needs the real routes
+    app.wsgi_app = SimpleNamespace(is_proxied=proxied)
+    with app.test_request_context("/kobo/tok/v1/library/sync",
+                                  base_url="http://cwng.example:8083"):
         g.auth_token = "tok"
         g.annotation_origin_device_id = device.id if device is not None else None
-        real, sw.app.wsgi_app = sw.app.wsgi_app, SimpleNamespace(is_proxied=False)
-        try:
-            return REAL_DOWNLOAD_URL(sw.book.id, "KEPUB")
-        finally:
-            sw.app.wsgi_app = real
+        return REAL_DOWNLOAD_URL(sw.book.id, "KEPUB")
 
 
 def _download(monkeypatch, sw, url):
@@ -143,6 +142,25 @@ def test_a_kobo_that_downloads_its_own_sync_url_is_sent_the_shared_place(
     assert bookmark.get("ProgressPercent") == pytest.approx(40)
     assert location_of(bookmark) == sw.exact
     assert sw.synced_location(sw.libra) == sw.exact
+
+
+def test_behind_a_reverse_proxy_the_link_names_the_kobo_too(monkeypatch, two_kobos):
+    sw = two_kobos
+    _download(monkeypatch, sw, _url_from_sync(sw, sw.libra, proxied=True))
+
+    assert location_of(_bookmark(sw, sw.libra)) == sw.exact
+
+
+def test_a_link_naming_a_deactivated_kobo_proves_nothing(monkeypatch, two_kobos):
+    sw = two_kobos
+    url = _url_from_sync(sw, sw.libra)
+    sw.libra.active = False
+    sw.session.commit()
+    _download(monkeypatch, sw, url)
+    sw.libra.active = True
+    sw.session.commit()
+
+    assert location_of(_bookmark(sw, sw.libra)) == sw.own
 
 
 def test_the_download_proves_only_the_kobo_whose_sync_url_it_was(
