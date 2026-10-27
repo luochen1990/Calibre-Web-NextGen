@@ -135,3 +135,5 @@ requested; their output is summarized rather than reproduced.
 
 Final staging, commit and post-commit inspection commands/results are reported
 in the delivery message, so this file does not have to amend its own commit.
+
+**Update before review:** the standalone `frontend/tests/browser` check was removed because no script or CI job runs it. The manager instead drove the real app on a private rig built from this branch with 629 authors: 200 rows on open, scrolling fetched offsets 200, 400 and 600 (629 shown), the name filter sent `q` and showed "Showing 10 of 629 authors.", Series paged and filtered, and the flat Tags list still loaded in full from `/api/v1/tags`.
