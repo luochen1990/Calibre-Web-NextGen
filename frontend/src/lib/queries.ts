@@ -16,7 +16,8 @@ import { captureNamedPreferencesOwner, namedPreferencesMutationOptions } from '.
 import { advanceLibraryRevision, useLibraryRevision } from './libraryRevision';
 import { settleByBatch, settleById, type BulkFailureDetail } from './bulkResults';
 import { addShelfBooks } from './shelfAdd';
-import { createEntityListQueryOptions } from './entityListQueryOptions';
+import { createEntityListQueryOptions, createPagedEntityListQueryOptions } from './entityListQueryOptions';
+import type { EntityListPage } from './entityListQueryOptions';
 import { dismissNoticeIdsInBatches } from './noticeDismissal';
 import type { MetadataProvider, MetaSearchResponse, OtherEreader } from './api';
 import type {
@@ -585,6 +586,17 @@ export function useEntityList(plural: string) {
   const options = createEntityListQueryOptions(endpoint,
     () => apiGet<EntityList>(`/api/v1/${endpoint}`));
   return useQuery<EntityList>({ ...options, queryKey: [...options.queryKey, me?.id] });
+}
+
+/** Authors and series browse in pages; other useEntityList callers stay full-list. */
+export function usePagedEntityList(plural: string, q: string, minimum: number | null, enabled: boolean) {
+  const me = useMe().data;
+  return useInfiniteQuery({
+    ...createPagedEntityListQueryOptions(plural, q, minimum, me?.id,
+      (url, signal) => apiGet<EntityListPage>(url, { signal }), enabled),
+    // Keep the filter controls mounted while a new filter's first page loads.
+    placeholderData: keepPreviousData,
+  });
 }
 
 /** The tag a rename collided with, carried on the 409 so the caller can offer
