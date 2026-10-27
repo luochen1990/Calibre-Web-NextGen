@@ -25,7 +25,7 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
-from flask import Flask, g, send_file
+from flask import g, send_file
 
 from cps import kobo as kobo_module
 from cps.services import kepub_alignment
@@ -51,6 +51,8 @@ def two_kobos(sw):
     the "Libra" read the book before (its own span at 5%) and holds a KEPUB
     from before the current library one, as any Kobo does until it downloads
     the book again."""
+    # url_for needs the real Kobo routes; register them before any request.
+    sw.app.register_blueprint(kobo_module.kobo)
     rows = span_rows()
     sw.koreader_device = sw.koreader("koreader-1", "KOReader", checked=True)
     sw.clara = sw.kobo_device("Clara BW", checked=True)
@@ -73,14 +75,15 @@ def _bookmark(sw, device):
 
 def _url_from_sync(sw, device, *, proxied=False):
     """The download URL ``device``'s own library/sync hands it."""
-    app = Flask("kobo-urls")
-    app.register_blueprint(kobo_module.kobo)  # url_for needs the real routes
-    app.wsgi_app = SimpleNamespace(is_proxied=proxied)
-    with app.test_request_context("/kobo/tok/v1/library/sync",
-                                  base_url="http://cwng.example:8083"):
-        g.auth_token = "tok"
-        g.annotation_origin_device_id = device.id if device is not None else None
-        return REAL_DOWNLOAD_URL(sw.book.id, "KEPUB")
+    real_wsgi_app, sw.app.wsgi_app = sw.app.wsgi_app, SimpleNamespace(is_proxied=proxied)
+    try:
+        with sw.app.test_request_context("/kobo/tok/v1/library/sync",
+                                         base_url="http://cwng.example:8083"):
+            g.auth_token = "tok"
+            g.annotation_origin_device_id = device.id if device is not None else None
+            return REAL_DOWNLOAD_URL(sw.book.id, "KEPUB")
+    finally:
+        sw.app.wsgi_app = real_wsgi_app
 
 
 def _download(monkeypatch, sw, url):
