@@ -4,7 +4,7 @@ from urllib.parse import urlencode
 import pytest
 from sqlalchemy import event, update
 
-from .test_2720_browse_paging import catalog  # noqa: F401
+from .browse_paging_world import catalog  # noqa: F401
 
 
 pytestmark = pytest.mark.unit
