@@ -89,12 +89,13 @@ def test_pages_walk_the_whole_list_in_order_without_gaps(catalog, path):
 @pytest.mark.unit
 @pytest.mark.parametrize('path', ['/authors', '/series'])
 def test_filters_apply_before_paging(catalog, path):
-    # 'le' matches Le Guin, Leckie and Delany, case-insensitively.
-    payload = catalog.get(path + '?limit=2&offset=0&q=LE&lang=en').get_json()
-    assert payload['total'] == 3
-    assert _names(payload) == ['Delany', 'Le Guin']
-    assert payload['next_offset'] == 2
-    rest = catalog.get(path + '?limit=2&offset=2&q=LE&lang=en').get_json()
+    # 'LE' matches Le Guin and Leckie case-insensitively; Delany has 'el', not 'le'.
+    payload = catalog.get(path + '?limit=1&offset=0&q=LE&lang=en').get_json()
+    assert payload['total'] == 2
+    assert payload['unfiltered_total'] == len(AUTHORS)
+    assert _names(payload) == ['Le Guin']
+    assert payload['next_offset'] == 1
+    rest = catalog.get(path + '?limit=1&offset=1&q=LE&lang=en').get_json()
     assert _names(rest) == ['Leckie']
     assert rest['next_offset'] is None
 
